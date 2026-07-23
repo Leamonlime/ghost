@@ -1,0 +1,120 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ghost-bot
+  namespace: ghost
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ghost-bot
+  template:
+    metadata:
+      labels:
+        app: ghost-bot
+    spec:
+      containers:
+      - name: ghost-bot
+        image: docker.io/library/ghost-bot:latest
+        imagePullPolicy: Never
+        env:
+        - name: HABITICA_USER_ID
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: habitica-user-id
+        - name: HABITICA_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: habitica-api-token
+        - name: BOT_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: bot-token
+        - name: ANTHROPIC_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: anthropic-api-key
+        - name: TZ
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: ghost-tz
+        - name: GHOST_TZ
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: ghost-tz
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: ghost-postgres-postgresql
+              key: postgres-password
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: ghost-redis
+              key: redis-password
+        - name: VAULT_PATH
+          value: "/vault"
+        - name: GHOST_USER_NAME
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: ghost-user-name
+        - name: GHOST_BRAND_PRIMARY
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: ghost-brand-primary
+        - name: GHOST_BRAND_SECONDARY
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: ghost-brand-secondary
+        - name: GHOST_BRAND_DOMAIN
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: ghost-brand-domain
+        - name: GHOST_BRAND_VAULT_DIR
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: ghost-brand-vault-dir
+        - name: FATSECRET_CONSUMER_KEY
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: fatsecret-consumer-key
+              optional: true
+        - name: FATSECRET_CONSUMER_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: fatsecret-consumer-secret
+              optional: true
+        - name: FATSECRET_ACCESS_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: fatsecret-access-token
+              optional: true
+        - name: FATSECRET_ACCESS_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: fatsecret-access-secret
+              optional: true
+        volumeMounts:
+        - name: vault
+          mountPath: /vault
+          readOnly: false
+      volumes:
+      - name: vault
+        hostPath:
+          path: /home/admin_hivequeen/CentralVault
+          type: Directory

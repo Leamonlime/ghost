@@ -1,0 +1,152 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ghost-dashboard
+  namespace: ghost
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ghost-dashboard
+  template:
+    metadata:
+      labels:
+        app: ghost-dashboard
+    spec:
+      containers:
+      - name: ghost-dashboard
+        image: python:3.12-slim
+        command: ["sh", "-c", "pip install --quiet --no-cache-dir fastapi uvicorn python-telegram-bot redis asyncpg && exec python /app/dashboard.py"]
+        ports:
+        - containerPort: 8080
+        env:
+        - name: HABITICA_USER_ID
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: habitica-user-id
+        - name: HABITICA_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: habitica-api-token
+        - name: BOT_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: bot-token
+        - name: ANTHROPIC_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: anthropic-api-key
+        - name: TELEGRAM_USER_ID
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: telegram-user-id
+        - name: GHOST_USER_NAME
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: ghost-user-name
+        - name: GHOST_BRAND_PRIMARY
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: ghost-brand-primary
+        - name: GHOST_BRAND_SECONDARY
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: ghost-brand-secondary
+        - name: GHOST_BRAND_DOMAIN
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: ghost-brand-domain
+        - name: GHOST_BRAND_VAULT_DIR
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: ghost-brand-vault-dir
+        - name: TZ
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: ghost-tz
+        - name: GHOST_TZ
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: ghost-tz
+        - name: VAULT_PATH
+          value: "/vault"
+        - name: FATSECRET_CONSUMER_KEY
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: fatsecret-consumer-key
+              optional: true
+        - name: FATSECRET_CONSUMER_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: fatsecret-consumer-secret
+              optional: true
+        - name: FATSECRET_ACCESS_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: fatsecret-access-token
+              optional: true
+        - name: FATSECRET_ACCESS_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: fatsecret-access-secret
+              optional: true
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: ghost-postgres-postgresql
+              key: postgres-password
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: ghost-redis
+              key: redis-password
+        volumeMounts:
+        - name: code
+          mountPath: /app
+        - name: botcode
+          mountPath: /botcode
+          readOnly: true
+        - name: vault
+          mountPath: /vault
+      volumes:
+      - name: code
+        configMap:
+          name: ghost-dashboard-code
+      - name: botcode
+        hostPath:
+          path: /home/admin_hivequeen/ghost/bot
+          type: Directory
+      - name: vault
+        hostPath:
+          path: /home/admin_hivequeen/CentralVault
+          type: Directory
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ghost-dashboard
+  namespace: ghost
+spec:
+  type: NodePort
+  selector:
+    app: ghost-dashboard
+  ports:
+  - port: 8080
+    targetPort: 8080
+    nodePort: 30880
