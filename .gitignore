@@ -1,0 +1,36 @@
+# --- Secrets: never commit ---
+CREDENTIALS.md
+
+# --- Internal/personal notes: excluded from the public repo by default ---
+# CLAUDE.md is a detailed operational + personal dossier (routine, finances,
+# mental-health references, incident history). No credentials, but not portfolio
+# material. To publish it deliberately: `git add -f CLAUDE.md`.
+CLAUDE.md
+*.env
+.env
+.env.*
+runner.env
+*.secret
+*.secrets
+secrets.*
+*.key
+*.pem
+*.p12
+*.pfx
+kubeconfig
+*.kubeconfig
+
+# --- Build / cache artifacts ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.bak
+*.tmp
+*.log
+
+# --- OS / editor ---
+.DS_Store
+.idea/
+.vscode/
+*.swp
