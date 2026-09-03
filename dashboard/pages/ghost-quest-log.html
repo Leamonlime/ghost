@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ghost Command Center — Quest Engine</title>
+<link rel="stylesheet" href="/assets/ghost-common.css?v=59">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { min-height: 100%; }
+  body {
+    color: #f2e8d8;
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding-bottom: 60px;
+  }
+  a { color: inherit; text-decoration: none; }
+  .glass {
+    background: rgba(58,40,14,0.42);
+    backdrop-filter: blur(16px) saturate(150%);
+    -webkit-backdrop-filter: blur(16px) saturate(150%);
+    border: 1px solid rgba(255,199,110,0.16);
+    border-radius: 12px;
+    box-shadow: 0 6px 22px rgba(20,10,0,0.4), inset 0 1px 0 rgba(255,225,180,0.06);
+  }
+
+  /* ===== Top bar (matches Ghost's shell language, amber variant) ===== */
+  .topbar { display: flex; align-items: center; gap: 12px; padding: 14px 20px; }
+  .backlink { display: flex; align-items: center; gap: 8px; padding: 7px 13px; font-size: 11px; color: #e0bd85; }
+  .backlink:hover { color: #fbe9c8; }
+  .brand { display: flex; align-items: center; gap: 8px; margin-left: 4px; }
+  .brand-mark { width: 20px; height: 20px; border-radius: 50%; background: radial-gradient(circle at 35% 30%, #ffe3ad, #ffb84d 55%, #6b3d0f 100%); box-shadow: 0 0 10px rgba(255,184,77,0.7); flex-shrink:0; }
+  .brand-text b { font-size: 12.5px; letter-spacing: 0.1em; color: var(--rook-title); text-shadow: 0 0 12px rgba(234,222,184,0.4); }
+  .brand-text span { display:block; font-size: 7.5px; letter-spacing: 0.12em; color: #b0925f; }
+  .topbar .spacer { flex: 1 1 auto; }
+  .nav-pill { display:flex; gap:4px; padding: 3px; }
+  .nav-pill a { padding: 6px 12px; font-size: 10.5px; border-radius: 8px; color: #cbab77; }
+  .nav-pill a.active { background: rgba(255,255,255,0.08); color: var(--gc-ink); }
+
+  .wrap { max-width: 900px; margin: 0 auto; padding: 6px 20px 20px; display: flex; flex-direction: column; gap: 16px; }
+
+  .intro { padding: 18px 20px; }
+  .intro h1 { font-size: 20px; font-weight: 600; color: #fbe9c8; margin-bottom: 6px; letter-spacing: -0.01em; }
+  .intro p { font-size: 12.5px; color: #cbab77; line-height: 1.55; max-width: 68ch; }
+
+  .card { padding: 16px 20px; }
+  .card-title { display:flex; align-items:center; justify-content:space-between; margin-bottom: 12px; }
+  .card-title h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: #e0bd85; font-weight: 600; }
+  .card-title .count { font-size: 10.5px; color: #9a8161; font-variant-numeric: tabular-nums; }
+
+  /* rig checklist */
+  .todo { display:flex; align-items:flex-start; gap: 11px; padding: 10px 0; border-bottom: 1px solid rgba(255,199,110,0.08); cursor:pointer; }
+  .todo:last-child { border-bottom: none; }
+  .todo input[type="checkbox"] {
+    appearance: none; -webkit-appearance:none;
+    width: 16px; height: 16px; margin-top: 1px;
+    border: 1.5px solid #9a8161; border-radius: 4px;
+    flex-shrink: 0; cursor: pointer; position: relative;
+    background: transparent;
+  }
+  .todo input[type="checkbox"]:checked { background: #ffb84d; border-color: #ffb84d; }
+  .todo input[type="checkbox"]:checked::after {
+    content:""; position:absolute; left:4px; top:0px;
+    width:4px; height:8px; border: solid #1a1206; border-width: 0 2px 2px 0;
+    transform: rotate(40deg);
+  }
+  .todo-title { font-size: 13px; color: #f2e8d8; }
+  .todo.done .todo-title { color: #7c684a; text-decoration: line-through; }
+  .todo-sub { font-size: 11px; color: #9a8161; margin-top: 2px; }
+
+  /* timeline */
+  .period { margin-bottom: 20px; }
+  .period:last-child { margin-bottom: 0; }
+  .period-label { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.1em; color: #9a8161; font-weight: 600; margin-bottom: 10px; }
+  .node { display:flex; gap: 10px; padding: 7px 0; border-bottom: 1px solid rgba(255,199,110,0.06); }
+  .node:last-child { border-bottom: none; }
+  .node-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; }
+  .node-dot.tech { background: #ff9f5a; }
+  .node-dot.brand { background: #ff6f61; }
+  .node-dot.life { background: #d97fb0; }
+  .node-dot.career { background: #d4b83f; }
+  .node-dot.quest { background: #ffb84d; box-shadow: 0 0 6px rgba(255,184,77,0.8); }
+  .node-body { min-width: 0; }
+  .node-top { display:flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
+  .node-date { font-size: 10.5px; color: #9a8161; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .node-title { font-size: 12.5px; font-weight: 600; color: #f2e8d8; }
+  .pill { font-size: 9px; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 700; padding: 1px 6px; border-radius: 20px; }
+  .pill.done { color: #8fd6a3; background: rgba(143,214,163,0.12); }
+  .pill.blocked { color: #ff9f8a; background: rgba(255,159,138,0.14); }
+  .pill.upcoming { color: #9a8161; border: 1px solid rgba(255,199,110,0.18); }
+  .node-desc { font-size: 11.5px; color: #b8a077; margin-top: 3px; max-width: 60ch; }
+  .quest-tag { font-size: 10px; font-weight: 600; color: #ffb84d; margin-top: 4px; display:flex; align-items:center; gap:5px; }
+  .quest-tag::before { content:""; width: 10px; height: 1px; background: var(--gc-ink-faint); }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 10.5px; color: #9a8161; }
+  .legend span.dot { width: 7px; height: 7px; border-radius: 50%; display:inline-block; margin-right: 5px; vertical-align: middle; }
+
+  .mini-table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+  .mini-table th { text-align: left; font-size: 9.5px; text-transform: uppercase; letter-spacing: .06em; color: #9a8161; font-weight: 600; padding: 0 8px 6px 0; border-bottom: 1px solid rgba(255,199,110,0.14); }
+  .mini-table td { padding: 5px 8px 5px 0; border-bottom: 1px solid rgba(255,199,110,0.06); color: #e6d9bd; vertical-align: top; }
+  .mini-table tr:last-child td { border-bottom: none; }
+  .mini-table td.day { color: #ffb84d; font-weight: 600; white-space: nowrap; }
+  .shape-step { display: flex; gap: 10px; padding: 8px 0; border-bottom: 1px solid rgba(255,199,110,0.06); }
+  .shape-step:last-child { border-bottom: none; }
+  .shape-step .lbl { flex: 0 0 96px; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: #ffb84d; font-weight: 700; }
+  .shape-step .txt { font-size: 12px; color: #cbab77; line-height: 1.5; }
+  .rule-note { font-size: 11px; color: #9a8161; margin-top: 10px; padding-top: 10px; border-top: 1px dashed rgba(255,199,110,0.14); }
+  .card-link { font-size: 10.5px; color: #ffb84d; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <a class="backlink glass" href="ghost-dashboard-live.html">← Command Center</a>
+  <div class="brand"><span class="brand-mark"></span><span class="brand-text"><b>GHOST</b><span>QUEST LOG</span></span></div>
+  <div class="spacer"></div>
+  <div class="nav-pill glass">
+    <a href="ghost-quest-log.html" class="active">Quest Engine</a>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <div class="intro glass">
+    <h1>Quest Engine</h1>
+    <p>The maintenance systems (cleaning, food, habits) plus the daily quests they support — formerly "Sidequesting," renamed 01/09/2026. <strong>Launch pushed back a week (decided 31/08/2026)</strong> — Week 0 is prep: make cleaning + meal-prep systems actually bulletproof, buy the camera + tripod, before the sprint starts. Mirrors the vault note directly — edit either to update both, once Obsidian sync ships.</p>
+  </div>
+
+  <div class="card glass">
+    <div class="card-title"><h2>Week 0 — Camera &amp; Tripod</h2><span class="count" id="rigCount"></span></div>
+    <p style="font-size:11px;color:#9a8161;margin-bottom:10px;">The only capture gear that actually blocks the sprint starting — the box build below doesn't.</p>
+    <div id="rigList" data-role="quest-list">
+      <label class="todo"><input type="checkbox" data-id="rig-7"><div><div class="todo-title">Buy the Bluetooth remote tripod</div><div class="todo-sub">Kmart, $25</div></div></label>
+      <label class="todo"><input type="checkbox" data-id="rig-8"><div><div class="todo-title">Buy the 480P mini action clip-on camera</div><div class="todo-sub">Kmart, $29 — the smart glasses' replacement</div></div></label>
+    </div>
+  </div>
+
+  <div class="card glass">
+    <div class="card-title"><h2>Quest Engine Build — TDaW/food studio box</h2><span class="count" id="buildCount"></span></div>
+    <p style="font-size:11px;color:#9a8161;margin-bottom:10px;">Reclassified 01/09/2026 — not sprint-blocking, this is product photography setup for TDaW/food content specifically. Good candidate for its own weekend sidequest rather than a Week 0 chore.</p>
+    <div id="buildList">
+      <label class="todo"><input type="checkbox" data-id="rig-1"><div><div class="todo-title">Cut and duct-tape both foam-board boxes</div><div class="todo-sub">Outside-seam hinges, folds flat — white TDaW box, black food box</div></div></label>
+      <label class="todo"><input type="checkbox" data-id="rig-2"><div><div class="todo-title">Skim-coat both boxes' panels with joint compound</div><div class="todo-sub">Faux-limewash texture</div></div></label>
+      <label class="todo"><input type="checkbox" data-id="rig-3"><div><div class="todo-title">Paint — white coat on the TDaW box, black coat on the food box</div></div></label>
+      <label class="todo"><input type="checkbox" data-id="rig-4"><div><div class="todo-title">Cut the base board and wrap it in walnut vinyl</div><div class="todo-sub">Food box's floor — TDaW box uses the cabinet's own white base</div></div></label>
+      <label class="todo"><input type="checkbox" data-id="rig-5"><div><div class="todo-title">Move the 3D printer onto the trolley</div></div></label>
+      <label class="todo"><input type="checkbox" data-id="rig-6"><div><div class="todo-title">Set both finished boxes up on/near the cabinet by the window</div></div></label>
+      <label class="todo"><input type="checkbox" data-id="rig-9"><div><div class="todo-title">Test-open the camera at its seams</div><div class="todo-sub">Precision screwdriver test — no confirmed teardown exists yet</div></div></label>
+      <label class="todo"><input type="checkbox" data-id="rig-10"><div><div class="todo-title">Design and 3D print a brooch-style housing for the camera</div><div class="todo-sub">First print on the Ender-3 V2, once it's relocated and running</div></div></label>
+      <label class="todo"><input type="checkbox" data-id="rig-11"><div><div class="todo-title">DIY fog machine</div><div class="todo-sub">Strip the button-trigger vape (veg glycerin + distilled water swap); scope the auto-draw version too</div></div></label>
+    </div>
+  </div>
+
+  <div class="card glass">
+    <div class="card-title"><h2>Week 0 — Everything Else</h2><span class="count" id="week0Count"></span></div>
+    <div id="week0List">
+      <label class="todo"><input type="checkbox" data-id="w0-1"><div><div class="todo-title">Make the cleaning schedule bulletproof</div><div class="todo-sub">Actually run it this week, not just have it built</div></div></label>
+      <label class="todo"><input type="checkbox" data-id="w0-2"><div><div class="todo-title">Make the meal-prep system bulletproof</div><div class="todo-sub">Batch/prep done, next week's meals actually sorted</div></div></label>
+      <label class="todo"><input type="checkbox" data-id="w0-3"><div><div class="todo-title">Sort the TDaW label issue</div></div></label>
+      <label class="todo"><input type="checkbox" data-id="w0-4"><div><div class="todo-title">Haircut</div></div></label>
+      <label class="todo"><input type="checkbox" data-id="w0-5"><div><div class="todo-title">Nails</div><div class="todo-sub">This week, or Monday 7 Sept at the latest</div></div></label>
+      <label class="todo"><input type="checkbox" data-id="w0-6"><div><div class="todo-title">NFL gear — clear bag + shoes</div><div class="todo-sub">Needed before Fri 11 Sept</div></div></label>
+    </div>
+  </div>
+
+  <div class="card glass">
+    <div class="card-title"><h2>Shopping List — Photo Rig Build</h2><span class="count" id="shopCount"></span></div>
+    <p style="font-size:11px;color:#9a8161;margin-bottom:10px;">White box = TDaW (white walls, dark table). Dark box = food (dark wall, faux-limewash). Both fold flat via taped hinges.</p>
+    <div id="shopList">
+      <label class="todo"><input type="checkbox" data-id="shop-1"><div><div class="todo-title">White foam board</div><div class="todo-sub">Wall panels for the TDaW box</div></div></label>
+      <label class="todo"><input type="checkbox" data-id="shop-2"><div><div class="todo-title">Black foam board</div><div class="todo-sub">Wall panels for the food box</div></div></label>
+      <label class="todo"><input type="checkbox" data-id="shop-3"><div><div class="todo-title">Duct tape</div><div class="todo-sub">Outside-seam hinges so both boxes fold flat</div></div></label>
+      <label class="todo"><input type="checkbox" data-id="shop-4"><div><div class="todo-title">White paint</div><div class="todo-sub">Over the joint-compound texture, white walls</div></div></label>
+      <label class="todo"><input type="checkbox" data-id="shop-5"><div><div class="todo-title">Black paint</div><div class="todo-sub">Over the joint-compound texture, dark walls</div></div></label>
+      <label class="todo"><input type="checkbox" data-id="shop-6"><div><div class="todo-title">Base board for the walnut floor</div><div class="todo-sub">MDF/ply, cut to size</div></div></label>
+      <label class="todo"><input type="checkbox" data-id="shop-7"><div><div class="todo-title">Walnut wood-grain self-adhesive vinyl</div><div class="todo-sub">Wraps the base board for the food box's floor</div></div></label>
+      <label class="todo"><input type="checkbox" data-id="shop-8" checked><div><div class="todo-title">Joint compound</div><div class="todo-sub">Already have it — faux-limewash texture, not real limewash</div></div></label>
+    </div>
+  </div>
+
+  <div class="card glass">
+    <div class="card-title"><h2>Cleaning Engine</h2><span class="card-link"><a href="obsidian://open?vault=Central%20Vault&file=Admin%2FHome%2FHome%20index" style="color:inherit;">full version ↗</a></span></div>
+    <table class="mini-table">
+      <tr><th>Day</th><th>Task</th></tr>
+      <tr><td class="day">Mon</td><td>Quick vacuum, high-traffic rooms</td></tr>
+      <tr><td class="day">Tue</td><td>Rubbish out</td></tr>
+      <tr><td class="day">Wed (evening)</td><td>Laundry Load 1 — start once home, dry/fold same evening</td></tr>
+      <tr><td class="day">Thu</td><td>Stove clean, fridge front wipe, bins out + 2nd rubbish</td></tr>
+      <tr><td class="day">Fri</td><td>Quick vacuum · Laundry Load 2 — bigger wash + fold</td></tr>
+      <tr><td class="day">Sat</td><td>Sink/toilet, mop, full vacuum, fortnightly A/B row</td></tr>
+      <tr><td class="day">Sun</td><td>Weekly review — assign shared/TBD tasks</td></tr>
+    </table>
+    <p class="rule-note">Plus daily dishes/surfaces/litter/tidy every day. Monthly deep-clean tier is cycle-timed: skip it during period week, target it post-period, let it roll in luteal — no catch-up guilt.</p>
+  </div>
+
+  <div class="card glass">
+    <div class="card-title"><h2>Food Engine</h2><span class="card-link"><a href="obsidian://open?vault=Central%20Vault&file=Admin%2FHome%2FHome%20index" style="color:inherit;">full version ↗</a></span></div>
+    <div class="shape-step"><div class="lbl">Weekend</div><div class="txt">Batch/prep engine — cook the big stuff (roast, rice, boiled potatoes/eggs, ragù, caramelized onion, garlic-in-oil) and freeze portions for the week.</div></div>
+    <div class="shape-step"><div class="lbl">Thu–Fri</div><div class="txt">Medium-effort assembly, using up what the weekend produced — a Batch &amp; Reuse surplus, not a from-scratch cook.</div></div>
+    <div class="shape-step"><div class="lbl">Mon–Wed</div><div class="txt">≤30 min only — a frozen prepped meal, an easy meal-prepped leftover, or a genuinely quick recipe. Never from raw ingredients on an office night.</div></div>
+    <p class="rule-note">If Mon–Wed dinner needs more than reheating/assembling, the weekend prep didn't do its job — fix next weekend's batch list, don't muscle through a real cook on a work night.</p>
+  </div>
+
+  <div class="card glass">
+    <div class="card-title"><h2>The Whole Board</h2></div>
+    <div class="legend" style="margin-bottom:14px;">
+      <span><span class="dot" style="background:#ffb84d;box-shadow:0 0 6px rgba(255,184,77,.8);"></span>Sidequesting thread</span>
+      <span><span class="dot" style="background:#ff9f5a;"></span>Tech (Hob / Ghost / Cephalopod)</span>
+      <span><span class="dot" style="background:#ff6f61;"></span>Content &amp; brand</span>
+      <span><span class="dot" style="background:#d97fb0;"></span>Life &amp; the move</span>
+      <span><span class="dot" style="background:#d4b83f;"></span>Career &amp; finance</span>
+    </div>
+
+    <div class="period">
+      <div class="period-label">Already landed</div>
+      <div class="node"><div class="node-dot tech"></div><div class="node-body"><div class="node-top"><span class="node-date">4 Aug</span><span class="node-title">Cephalopod blog generation live</span><span class="pill done">Live</span></div></div></div>
+      <div class="node"><div class="node-dot tech"></div><div class="node-body"><div class="node-top"><span class="node-date">13 Aug</span><span class="node-title">Ghost's FatSecret tracking verified live</span><span class="pill done">Live</span></div></div></div>
+      <div class="node"><div class="node-dot career"></div><div class="node-body"><div class="node-top"><span class="node-date">17 Aug</span><span class="node-title">External job search paused</span><span class="pill done">Done</span></div><div class="node-desc">Pursuing an internal transfer ahead of the move instead.</div></div></div>
+      <div class="node"><div class="node-dot life"></div><div class="node-body"><div class="node-top"><span class="node-date">26–27 Aug</span><span class="node-title">Brisbane move locked in on paper</span><span class="pill done">Done</span></div><div class="node-desc">Truck hire underway; full move checklist built in the vault.</div></div></div>
+      <div class="node"><div class="node-dot brand"></div><div class="node-body"><div class="node-top"><span class="node-date">30 Aug</span><span class="node-title">Eccentric Oddities paused</span><span class="pill done">Done</span></div><div class="node-desc">Curating more curios conflicts with downsizing for the move.</div></div></div>
+      <div class="node"><div class="node-dot quest"></div><div class="node-body"><div class="node-top"><span class="node-date">31 Aug</span><span class="node-title">Cleaning schedule built (Level 1)</span><span class="pill done">Done</span></div><div class="quest-tag">Sidequesting Level 1 — the house running itself is what frees the rest up</div></div></div>
+      <div class="node"><div class="node-dot brand"></div><div class="node-body"><div class="node-top"><span class="node-date">31 Aug</span><span class="node-title">leathewitch.com confirmed live</span><span class="pill done">Live</span></div></div></div>
+    </div>
+
+    <div class="period">
+      <div class="period-label">Week 0 · 31 Aug – 6 Sept</div>
+      <div class="node"><div class="node-dot quest"></div><div class="node-body"><div class="node-top"><span class="node-date">31 Aug</span><span class="node-title">Sidequesting scoped, first sprint designed</span><span class="pill done">Done</span></div></div></div>
+      <div class="node"><div class="node-dot quest"></div><div class="node-body"><div class="node-top"><span class="node-date">31 Aug</span><span class="node-title">Sprint pushed back a week</span><span class="pill done">Done</span></div><div class="node-desc">Rig not bought yet, and Level 1 systems needed to actually run, not just exist. This week is prep instead.</div></div></div>
+      <div class="node"><div class="node-dot quest"></div><div class="node-body"><div class="node-top"><span class="node-date">now</span><span class="node-title">Everything on the two checklists above</span><span class="pill blocked">In progress</span></div></div></div>
+    </div>
+
+    <div class="period">
+      <div class="period-label">Week 1 sprint · 8–21 Sept</div>
+      <div class="node"><div class="node-dot quest"></div><div class="node-body"><div class="node-top"><span class="node-date">Tue 8 – Mon 21 Sept</span><span class="node-title">First 14-day sidequest sprint</span><span class="pill upcoming">Upcoming</span></div><div class="node-desc">Trial classes, new cafes and suburbs, tarot reading, acrobatics, pull-up goal. Sundays kept light. Date night is Day 1 or 2 (8th/9th, swappable — doesn't matter which). Cemetery epitaph idea held back for later, not slotted in.</div></div></div>
+      <div class="node"><div class="node-dot brand"></div><div class="node-body"><div class="node-top"><span class="node-date">Fri 11 Sept</span><span class="node-title">NFL</span><span class="pill upcoming">Fixed</span></div></div></div>
+      <div class="node"><div class="node-dot tech"></div><div class="node-body"><div class="node-top"><span class="node-date">Mon 14 Sept · payday</span><span class="node-title">Raspberry Pi 5 8GB purchased</span><span class="pill upcoming">Upcoming</span></div><div class="quest-tag">Clears Hob's blocker — removes the manual workaround sidequesting's been running on</div></div></div>
+    </div>
+
+    <div class="period">
+      <div class="period-label">Blocked</div>
+      <div class="node"><div class="node-dot brand"></div><div class="node-body"><div class="node-top"><span class="node-title">TDaW kit assembly</span><span class="pill blocked">Blocked</span></div><div class="node-desc">Waiting on the label issue to resolve.</div><div class="quest-tag">The assembly afternoon is itself a planned sidequest</div></div></div>
+    </div>
+
+    <div class="period">
+      <div class="period-label">Oct – Nov</div>
+      <div class="node"><div class="node-dot life"></div><div class="node-body"><div class="node-top"><span class="node-date">Oct/Nov</span><span class="node-title">Sister-in-law moves out</span><span class="pill upcoming">Upcoming</span></div></div></div>
+      <div class="node"><div class="node-dot life"></div><div class="node-body"><div class="node-top"><span class="node-date">Late Nov</span><span class="node-title">Mum arrives from Germany</span><span class="pill upcoming">Upcoming</span></div></div></div>
+    </div>
+
+    <div class="period">
+      <div class="period-label">The move</div>
+      <div class="node"><div class="node-dot quest"></div><div class="node-body"><div class="node-top"><span class="node-date">8 Jan 2027</span><span class="node-title">Melbourne → Brisbane</span><span class="pill upcoming">Fixed</span></div><div class="quest-tag">Sidequesting's shape travels with you — venues swap, the structure doesn't</div></div></div>
+      <div class="node"><div class="node-dot career"></div><div class="node-body"><div class="node-top"><span class="node-date">~mid-2027</span><span class="node-title">Brisbane house purchase</span><span class="pill upcoming">Upcoming</span></div><div class="node-desc">~6 months after the move, funded in part by the German home sale.</div></div></div>
+    </div>
+
+    <div class="period">
+      <div class="period-label">After the dust settles</div>
+      <div class="node"><div class="node-dot brand"></div><div class="node-body"><div class="node-top"><span class="node-title">Novel Draft 2 resumes</span><span class="pill upcoming">Paused for now</span></div></div></div>
+      <div class="node"><div class="node-dot brand"></div><div class="node-body"><div class="node-top"><span class="node-title">Eccentric Oddities, possibly</span><span class="pill upcoming">Paused for now</span></div></div></div>
+      <div class="node"><div class="node-dot brand"></div><div class="node-body"><div class="node-top"><span class="node-title">Lea the Witch blog series</span><span class="pill upcoming">In planning</span></div><div class="node-desc">Cycle-syncing debunk series, then wellness trends.</div></div></div>
+    </div>
+
+  </div>
+
+</div>
+
+<script>
+(function(){
+  var API_STATE = '/api/quest-engine/state';
+  var API_TOGGLE = '/api/quest-engine/toggle';
+  var lists = [
+    {container:'rigList', count:'rigCount', key:'ghost-quest-log-rig-v1'},
+    {container:'buildList', count:'buildCount', key:'ghost-quest-log-build-v1'},
+    {container:'week0List', count:'week0Count', key:'ghost-quest-log-week0-v1'},
+    {container:'shopList', count:'shopCount', key:'ghost-quest-log-shop-v1'}
+  ];
+
+  function loadLocal(key){ try{ return JSON.parse(localStorage.getItem(key) || '{}'); }catch(e){ return {}; } }
+  function saveLocal(key, s){ try{ localStorage.setItem(key, JSON.stringify(s)); }catch(e){} }
+
+  function wireList(cfg, remoteState){
+    var container = document.getElementById(cfg.container);
+    if(!container) return;
+    var boxes = container.querySelectorAll('input[type="checkbox"]');
+    var countEl = document.getElementById(cfg.count);
+    var live = remoteState !== null;
+    var state = live ? remoteState : loadLocal(cfg.key);
+
+    function count(){
+      var d = container.querySelectorAll('input:checked').length;
+      if(countEl) countEl.textContent = d + ' / ' + boxes.length + ' done';
+    }
+
+    boxes.forEach(function(cb){
+      var id = cb.getAttribute('data-id');
+      var val = state[id];
+      if(val === undefined && cb.hasAttribute('checked')) val = true;
+      if(val){ cb.checked = true; cb.closest('.todo').classList.add('done'); }
+      cb.addEventListener('change', function(){
+        var checked = cb.checked;
+        state[id] = checked;
+        cb.closest('.todo').classList.toggle('done', checked);
+        count();
+        if(live){
+          fetch(API_TOGGLE, {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({id: id, checked: checked})
+          }).catch(function(){ saveLocal(cfg.key, state); });
+        } else {
+          saveLocal(cfg.key, state);
+        }
+      });
+    });
+    if(!live) saveLocal(cfg.key, state);
+    count();
+  }
+
+  fetch(API_STATE).then(function(r){
+    if(!r.ok) throw new Error('no api');
+    return r.json();
+  }).then(function(remote){
+    lists.forEach(function(cfg){ wireList(cfg, remote || {}); });
+  }).catch(function(){
+    // Obsidian sync endpoint not live yet (dashboard.py needs the two routes below) — falls back to
+    // per-browser local storage, same behaviour as before this page was wired for sync.
+    lists.forEach(function(cfg){ wireList(cfg, null); });
+  });
+})();
+</script>
+
+</body>
+</html>

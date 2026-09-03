@@ -1,0 +1,27 @@
+name: dashboard-smoke
+
+# Static dashboard smoke check (Session 57, enforcing from Session 59): fails a push/PR if a
+# redesign silently deleted a `data-role` data-binding hook a page's JS depends on. This is the
+# CI-runnable SUBSET — the API-200 and JS-render checks need the live backend and run pre-deploy
+# via tests/smoke/smoke_live.py.
+#
+# S59: the pages are now version-controlled at dashboard/pages/ (a copy of the vault-served
+# originals), so this job actually ENFORCES rather than skipping. Caveat, honest: dashboard/pages/
+# is a committed mirror — the dashboard still serves the live pages from the Obsidian vault, so the
+# two must be kept in sync (a vault edit that isn't mirrored here won't be caught until it is).
+
+on:
+  push:
+    branches: [ "**" ]
+  pull_request:
+
+jobs:
+  static-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Static data-role hook check
+        run: GHOST_PAGES_DIR=dashboard/pages python3 tests/smoke/smoke_static.py

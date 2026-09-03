@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ghost — Bills</title>
+<link rel="stylesheet" href="/assets/ghost-common.css?v=59">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    color: #e6eefb;
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    min-height: 100vh;
+    padding: 18px 22px 60px;
+    font-size: 13px;
+  }
+  a { color: #9ec7ff; text-decoration: none; }
+  .glass {
+    background: rgba(18,34,62,0.42);
+    backdrop-filter: blur(16px) saturate(150%);
+    -webkit-backdrop-filter: blur(16px) saturate(150%);
+    border: 1px solid rgba(120,170,255,0.15);
+    border-radius: 12px;
+    box-shadow: 0 6px 22px rgba(0,10,30,0.4), inset 0 1px 0 rgba(200,220,255,0.07);
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+
+  /* header */
+  .head { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
+  .brand-mark { width: 26px; height: 26px; border-radius: 50%; background: radial-gradient(circle at 35% 30%, #c2ddff, #5f9cff 55%, #1f3f7a 100%); box-shadow: 0 0 12px rgba(95,140,255,0.7); flex-shrink:0; }
+  .head h1 { font-size: 17px; letter-spacing: 0.08em; color: var(--bills-title); font-family: var(--gc-serif); font-variant: small-caps; font-weight: 600; text-shadow: 0 0 12px rgba(184,209,234,0.35); }
+  .head .sub { font-size: 9px; letter-spacing: 0.14em; color: #7b90b9; text-transform: uppercase; }
+  .head .spacer { flex: 1 1 auto; }
+  .head a.back, .btn { font-size: 11px; color: var(--gc-ink); padding: 7px 13px; border-radius: var(--gc-radius); background: transparent; border: 1px solid rgba(255,255,255,0.28); cursor: pointer; font-family: var(--gc-serif); font-variant: small-caps; letter-spacing: 0.05em; }
+  .btn.primary { background: var(--gc-ink); color: #150e14; border-color: var(--gc-ink); }
+  .btn:hover, .head a.back:hover { background: rgba(255,255,255,0.08); }
+  .demo-badge { font-size: 8.5px; letter-spacing: 0.12em; background: rgba(255,190,110,0.18); color: #ffbe6e; padding: 3px 8px; border-radius: 8px; display: none; }
+
+  /* summary cards */
+  .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 10px; }
+  .card { padding: 13px 15px; }
+  .card .lbl { font-size: 9px; letter-spacing: 0.07em; color: #8aa8d8; text-transform: uppercase; margin-bottom: 7px; }
+  .card .big { font-size: 24px; font-weight: 500; color: #e3ecff; letter-spacing: 0.01em; }
+  .card .big.alert { color: #ff8fa0; }
+  .card .big.good { color: #7ee6ab; }
+  .card .note { font-size: 9.5px; color: #7b90b9; margin-top: 5px; line-height: 1.5; }
+  .cards.mini { grid-template-columns: repeat(4, 1fr); }
+  .cards.mini .card { padding: 10px 13px; }
+  .cards.mini .big { font-size: 17px; }
+
+  /* settings */
+  details.settings { margin: 10px 0; padding: 4px 15px; }
+  details.settings summary { cursor: pointer; font-size: 11px; color: #8aa8d8; text-transform: uppercase; letter-spacing: 0.06em; padding: 9px 0; list-style: none; }
+  details.settings summary::-webkit-details-marker { display: none; }
+  details.settings summary::before { content: "⚙ "; }
+  .set-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px; padding: 6px 0 14px; }
+
+  /* form fields */
+  label.f { display: flex; flex-direction: column; gap: 4px; font-size: 9.5px; color: #7b90b9; }
+  input, select, textarea { background: rgba(6,12,26,0.5); border: 1px solid rgba(120,170,255,0.18); border-radius: 8px; padding: 8px 10px; color: #e6eefb; font-size: 12px; font-family: inherit; outline: none; }
+  input:focus, select:focus, textarea:focus { border-color: rgba(95,140,255,0.5); }
+  select option { background: #0c1a33; }
+  input[type=checkbox] { width: 16px; height: 16px; accent-color: #e6dde2; }
+
+  /* table */
+  .table-card { padding: 12px 14px; }
+  .table-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .table-head .title { font-size: 11px; letter-spacing: 0.06em; color: #8aa8d8; text-transform: uppercase; }
+  .table-head .spacer { flex: 1; }
+  table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+  th, td { text-align: left; padding: 8px 9px; border-bottom: 1px solid rgba(120,170,255,0.08); }
+  th { font-size: 9px; letter-spacing: 0.05em; color: #7b90b9; text-transform: uppercase; cursor: pointer; user-select: none; white-space: nowrap; }
+  th.sortable:hover { color: #e3ecff; }
+  th .arr { color: var(--gc-ink-dim); font-size: 8px; }
+  td { color: #c3d2ec; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.overdue td { background: rgba(255,95,122,0.08); }
+  .pill { font-size: 8.5px; padding: 2px 7px; border-radius: 8px; display: inline-block; }
+  .pill.cat { background: transparent; border: 1px solid var(--gc-panel-border); color: var(--gc-ink-dim); }
+  .pill.auto { background: rgba(255,255,255,0.08); color: var(--gc-ink-dim); }
+  .pill.manual { background: transparent; border: 1px solid var(--gc-hairline); color: var(--gc-ink-faint); }
+  .pill.od { background: rgba(255,95,122,0.2); color: #ff8fa0; }
+  .pill.due { background: rgba(255,190,110,0.18); color: #ffbe6e; }
+  .row-actions { display: flex; gap: 5px; justify-content: flex-end; }
+  .mini-btn { font-size: 9.5px; padding: 4px 8px; border-radius: var(--gc-radius); background: transparent; border: 1px solid rgba(255,255,255,0.20); color: var(--gc-ink-dim); cursor: pointer; }
+  .mini-btn:hover { background: rgba(255,255,255,0.08); color: var(--gc-ink); }
+  .mini-btn.del:hover { background: rgba(255,95,122,0.25); color: #ffd0d8; }
+  .empty { text-align: center; color: #6a7c9a; padding: 26px; font-size: 12px; }
+
+  /* modal */
+  .modal-bg { display: none; position: fixed; inset: 0; background: rgba(6,12,26,0.62); z-index: 50; align-items: center; justify-content: center; padding: 20px; }
+  .modal { width: 560px; max-width: 96vw; max-height: 90vh; overflow-y: auto; padding: 20px 22px; }
+  .modal h2 { font-size: 14px; color: #e3ecff; margin-bottom: 14px; letter-spacing: 0.04em; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .grid2 .full { grid-column: 1 / -1; }
+  .anchor-note { font-size: 9px; color: #6a7c9a; grid-column: 1 / -1; margin-top: -4px; }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+  .err { color: #ff8fa0; font-size: 10.5px; min-height: 14px; margin-top: 8px; }
+  .chk-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #c3d2ec; }
+  .scroll-x { overflow-x: auto; }
+
+  @media (max-width: 900px) {
+    .cards, .cards.mini { grid-template-columns: 1fr 1fr; }
+    .grid2 { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="head">
+    <div class="brand-mark"></div>
+    <div>
+      <h1>Bills</h1>
+      <div class="sub">Ghost Command Center · <span id="curLabel">AUD</span></div>
+    </div>
+    <span class="demo-badge" id="demoBadge">DEMO</span>
+    <div class="spacer"></div>
+    <a class="back" href="ghost-dashboard-live.html">← Command Center</a>
+    <button class="btn primary" onclick="openForm()">+ Add bill</button>
+  </div>
+
+  <!-- headline summary cards -->
+  <div class="cards">
+    <div class="card glass"><div class="lbl">Monthly total</div><div class="big" id="cMonthly">—</div><div class="note" id="cMonthlyNote"></div></div>
+    <div class="card glass"><div class="lbl">Due before next payday</div><div class="big" id="cPayday">—</div><div class="note" id="cPaydayNote"></div></div>
+    <div class="card glass"><div class="lbl">Set aside this cycle</div><div class="big" id="cSetAside">—</div><div class="note" id="cSetAsideNote"></div></div>
+    <div class="card glass"><div class="lbl">Overdue</div><div class="big" id="cOverdue">—</div><div class="note" id="cOverdueNote"></div></div>
+  </div>
+
+  <!-- secondary metrics -->
+  <div class="cards mini">
+    <div class="card glass"><div class="lbl">Annual total</div><div class="big" id="cAnnual">—</div></div>
+    <div class="card glass"><div class="lbl">Due next 7 days</div><div class="big" id="cDue7">—</div><div class="note" id="cDue7Note"></div></div>
+    <div class="card glass"><div class="lbl">Due next 14 days</div><div class="big" id="cDue14">—</div><div class="note" id="cDue14Note"></div></div>
+    <div class="card glass"><div class="lbl">Due next 30 days</div><div class="big" id="cDue30">—</div><div class="note" id="cDue30Note"></div></div>
+  </div>
+
+  <!-- settings -->
+  <details class="settings glass" id="settingsBox">
+    <summary>Pay cadence &amp; settings</summary>
+    <div class="set-row">
+      <label class="f">Pay frequency
+        <select id="setPayFreq">
+          <option value="weekly">Weekly</option>
+          <option value="fortnightly">Fortnightly</option>
+          <option value="monthly">Monthly</option>
+        </select>
+      </label>
+      <label class="f">Next pay date
+        <input type="date" id="setNextPay">
+      </label>
+      <label class="f">Currency
+        <input type="text" value="AUD" disabled style="width:80px;opacity:.6;">
+      </label>
+      <button class="btn primary" onclick="saveSettings()">Save cadence</button>
+      <span class="err" id="setErr"></span>
+    </div>
+    <div class="note" style="padding-bottom:12px;">Drives “due before next payday” and the set-aside-per-cycle figure. Bills data lives only in Ghost’s local Postgres — never sent to any cloud service.</div>
+  </details>
+
+  <!-- table -->
+  <div class="table-card glass">
+    <div class="table-head">
+      <span class="title">All bills</span>
+      <span class="spacer"></span>
+      <button class="btn" onclick="loadAll()">↻ Refresh</button>
+      <button class="btn primary" onclick="openForm()">+ Add bill</button>
+    </div>
+    <div class="scroll-x">
+      <table id="billsTable">
+        <thead>
+          <tr>
+            <th class="sortable" data-k="name">Name <span class="arr" data-a="name"></span></th>
+            <th class="sortable" data-k="category_label">Category <span class="arr" data-a="category_label"></span></th>
+            <th class="sortable num" data-k="amount">Amount <span class="arr" data-a="amount"></span></th>
+            <th class="sortable" data-k="frequency">Freq <span class="arr" data-a="frequency"></span></th>
+            <th class="sortable" data-k="days_until">Next due <span class="arr" data-a="days_until"></span></th>
+            <th class="sortable num" data-k="monthly_equiv">Monthly <span class="arr" data-a="monthly_equiv"></span></th>
+            <th>Autopay</th>
+            <th>Payer</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="billsBody" data-role="bills-table"></tbody>
+      </table>
+    </div>
+    <div class="empty" id="emptyMsg" style="display:none;">No bills yet. Add your first recurring bill to start seeing the calculated views.</div>
+  </div>
+</div>
+
+<!-- add/edit modal -->
+<div class="modal-bg" id="modalBg" onclick="if(event.target===this)closeForm()">
+  <div class="modal glass">
+    <h2 id="modalTitle">Add bill</h2>
+    <div class="grid2">
+      <label class="f full">Name<input type="text" id="fName" placeholder="e.g. Electricity"></label>
+      <label class="f">Amount (AUD)<input type="number" id="fAmount" step="0.01" min="0" placeholder="0.00"></label>
+      <label class="f">Frequency<select id="fFreq" onchange="syncAnchorHint()"></select></label>
+      <label class="f">Due date<input type="date" id="fDueDate" onchange="if(this.value)document.getElementById('fDom').value=''"></label>
+      <label class="f">…or day of month<input type="number" id="fDom" min="1" max="31" placeholder="1–31" onchange="if(this.value)document.getElementById('fDueDate').value=''"></label>
+      <div class="anchor-note" id="anchorNote">Give a due date (best for weekly/quarterly/annual) or a day-of-month (best for monthly).</div>
+      <label class="f">Category<select id="fCategory"></select></label>
+      <label class="f">Payer (optional)<input type="text" id="fPayer" placeholder="e.g. shared"></label>
+      <label class="f">Last paid (optional)<input type="date" id="fLastPaid"></label>
+      <div class="chk-row"><input type="checkbox" id="fAutopay"><label for="fAutopay">On autopay</label></div>
+      <label class="f full">Notes (optional)<textarea id="fNotes" rows="2"></textarea></label>
+    </div>
+    <div class="err" id="formErr"></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeForm()">Cancel</button>
+      <button class="btn primary" id="saveBtn" onclick="saveBill()">Save bill</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const DEMO = new URLSearchParams(location.search).get("demo") === "1";
+const Q = DEMO ? "?demo=1" : "";
+let META = {frequencies:[], categories:[], currency:"AUD"};
+let BILLS = [];
+let sortKey = "days_until", sortDir = 1;
+let editId = null;
+
+const fmt = new Intl.NumberFormat("en-AU", {style:"currency", currency:"AUD"});
+function money(v){ return fmt.format(Number(v||0)); }
+function esc(s){ return (s==null?"":String(s)).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function cap(s){ return s ? s[0].toUpperCase()+s.slice(1) : s; }
+
+function dueLabel(b){
+  if(b.next_due==null) return {txt:"—", cls:""};
+  const d = b.days_until;
+  const dateTxt = new Date(b.next_due+"T00:00:00").toLocaleDateString("en-AU",{day:"numeric",month:"short"});
+  if(b.overdue) return {txt:"overdue", cls:"od", date:dateTxt};
+  if(d===0) return {txt:"today", cls:"due", date:dateTxt};
+  if(d===1) return {txt:"tomorrow", cls:"due", date:dateTxt};
+  return {txt:dateTxt+" · "+d+"d", cls: d<=7?"due":"", date:dateTxt};
+}
+
+async function loadMeta(){
+  try{
+    META = await (await fetch("/api/bill-meta",{cache:"no-store"})).json();
+    document.getElementById("curLabel").textContent = META.currency || "AUD";
+    const ff = document.getElementById("fFreq");
+    ff.innerHTML = META.frequencies.map(f=>`<option value="${f}">${cap(f)}</option>`).join("");
+    const fc = document.getElementById("fCategory");
+    fc.innerHTML = META.categories.map(c=>`<option value="${esc(c.key)}">${esc(c.label)}</option>`).join("");
+  }catch(e){ console.error("meta load failed", e); }
+}
+
+async function loadSummary(){
+  try{
+    const r = await (await fetch("/api/bills/summary"+Q,{cache:"no-store"})).json();
+    const s = r.summary; if(!s) return;
+    document.getElementById("cMonthly").textContent = money(s.monthly_total);
+    document.getElementById("cMonthlyNote").textContent = s.bill_count+" bill"+(s.bill_count===1?"":"s")+" tracked";
+    document.getElementById("cAnnual").textContent = money(s.annual_total);
+
+    const dbp = s.due_before_payday;
+    const pEl = document.getElementById("cPayday"), pN = document.getElementById("cPaydayNote");
+    if(dbp){
+      pEl.textContent = money(dbp.total);
+      pEl.className = "big" + (dbp.total>0 ? " alert" : "");
+      const pd = new Date(dbp.next_payday+"T00:00:00").toLocaleDateString("en-AU",{day:"numeric",month:"short"});
+      pN.textContent = dbp.count+" bill"+(dbp.count===1?"":"s")+" before payday ("+pd+", "+dbp.days_until_payday+"d)";
+    } else {
+      pEl.textContent = "—"; pEl.className="big";
+      pN.innerHTML = 'set a next pay date in <a onclick="document.getElementById(\'settingsBox\').open=true">settings</a>';
+    }
+
+    const sa = s.set_aside;
+    document.getElementById("cSetAside").textContent = money(sa.per_cycle);
+    document.getElementById("cSetAsideNote").textContent =
+      "per "+sa.pay_frequency+" pay · incl. "+money(sa.sinking_fund_per_cycle)+" sinking fund (quarterly/annual)";
+
+    const ov = s.overdue;
+    const oEl = document.getElementById("cOverdue"), oN = document.getElementById("cOverdueNote");
+    oEl.textContent = ov.count;
+    oEl.className = "big" + (ov.count>0 ? " alert" : " good");
+    oN.textContent = ov.count>0 ? money(ov.total)+" outstanding" : "nothing overdue";
+
+    for(const [id,key] of [["cDue7","due_7"],["cDue14","due_14"],["cDue30","due_30"]]){
+      document.getElementById(id).textContent = money(s[key].total);
+      document.getElementById(id+"Note").textContent = s[key].count+" bill"+(s[key].count===1?"":"s");
+    }
+  }catch(e){ console.error("summary failed", e); }
+}
+
+async function loadBills(){
+  try{
+    const r = await (await fetch("/api/bills"+Q,{cache:"no-store"})).json();
+    BILLS = r.bills || [];
+    document.getElementById("demoBadge").style.display = r.demo ? "inline-block" : "none";
+    renderTable();
+  }catch(e){ console.error("bills failed", e); }
+}
+
+function renderTable(){
+  const body = document.getElementById("billsBody");
+  const empty = document.getElementById("emptyMsg");
+  if(!BILLS.length){ body.innerHTML=""; empty.style.display="block"; document.querySelectorAll(".arr").forEach(a=>a.textContent=""); return; }
+  empty.style.display = "none";
+  const rows = BILLS.slice().sort((a,b)=>{
+    let x=a[sortKey], y=b[sortKey];
+    if(x==null) x = sortKey==="days_until" ? 1e9 : "";
+    if(y==null) y = sortKey==="days_until" ? 1e9 : "";
+    if(typeof x==="string") return sortDir*x.localeCompare(y);
+    return sortDir*(x-y);
+  });
+  body.innerHTML = rows.map(b=>{
+    const dl = dueLabel(b);
+    const payBtn = b.overdue || (b.days_until!=null && b.days_until<=7)
+      ? `<button class="mini-btn" onclick="markPaid(${b.id})">Paid</button>` : "";
+    return `<tr class="${b.overdue?'overdue':''}">
+      <td>${esc(b.name)}</td>
+      <td><span class="pill cat">${esc(b.category_label)}</span></td>
+      <td class="num">${money(b.amount)}</td>
+      <td>${esc(cap(b.frequency))}</td>
+      <td><span class="pill ${dl.cls}">${esc(dl.txt)}</span></td>
+      <td class="num">${money(b.monthly_equiv)}</td>
+      <td><span class="pill ${b.autopay?'auto':'manual'}">${b.autopay?'auto':'manual'}</span></td>
+      <td>${esc(b.payer||"")}</td>
+      <td><div class="row-actions">${payBtn}
+        <button class="mini-btn" onclick="openForm(${b.id})">Edit</button>
+        <button class="mini-btn del" onclick="delBill(${b.id})">Del</button></div></td>
+    </tr>`;
+  }).join("");
+  document.querySelectorAll(".arr").forEach(a=>{
+    a.textContent = a.dataset.a===sortKey ? (sortDir>0?"▲":"▼") : "";
+  });
+}
+
+document.querySelectorAll("th.sortable").forEach(th=>{
+  th.addEventListener("click",()=>{
+    const k = th.dataset.k;
+    if(sortKey===k) sortDir*=-1; else { sortKey=k; sortDir=1; }
+    renderTable();
+  });
+});
+
+/* ---- settings ---- */
+async function loadSettings(){
+  try{
+    const r = await (await fetch("/api/bill-settings"+Q,{cache:"no-store"})).json();
+    const s = r.settings || {};
+    if(s.pay_frequency) document.getElementById("setPayFreq").value = s.pay_frequency;
+    if(s.next_pay_date) document.getElementById("setNextPay").value = s.next_pay_date;
+  }catch(e){ console.error("settings load failed", e); }
+}
+async function saveSettings(){
+  const err = document.getElementById("setErr"); err.textContent="";
+  if(DEMO){ err.textContent="demo mode is read-only"; return; }
+  const body = {pay_frequency: document.getElementById("setPayFreq").value,
+                next_pay_date: document.getElementById("setNextPay").value || null};
+  try{
+    const r = await (await fetch("/api/bill-settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})).json();
+    if(!r.ok){ err.textContent = r.error||"save failed"; return; }
+    err.style.color="#7ee6ab"; err.textContent="saved ✓"; setTimeout(()=>{err.textContent="";err.style.color="";},1800);
+    loadSummary();
+  }catch(e){ err.textContent="save failed: "+e; }
+}
+
+/* ---- form ---- */
+function syncAnchorHint(){
+  const f = document.getElementById("fFreq").value;
+  const dom = document.getElementById("fDom"), dd = document.getElementById("fDueDate");
+  const note = document.getElementById("anchorNote");
+  if(f==="monthly"){ note.textContent="Monthly bills: a day-of-month (1–31) is easiest. A due date also works."; }
+  else { note.textContent="For "+f+" bills, set a due date (its anchor). Day-of-month is treated as this month’s anchor."; }
+}
+function openForm(id){
+  editId = (typeof id==="number") ? id : null;
+  document.getElementById("formErr").textContent = "";
+  document.getElementById("modalTitle").textContent = editId ? "Edit bill" : "Add bill";
+  const b = editId ? BILLS.find(x=>x.id===editId) : null;
+  document.getElementById("fName").value = b ? b.name : "";
+  document.getElementById("fAmount").value = b ? b.amount : "";
+  document.getElementById("fFreq").value = b ? b.frequency : "monthly";
+  document.getElementById("fDueDate").value = b && b.due_date ? b.due_date : "";
+  document.getElementById("fDom").value = b && b.day_of_month ? b.day_of_month : "";
+  document.getElementById("fCategory").value = b ? b.category : "bills_utilities";
+  document.getElementById("fPayer").value = b ? b.payer : "";
+  document.getElementById("fLastPaid").value = b && b.last_paid_date ? b.last_paid_date : "";
+  document.getElementById("fAutopay").checked = b ? b.autopay : false;
+  document.getElementById("fNotes").value = b ? b.notes : "";
+  syncAnchorHint();
+  document.getElementById("modalBg").style.display = "flex";
+  document.getElementById("fName").focus();
+}
+function closeForm(){ document.getElementById("modalBg").style.display = "none"; }
+
+async function saveBill(){
+  const err = document.getElementById("formErr"); err.textContent="";
+  if(DEMO){ err.textContent="demo mode is read-only"; return; }
+  const payload = {
+    name: document.getElementById("fName").value.trim(),
+    amount: document.getElementById("fAmount").value,
+    frequency: document.getElementById("fFreq").value,
+    due_date: document.getElementById("fDueDate").value || null,
+    day_of_month: document.getElementById("fDom").value || null,
+    category: document.getElementById("fCategory").value,
+    payer: document.getElementById("fPayer").value.trim(),
+    last_paid_date: document.getElementById("fLastPaid").value || null,
+    autopay: document.getElementById("fAutopay").checked,
+    notes: document.getElementById("fNotes").value.trim(),
+  };
+  const btn = document.getElementById("saveBtn"); btn.disabled = true;
+  try{
+    const url = editId ? "/api/bills/"+editId : "/api/bills";
+    const method = editId ? "PUT" : "POST";
+    const r = await (await fetch(url,{method,headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)})).json();
+    if(!r.ok){ err.textContent = r.error||"save failed"; btn.disabled=false; return; }
+    closeForm(); await loadAll();
+  }catch(e){ err.textContent = "save failed: "+e; }
+  btn.disabled = false;
+}
+
+async function delBill(id){
+  const b = BILLS.find(x=>x.id===id);
+  if(!confirm("Delete “"+(b?b.name:("#"+id))+"”? This can’t be undone.")) return;
+  try{
+    const r = await (await fetch("/api/bills/"+id,{method:"DELETE"})).json();
+    if(!r.ok){ alert(r.error||"delete failed"); return; }
+    await loadAll();
+  }catch(e){ alert("delete failed: "+e); }
+}
+
+async function markPaid(id){
+  const b = BILLS.find(x=>x.id===id);
+  if(!confirm("Mark “"+(b?b.name:("#"+id))+"” as paid today?")) return;
+  try{
+    const r = await (await fetch("/api/bills/"+id+"/paid",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({})})).json();
+    if(!r.ok){ alert(r.error||"failed"); return; }
+    await loadAll();
+  }catch(e){ alert("failed: "+e); }
+}
+
+async function loadAll(){ await Promise.all([loadBills(), loadSummary()]); }
+
+document.addEventListener("keydown", e=>{ if(e.key==="Escape") closeForm(); });
+
+(async function init(){
+  if(DEMO) document.getElementById("demoBadge").style.display="inline-block";
+  await loadMeta();
+  await loadSettings();
+  await loadAll();
+})();
+</script>
+</body>
+</html>
