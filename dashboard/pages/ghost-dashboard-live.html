@@ -1,0 +1,909 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Ghost Command Center — live</title>
+<!-- Shared design tokens (S57), served same-origin from /assets. Additive: only defines
+     CSS custom properties, styles no elements, so it can't break the page. -->
+<link rel="stylesheet" href="/assets/ghost-common.css?v=59">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    color: #f3e6ee;
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .glass {
+    background: rgba(50,16,36,0.42);
+    backdrop-filter: blur(16px) saturate(150%);
+    -webkit-backdrop-filter: blur(16px) saturate(150%);
+    border: 1px solid rgba(255,150,200,0.15);
+    border-radius: 12px;
+    box-shadow: 0 6px 22px rgba(30,0,20,0.4), inset 0 1px 0 rgba(255,200,225,0.07);
+  }
+
+  .app { display: flex; height: 100vh; }
+
+  .sidebar { width: 178px; flex: 0 0 auto; display: flex; flex-direction: column; padding: 14px 10px; gap: 14px; border-right: 1px solid rgba(255,150,200,0.1); }
+  .brand { display: flex; align-items: center; gap: 8px; padding: 0 4px; }
+  .brand-mark { width: 22px; height: 22px; border-radius: 50%; background: radial-gradient(circle at 35% 30%, #ffc2e0, #ff5fa8 55%, #7a1f52 100%); box-shadow: 0 0 10px rgba(255,95,168,0.7); flex-shrink:0; }
+  .brand-text b { font-size: 13px; letter-spacing: 0.1em; color: var(--ghost-title); display:block; text-shadow: 0 0 12px rgba(234,184,192,0.4); }
+  .brand-text span { font-size: 7.5px; letter-spacing: 0.12em; color: #a97b95; }
+  .nav-list { display: flex; flex-direction: column; gap: 1px; flex: 1 1 auto; overflow-y: auto; }
+  .nav-item { display: flex; align-items: center; gap: 8px; padding: 6.5px 8px; border-radius: 8px; font-size: 11px; color: #b98fa8; }
+  .nav-item .ic { width: 13px; text-align: center; font-size: 10.5px; flex-shrink:0; }
+  .nav-item.active { background: rgba(255,255,255,0.10); color: var(--gc-ink); }
+  .nav-item .count { margin-left: auto; font-size: 9px; color: #8a6a7c; }
+
+  .presence { text-align: center; padding: 10px 8px; }
+  .presence .lbl { font-size: 8.5px; letter-spacing: 0.1em; color: #a97b95; text-transform: uppercase; margin-bottom: 6px; }
+  .wave { display: flex; align-items: center; justify-content: center; gap: 2px; height: 22px; margin-bottom: 6px; }
+  .wave span { width: 2.5px; border-radius: 2px; background: #ff8fc7; animation: wv 1.2s ease-in-out infinite; }
+  @keyframes wv { 0%,100% { height: 4px; opacity: 0.5; } 50% { height: 18px; opacity: 1; } }
+  .presence-orb { width: 34px; height: 34px; border-radius: 50%; margin: 0 auto 6px; background: radial-gradient(circle at 38% 32%, #fff, #ffc2e0 22%, #ff5fa8 55%, #5c1740 100%); box-shadow: 0 0 16px rgba(255,95,168,0.7); animation: presenceBreathe 3.4s ease-in-out infinite; }
+  @keyframes presenceBreathe { 0%,100% { transform: scale(1); } 50% { transform: scale(1.1); } }
+  .presence .status-txt { font-size: 10px; color: #dcc3d3; }
+  .quiet-btn { margin-top: auto; flex: 0 0 auto; border-radius: 20px; padding: 7px; text-align: center; font-size: 10px; color: #dcc3d3; background: rgba(255,150,200,0.06); border: 1px solid rgba(255,150,200,0.14); }
+
+  .main-col { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; padding: 10px 14px 8px; gap: 7px; }
+
+  .topbar { flex: 0 0 auto; display: flex; align-items: center; gap: 12px; }
+  .status-pill { display: flex; align-items: center; gap: 6px; padding: 6px 12px; font-size: 10.5px; color: #dcc3d3; }
+  .status-pill .dot { width: 6px; height: 6px; border-radius: 50%; background: #7ee6ab; box-shadow: 0 0 6px #7ee6ab; }
+  .status-pill .dot.err { background: #ff5f7a; box-shadow: 0 0 6px #ff5f7a; }
+  .clock { text-align: center; }
+  .clock .d { font-size: 9px; color: #a97b95; }
+  .clock .t { font-size: 13px; color: #ff9ecb; font-weight: 500; letter-spacing: 0.03em; }
+  .search-box { flex: 1 1 auto; padding: 6px 12px; font-size: 10.5px; color: #8a6a7c; }
+  .icon-btn { width: 30px; height: 30px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #c9a4bb; flex-shrink: 0; }
+  .profile { display: flex; align-items: center; gap: 7px; padding: 5px 10px 5px 5px; flex-shrink: 0; }
+  .profile .av { width: 22px; height: 22px; border-radius: 50%; background: linear-gradient(135deg,#ff8fc7,#7a1f52); flex-shrink:0; }
+  .profile .name { font-size: 10.5px; color: #ffe3f1; }
+  .profile .role { font-size: 8px; color: #a97b95; }
+
+  .content { flex: 1 1 auto; min-height: 0; display: grid; grid-template-rows: 1.5fr 1fr 0.82fr auto; gap: 7px; }
+  .row4 { display: grid; grid-template-columns: 1fr; gap: 7px; }
+  /* Momentum card (S57). Uses the shared design tokens (var(--accent) etc.) with hard fallbacks
+     so it renders even if ghost-common.css hasn't loaded. */
+  .mom-wrap { display: grid; grid-template-columns: auto auto 1fr; align-items: center; gap: 14px; padding: 2px 4px; }
+  .mom-num { font-size: 30px; font-weight: 700; color: var(--accent, #ff5fa8); line-height: 1; display: flex; align-items: baseline; }
+  .mom-num .mom-pct { font-size: 13px; opacity: .6; margin-left: 2px; }
+  .mom-meta { font-size: 10px; color: #b98fa8; }
+  .mom-spark { width: 100%; height: 32px; align-self: center; }
+  .mom-buckets { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; font-size: 9px; color: #8a6a7c; }
+  .mom-buckets .mb { padding: 1px 6px; border-radius: var(--gc-radius); background: transparent; border: 1px solid var(--gc-hairline); }
+  .row1 { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1.1fr) 250px; gap: 7px; min-height: 0; }  /* S42: Habits enlarged in the prominent left slot */
+  .row2 { display: grid; grid-template-columns: 1fr 1.15fr 1fr; gap: 7px; min-height: 0; }
+  .row3 { display: grid; grid-template-columns: 1fr 1fr 1.2fr; gap: 7px; min-height: 0; }
+
+  .card { padding: 9px 11px; display: flex; flex-direction: column; min-height: 0; }
+  .card-title { font-size: 10px; color: var(--gc-ink-dim); font-family: var(--gc-serif); font-variant: small-caps; letter-spacing: 0.06em; margin-bottom: 6px; font-weight: 500; flex: 0 0 auto; display:flex; justify-content:space-between; }
+  .card-title .live { font-size: 7.5px; background: rgba(126,230,171,0.16); color: #7ee6ab; padding: 1px 5px; border-radius: 8px; letter-spacing: 0.05em; }
+  .card-title .live.stale { background: rgba(255,95,122,0.18); color: #ff8fa0; }
+  .scroll-list { overflow-y: auto; min-height: 0; flex: 1 1 auto; }
+  .scroll-list::-webkit-scrollbar { width: 4px; }
+  .scroll-list::-webkit-scrollbar-thumb { background: rgba(255,150,200,0.25); border-radius: 3px; }
+
+  .ov-row { display: flex; align-items: center; gap: 7px; padding: 4px 0; font-size: 10.5px; color: #dcc3d3; }
+  .ov-ic { width: 20px; height: 20px; border-radius: 6px; background: rgba(255,150,200,0.12); display: flex; align-items: center; justify-content: center; font-size: 9px; flex-shrink: 0; }
+  .ov-row .sub { font-size: 8.5px; color: #8a6a7c; display: block; }
+  .ov-row .main-line { display:flex; flex-direction:column; }
+  .ov-row.warn .sub { color: #ffbe6e; }
+
+  .feed-row { display: flex; gap: 6px; padding: 4.5px 0; border-bottom: 1px solid rgba(255,150,200,0.06); font-size: 10px; color: #dcc3d3; }
+  .feed-row:last-child { border-bottom: none; }
+  .feed-tag { font-size: 7px; padding: 1px 5px; border-radius: 6px; flex-shrink: 0; height: fit-content; font-weight: 600; letter-spacing: 0.03em; }
+  .feed-tag.nudge { background: rgba(255,190,110,0.18); color: #ffbe6e; }
+  .feed-tag.message { background: rgba(120,200,255,0.16); color: #8fc4ff; }
+  .feed-tag.done { background: rgba(126,230,171,0.16); color: #7ee6ab; }
+
+  .stage { position: relative; min-height: 0; }
+  .trace-svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .trace { fill: none; stroke: #ff5fa8; stroke-width: 1.4; stroke-linecap: round; opacity: 0.15; filter: drop-shadow(0 0 0px rgba(255,95,168,0)); animation: traceTwinkle 3s ease-in-out infinite; }
+  .trace.thin { stroke-width: 0.8; stroke: #e987c0; }
+  .trace.cross { stroke-width: 0.6; stroke: #c96fa0; animation-name: crossTwinkle; }
+  .grid-line { stroke: rgba(255,150,200,0.04); stroke-width: 1; }
+  @keyframes traceTwinkle { 0%,100% { opacity:0.12; filter: drop-shadow(0 0 0px rgba(255,95,168,0)); } 50% { opacity:0.95; filter: drop-shadow(0 0 5px rgba(255,95,168,0.85)); } }
+  @keyframes crossTwinkle { 0%,100% { opacity:0.05; } 50% { opacity:0.38; } }
+  .node { fill: #ff8fc7; opacity: 0.3; animation: nodeTwinkle 3s ease-in-out infinite; }
+  .node-ring { fill: none; stroke: #ff5fa8; stroke-width: 1; opacity: 0.25; animation: nodeTwinkle 3s ease-in-out infinite; }
+  .chip { fill: rgba(255,255,255,0.06); stroke: #b9adb4; stroke-width: 1; opacity: 0.3; animation: nodeTwinkle 3.2s ease-in-out infinite; }
+  @keyframes nodeTwinkle { 0%,100% { opacity:0.18; } 50% { opacity:1; } }
+
+  .dial-wrap { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); width: min(58vh, 92%); aspect-ratio: 1/1; z-index: 3; }
+  .dial-svg { width: 100%; height: 100%; overflow: visible; }
+  .dial-bezel { fill: none; stroke: rgba(255,150,200,0.35); stroke-width: 1; }
+  .dial-tick { stroke: rgba(255,150,200,0.4); stroke-width: 1; }
+  .dial-tick.major { stroke: rgba(255,180,215,0.75); stroke-width: 1.4; }
+  .dial-arc { fill: none; stroke: #ff5fa8; stroke-width: 2.1; stroke-linecap: round; animation: arcTwinkle 4s ease-in-out infinite; }
+  @keyframes arcTwinkle { 0%,100% { opacity: 0.42; } 50% { opacity: 1; } }
+  .dial-inner-ring { fill: none; stroke: rgba(255,150,200,0.3); stroke-width: 1; stroke-dasharray: 2 4; animation: spin 40s linear infinite; transform-origin: 110px 110px; }
+  .dial-inner-ring2 { fill: none; stroke: rgba(255,150,200,0.22); stroke-width: 1; stroke-dasharray: 1 3; animation: spin 26s linear infinite reverse; transform-origin: 110px 110px; }
+  .rune-orbit { animation: spin 70s linear infinite; transform-origin: 110px 110px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .orbit-motes { animation: spin 18s linear infinite; transform-origin: 110px 110px; }
+  .orbit-motes.rev { animation-direction: reverse; animation-duration: 26s; }
+  .mote { fill: #ffc2e0; filter: drop-shadow(0 0 5px rgba(255,150,200,0.9)); }
+  .dial-bracket { stroke: #ff8fc7; stroke-width: 1.4; fill: none; opacity: 0.7; }
+  .dial-crosshair { stroke: rgba(255,150,200,0.5); stroke-width: 1.1; }
+  .dial-waypoint { fill: #ffb3d9; animation: nodeTwinkle 2.8s ease-in-out infinite; }
+  .rune-main { stroke: #ffb3d9; stroke-width: 3; stroke-linecap: square; fill: none; filter: drop-shadow(0 0 9px rgba(255,95,168,0.9)); animation: runePulse 3.6s ease-in-out infinite; }
+  .rune-tiny { stroke: #ffbcdb; stroke-width: 2.2; stroke-linecap: square; fill: none; opacity: 0.85; filter: drop-shadow(0 0 5px rgba(255,120,190,0.8)); animation: runeRingTwinkle 3.4s ease-in-out infinite; }
+  .rune-ring-track { fill: none; stroke: rgba(255,150,200,0.18); stroke-width: 1; stroke-dasharray: 1 5; }
+  @keyframes runeRingTwinkle { 0%,100% { opacity: 0.5; } 50% { opacity: 1; } }
+  @keyframes runePulse { 0%,100% { opacity: 0.6; } 50% { opacity: 1; filter: drop-shadow(0 0 12px rgba(255,95,168,1)); } }
+  .dial-label { fill: #ffe3f1; font-size: 9px; letter-spacing: 0.2em; font-family: -apple-system, sans-serif; font-weight: 600; }
+  .dial-sub { fill: #a97b95; font-size: 5.5px; letter-spacing: 0.15em; }
+
+  .habit-row, .todo-row { display: flex; align-items: center; gap: 6px; padding: 3px 0; font-size: 10px; color: #dcc3d3; border-bottom: 1px solid rgba(255,150,200,0.06); }
+  .habit-row:last-child, .todo-row:last-child { border-bottom: none; }
+  .htype { font-size: 8px; width: 12px; text-align: center; border-radius: 3px; flex-shrink: 0; }
+  .htype.positive { background: transparent; color: var(--gc-ink-dim); }
+  .htype.negative { background: transparent; color: var(--gc-ink-dim); }
+  .htype.both { background: transparent; color: var(--gc-ink-dim); }
+  .todo-p { font-size: 7px; padding: 0 4px; border-radius: 3px; flex-shrink: 0; font-weight: 600; }
+  .todo-p.high { background: transparent; border: 1px solid var(--gc-panel-border); color: var(--gc-ink-dim); }
+  .todo-p.med { background: transparent; border: 1px solid var(--gc-hairline); color: var(--gc-ink-dim); }
+  .todo-p.low { background: transparent; border: 1px solid var(--gc-hairline); color: var(--gc-ink-faint); }
+  .streak-pill { margin-left: auto; font-size: 8px; background: transparent; border: 1px solid var(--ghost-title); color: var(--ghost-title); padding: 1px 6px; border-radius: var(--gc-radius); }
+  .streak-pill.risk { background: rgba(255,95,122,0.18); color: #ff8fa0; }
+  .streak-pill.done { background: rgba(126,230,171,0.16); color: #7ee6ab; }
+
+  .tl-axis { display: flex; justify-content: space-between; font-size: 8px; color: #a97b95; margin-bottom: 3px; }
+  .tl-track { position: relative; height: 16px; border-radius: 5px; background: rgba(255,150,200,0.04); border: 1px solid rgba(255,150,200,0.1); flex-shrink:0; }
+  .tl-event { position: absolute; top: 50%; transform: translate(-50%,-50%); width: 6px; height: 6px; border-radius: 50%; border: 1.5px solid #1a0812; }
+  .tl-event.nudge { background: #e29a4f; } .tl-event.done { background: #7ee6ab; } .tl-event.message { background: #ff8fc7; }
+  .mission-row { display: flex; gap: 7px; align-items: baseline; font-size: 9.5px; color: #dcc3d3; padding: 3px 0; border-bottom: 1px dashed rgba(255,150,200,0.06); }
+  .mission-row:last-child { border-bottom: none; }
+  .mission-row .time { color: #a97b95; width: 40px; flex-shrink: 0; font-size: 8.5px; }
+  .mission-row .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .mon-gauges { display: flex; justify-content: space-around; align-items: center; flex: 1; }
+  .mon-gauge { text-align: center; }
+  .mon-ring { width: 48px; height: 48px; border-radius: 50%; position: relative; margin: 0 auto 4px; }
+  .mon-ring .mask { position: absolute; inset: 4px; border-radius: 50%; background: #1c0916; display: flex; align-items: center; justify-content: center; font-size: 9.5px; color: #ffe3f1; }
+  .mon-gauge .lbl { font-size: 8px; color: #a97b95; }
+
+  .bud-row { display: flex; justify-content: space-between; font-size: 10px; padding: 2px 0; color: #dcc3d3; }
+  .bud-row .over { color: #ff8fa0; }
+  .bud-bar { height: 3px; border-radius: 2px; background: rgba(255,150,200,0.1); margin-top: 1px; overflow: hidden; margin-bottom: 3px; }
+  .bud-bar span { display: block; height: 100%; background: #e26fa8; }
+  .bud-bar span.over { background: #ff5f7a; }
+
+  .int-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; flex: 1; align-content: start; }
+  .int-item { display: flex; align-items: center; gap: 6px; padding: 5px 7px; border-radius: 8px; background: rgba(255,150,200,0.05); font-size: 9.5px; color: #dcc3d3; }
+  .int-dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
+  .int-dot.on { background: #7ee6ab; box-shadow: 0 0 5px #7ee6ab; }
+  .int-dot.off { background: #ff5f7a; box-shadow: 0 0 5px #ff5f7a; }
+  .int-item .lab { display: flex; flex-direction: column; }
+  .int-item .lab small { font-size: 7.5px; color: #7ee6ab; }
+
+  .dock { flex: 0 0 auto; display: flex; align-items: center; justify-content: center; gap: 10px; padding-top: 2px; }
+  .dock-chip { padding: 5px 12px; font-size: 9.5px; color: #b98fa8; display: flex; align-items: center; gap: 5px; }
+  .talk-pill { display: flex; align-items: center; gap: 10px; padding: 8px 22px; border-radius: 24px; background: var(--gc-panel-bg); border: 1px solid var(--gc-panel-border); box-shadow: none; }
+  .talk-pill .mini-wave { display: flex; gap: 2px; align-items: center; height: 14px; }
+  .talk-pill .mini-wave span { width: 2px; border-radius: 2px; background: var(--gc-ink-dim); animation: wv 1.1s ease-in-out infinite; }
+  .talk-pill .txt b { font-size: 11px; color: var(--gc-ink); display: block; letter-spacing: 0.05em; font-family: var(--gc-serif); font-variant: small-caps; }
+  .talk-pill .txt span { font-size: 8px; color: #dcc3d3; }
+
+  @media (max-width: 1150px) {
+    html, body { overflow: auto; }
+    .app { height: auto; flex-direction: column; }
+    .sidebar { width: 100%; flex-direction: row; }
+    .content { display: block; }
+    .row1, .row2, .row3, .row4 { grid-template-columns: 1fr; margin-bottom: 8px; }
+    .stage { height: 320px; }
+  }
+  /* Chat overlay (Ghost + Cephalopod) */
+  .chat-overlay { display:none; position:fixed; inset:0; background:rgba(10,3,8,0.55); z-index:100; align-items:flex-end; justify-content:flex-end; padding:20px; }
+  .chat-panel { width:380px; max-width:92vw; height:520px; max-height:82vh; display:flex; flex-direction:column; border-radius:16px; overflow:hidden; }
+  .chat-head { display:flex; align-items:center; justify-content:space-between; padding:10px 14px; border-bottom:1px solid rgba(255,150,200,0.12); }
+  .chat-tabs { display:flex; gap:6px; }
+  .chat-tab { font-size:11px; letter-spacing:.04em; padding:4px 12px; border-radius:10px; cursor:pointer; color:#a97b95; background:rgba(255,150,200,0.06); }
+  .chat-tab.on { color:#ffe3f1; background:rgba(255,95,168,0.22); }
+  .chat-x { cursor:pointer; color:#a97b95; font-size:20px; line-height:1; padding:0 4px; }
+  .chat-msgs { flex:1 1 auto; overflow-y:auto; padding:12px 14px; display:flex; flex-direction:column; gap:7px; font-size:12px; }
+  .cmsg { max-width:82%; padding:7px 11px; border-radius:12px; line-height:1.4; white-space:pre-wrap; word-wrap:break-word; }
+  .cmsg.you { align-self:flex-end; background:rgba(120,200,255,0.16); color:#dff0ff; }
+  .cmsg.bot { align-self:flex-start; background:rgba(255,95,168,0.16); color:#ffe3f1; }
+  .cmsg.sys { align-self:center; color:#8a6a7c; font-size:10.5px; background:none; }
+  .chat-input-row { display:flex; gap:8px; padding:10px 12px; border-top:1px solid rgba(255,150,200,0.12); }
+  .chat-input { flex:1 1 auto; background:rgba(10,3,8,0.5); border:1px solid rgba(255,150,200,0.18); border-radius:10px; padding:9px 12px; color:#f3e6ee; font-size:12px; outline:none; }
+  textarea.chat-input { resize:none; font-family:inherit; line-height:1.35; max-height:120px; }
+  .sidebar.collapsed { display:none; }  /* S42: hamburger toggle */
+  .prop-row { display:flex; justify-content:space-between; align-items:flex-start; gap:6px; padding:5px 4px; border-bottom:1px solid rgba(255,150,200,0.06); font-size:11px; }
+  .prop-apply { background:rgba(126,230,171,0.16); color:#7ee6ab; border:none; border-radius:7px; padding:3px 9px; font-size:10px; cursor:pointer; flex-shrink:0; }
+  #btnBell { position:relative; }
+  .bell-badge { position:absolute; top:-3px; right:-3px; background:#ff5f7a; color:#fff; font-size:8px; min-width:13px; height:13px; border-radius:7px; display:none; align-items:center; justify-content:center; padding:0 2px; }
+  .chat-send { background:rgba(255,95,168,0.28); color:#ffe3f1; border:none; border-radius:10px; padding:0 16px; cursor:pointer; font-size:12px; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <div class="sidebar glass" id="sidebar" style="border-radius:0;">
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div class="brand-text"><b>GHOST</b><span>COMMAND CENTER</span></div>
+    </div>
+    <div class="nav-list">
+      <div class="nav-item active" data-role="nav-item"><span class="ic">◈</span>Command Center</div>
+      <div class="nav-item" data-role="nav-item"><span class="ic">✦</span>Habits<span class="count" id="navHabitCount">–</span></div>
+      <div class="nav-item" data-role="nav-item"><span class="ic">☑</span>ToDos<span class="count" id="navTodoCount">–</span></div>
+      <div class="nav-item" data-role="nav-item"><span class="ic">◷</span>Timeline</div>
+      <div class="nav-item" data-role="nav-item"><span class="ic">◎</span>Budget</div>
+      <a class="nav-item" data-role="nav-item" href="ghost-bills.html"><span class="ic">▤</span>Bills</a>
+      <div class="nav-item" data-role="nav-item"><span class="ic">◐</span>Nutrition</div>
+      <div class="nav-item" data-role="nav-item"><span class="ic">♜</span>Vitals</div>
+      <div class="nav-item" data-role="nav-item"><span class="ic">⚑</span>Escalation<span class="count" id="navEscCount">–</span></div>
+      <div class="nav-item" data-role="nav-item"><span class="ic">⛓</span>Integrations</div>
+      <div class="nav-item" data-role="nav-item"><span class="ic">✉</span>Chats</div>
+      <div style="height:1px;background:rgba(255,150,200,0.1);margin:5px 4px;"></div>
+      <a class="nav-item" data-role="nav-item" href="ghost-horoscope.html"><span class="ic">☾</span>Horoscope</a>
+      <a class="nav-item" data-role="nav-item" href="ghost-tarot.html"><span class="ic">🂠</span>Tarot</a>
+      <a class="nav-item" data-role="nav-item" href="ghost-quest-log.html"><span class="ic">🧭</span>Quest Engine</a>
+    </div>
+    <div class="presence glass">
+      <div class="lbl">Presence</div>
+      <div class="presence-orb"></div>
+      <div class="wave"><span style="animation-delay:0s"></span><span style="animation-delay:0.15s"></span><span style="animation-delay:0.3s"></span><span style="animation-delay:0.1s"></span><span style="animation-delay:0.25s"></span></div>
+      <div class="status-txt" id="presenceTxt">Connecting…</div>
+    </div>
+    <div class="quiet-btn glass">◐ Quiet Hours</div>
+  </div>
+
+  <div class="main-col">
+
+    <div class="topbar">
+      <div class="status-pill glass"><span class="dot" id="statusDot"></span><span id="statusTxt">GHOST STATUS · CONNECTING</span></div>
+      <div class="clock glass" style="padding:5px 16px;"><div class="d" id="clockDate">—</div><div class="t" id="clockTime">—</div></div>
+      <input class="search-box glass" id="searchBox" placeholder="🔍 Search habits & todos…" oninput="applySearch()" autocomplete="off" style="border:none;outline:none;color:#f3e6ee;">
+      <div class="icon-btn glass" id="btnMenu" title="Toggle sidebar" onclick="document.getElementById('sidebar').classList.toggle('collapsed')">▦</div>
+      <div class="icon-btn glass" id="btnBell" title="Open chat / respond to nudges" onclick="openChat('ghost')">🔔<span id="bellBadge" class="bell-badge"></span></div>
+      <div class="icon-btn glass" id="btnSettings" title="Toggle demo mode" onclick="location.search = location.search.indexOf('demo=1')>=0 ? '' : '?demo=1'">⚙</div>
+      <div class="profile glass"><div class="av"></div><div><div class="name">Lea</div><div class="role">Operator</div></div></div>
+    </div>
+
+    <div class="content">
+
+      <!-- S42 layout: Habits enlarged in the top-left slot; Ghost Core Overview moved down
+           to row2; Live Feed removed (redundant with Mission Timeline); Self-Code Proposals
+           restored in the freed top-right slot. -->
+      <div class="row1">
+        <div class="card glass" id="cardHabits">
+          <div class="card-title">Habits — Habitica</div>
+          <div class="scroll-list" id="habitsList" data-role="habits"></div>
+        </div>
+
+        <div class="card glass" style="padding:6px;">
+          <div class="stage">
+            <svg class="trace-svg" id="traceSvg" viewBox="0 0 800 800" preserveAspectRatio="xMidYMid meet"></svg>
+            <div class="dial-wrap"><svg class="dial-svg" id="dialSvg" viewBox="-50 -50 320 320"></svg></div>
+          </div>
+        </div>
+
+        <div class="card glass" id="cardProposals">
+          <div class="card-title">Self-Code Proposals<span class="count" id="propCount" style="margin-left:auto;font-size:9px;color:#8a6a7c;"></span></div>
+          <div class="scroll-list" id="proposalList"></div>
+        </div>
+      </div>
+
+      <div class="row2">
+        <div class="card glass" id="cardOverview">
+          <div class="card-title">Ghost Core Overview</div>
+          <div id="overviewList"></div>
+        </div>
+
+        <div class="card glass" id="cardTimeline">
+          <div class="card-title">Mission Timeline<span style="font-size:8px;color:#8a6a7c;" id="tlDate">Today</span></div>
+          <div class="tl-axis"><span>6a</span><span>9a</span><span>12p</span><span>3p</span><span>6p</span><span>9p</span></div>
+          <div class="tl-track" id="tlTrack" style="margin-bottom:6px;"></div>
+          <div class="scroll-list" id="missionList"></div>
+        </div>
+
+        <div class="card glass" id="cardTodos">
+          <div class="card-title">ToDos — Habitica</div>
+          <div class="scroll-list" id="todosList" data-role="todos"></div>
+        </div>
+      </div>
+
+      <div class="row3">
+        <div class="card glass">
+          <div class="card-title">System Monitor</div>
+          <div class="mon-gauges" id="monGauges"></div>
+        </div>
+
+        <div class="card glass">
+          <div class="card-title">Budget This Month</div>
+          <div class="scroll-list" id="budgetList" data-role="budget"></div>
+        </div>
+
+        <div class="card glass">
+          <div class="card-title">Integrations</div>
+          <div class="int-grid" id="intGrid"></div>
+        </div>
+      </div>
+
+      <!-- Momentum signal (Session 57): "am I actually moving, over time" — one number + sparkline -->
+      <div class="row4">
+        <div class="card glass" id="cardMomentum" data-role="momentum">
+          <div class="card-title">Momentum<span style="font-size:8px;color:#8a6a7c;margin-left:auto;" data-role="momentum-window">last 60 days</span></div>
+          <div class="mom-wrap">
+            <div class="mom-num"><span data-role="momentum-ratio" id="momRatio">–</span><span class="mom-pct">%</span></div>
+            <div class="mom-meta"><span data-role="momentum-counts" id="momCounts">closed – / open –</span></div>
+            <svg class="mom-spark" data-role="momentum-sparkline" id="momSpark" viewBox="0 0 240 32" preserveAspectRatio="none"></svg>
+            <div class="mom-buckets" data-role="momentum-buckets" id="momBuckets"></div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="dock">
+      <div class="dock-chip glass" id="dockStreak">✦ — day streak</div>
+      <div class="talk-pill" onclick="openChat('ghost')" style="cursor:pointer">
+        <div class="mini-wave"><span style="height:5px;animation-delay:0s"></span><span style="height:11px;animation-delay:.1s"></span><span style="height:7px;animation-delay:.2s"></span><span style="height:13px;animation-delay:.15s"></span><span style="height:5px;animation-delay:.25s"></span></div>
+        <div class="txt"><b>OPEN GHOST CHAT</b><span id="dockSub">watching</span></div>
+      </div>
+      <div class="dock-chip glass" id="dockEscalation">⚑ none active</div>
+    </div>
+
+  </div>
+</div>
+
+<div id="chatOverlay" class="chat-overlay" onclick="if(event.target===this)closeChat()">
+  <div class="chat-panel glass">
+    <div class="chat-head">
+      <div class="chat-tabs">
+        <span id="tabGhost" class="chat-tab on" onclick="setChatTab('ghost')">Ghost</span>
+        <span id="tabCeph" class="chat-tab" onclick="setChatTab('cephalopod')">Cephalopod</span>
+      </div>
+      <span class="chat-x" onclick="closeChat()">×</span>
+    </div>
+    <div class="chat-msgs" id="chatMsgs"></div>
+    <div class="chat-input-row">
+      <textarea id="chatInput" class="chat-input" placeholder="message ghost… (Shift+Enter for newline)" rows="1" autocomplete="off"
+             onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat();}"></textarea>
+      <button class="chat-send" onclick="sendChat()">Send</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* Demo mode (Session 54): when the URL carries ?demo=1 (the ⚙ toggle), propagate it to
+   EVERY /api and /webhook call so the server returns placeholder data. One fetch wrapper
+   instead of touching each call site — the masking is server-side; this just asks for it. */
+const DEMO = new URLSearchParams(location.search).get('demo') === '1';
+(function(){
+  const _fetch = window.fetch;
+  window.fetch = function(u, opt){
+    try{
+      if(DEMO && typeof u === 'string' && (u.indexOf('/api')===0 || u.indexOf('/webhook')===0)){
+        u += (u.indexOf('?')>=0 ? '&' : '?') + 'demo=1';
+      }
+    }catch(e){}
+    return _fetch.call(this, u, opt);
+  };
+})();
+/* ====== CONFIG ======
+   Relative path — this file is meant to be served BY the same FastAPI app
+   that serves /api/command-center, so no hardcoded host/IP is needed and
+   it survives the Tailscale IP changing. If you ever open this as a local
+   file instead of via the served route, change this back to a full URL. */
+const API_URL = "/api/command-center";
+const POLL_MS = 45000; // 45s, within the 30-60s spec
+/* ==================== */
+
+function esc(s){ return (s==null?"":String(s)).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function pad(n){ return n<10?"0"+n:n; }
+
+function priorityBucket(p){
+  if(p >= 2) return {cls:"high", lbl:"HIGH"};
+  if(p >= 1.5) return {cls:"med", lbl:"MED"};
+  return {cls:"low", lbl:"LOW"};
+}
+
+function timeToPct(hhmm){
+  const [h,m] = hhmm.split(":").map(Number);
+  const mins = h*60+m;
+  // map 6:00–21:00 window onto 0–100%, clamp outside
+  const start=6*60, end=21*60;
+  return Math.max(0, Math.min(100, ((mins-start)/(end-start))*100));
+}
+
+function renderOverview(d){
+  const errCount = (d.errors||[]).length;
+  const esc_ = d.escalation;
+  const rows = [
+    {ic:"◈", label:"Ghost Core", sub: errCount===0 ? "Watching" : errCount+" issue(s)", warn: errCount>0},
+    {ic:"✦", label:"Habitica", sub: (d.selfCheck||[]).find(s=>s.service==="habitica")?.status==="ok" ? "Synced" : "Issue"},
+    {ic:"✉", label:"Chats", sub: (d.selfCheck||[]).filter(s=>["telegram","cephalopod"].includes(s.service) && s.status==="ok").length+"/2 connected"},
+    {ic:"⛁", label:"Postgres / Redis", sub: (["postgres","redis"].every(s => (d.selfCheck||[]).find(x=>x.service===s)?.status==="ok")) ? "Healthy" : "Issue"},
+    {ic:"⚑", label:"Escalation", sub: esc_ ? `Stage ${esc_.stage} — ${esc_.topic}` : "None active", warn: !!esc_},
+    {ic:"✓", label:"System", sub: errCount===0 ? "Optimal" : `${errCount} error(s)`, warn: errCount>0},
+  ];
+  document.getElementById("overviewList").innerHTML = rows.map(r => `
+    <div class="ov-row ${r.warn?'warn':''}"><div class="ov-ic">${r.ic}</div><div class="main-line">${esc(r.label)}<span class="sub">${esc(r.sub)}</span></div></div>
+  `).join("");
+}
+
+/* Live Feed = the real message stream (chat + nudges, both directions) from
+   /api/feed — distinct from the Mission Timeline (day's event strip on d.timeline). */
+async function fetchFeed(){
+  try{
+    const res = await fetch("/api/feed", {cache:"no-store"});
+    if(!res.ok) throw new Error("HTTP "+res.status);
+    const d = await res.json();
+    const msgs = (d.messages||[]).slice(-12).reverse();
+    document.getElementById("feedList").innerHTML = msgs.length ? msgs.map(m => {
+      const inbound = (m.source||"").endsWith("_in");
+      const tag = (m.type && m.type!=="chat") ? "nudge" : "message";
+      const who = inbound ? "you" : "ghost";
+      return `<div class="feed-row"><span class="feed-tag ${tag}">${tag.toUpperCase()}</span><span><b style="color:#a97b95;font-weight:600">${esc(who)}</b> · ${esc(m.content)}</span></div>`;
+    }).join("") : `<div class="feed-row">No recent activity.</div>`;
+    const liveEl = document.getElementById("feedLive"); liveEl.textContent="LIVE"; liveEl.classList.remove("stale");
+  }catch(e){
+    const liveEl = document.getElementById("feedLive"); if(liveEl){ liveEl.textContent="STALE"; liveEl.classList.add("stale"); }
+  }
+}
+
+function renderHabits(d){
+  const habits = d.habits||[];
+  document.getElementById("navHabitCount").textContent = habits.length;
+  document.getElementById("habitsList").innerHTML = habits.map(h => {
+    const streakCls = h.atRisk ? "risk" : (h.doneToday ? "done" : "");
+    const streakTxt = h.atRisk ? "at risk" : (h.doneToday ? "done" : (h.streak+"d"));
+    return `<div class="habit-row" data-role="habit-row"><span class="htype ${esc(h.positiveNegative)}">${h.positiveNegative==="negative"?"−":(h.positiveNegative==="both"?"±":"+")}</span>${esc(h.name)}<span class="streak-pill ${streakCls}">${esc(streakTxt)}</span></div>`;
+  }).join("");
+}
+
+function renderTodos(d){
+  const todos = d.todos||[];
+  document.getElementById("navTodoCount").textContent = todos.filter(t=>!t.done).length;
+  document.getElementById("todosList").innerHTML = todos.map(t => {
+    const p = priorityBucket(t.priority);
+    return `<div class="todo-row" data-role="todo-row"><span class="todo-p ${p.cls}">${p.lbl}</span><span style="${t.done?'text-decoration:line-through;opacity:.5;':''}">${esc(t.text)}</span></div>`;
+  }).join("");
+}
+
+function renderTimeline(d){
+  const items = d.timeline||[];
+  document.getElementById("tlTrack").innerHTML = items.map(t => `<div class="tl-event ${esc(t.type)}" style="left:${timeToPct(t.time)}%"></div>`).join("");
+  document.getElementById("missionList").innerHTML = items.slice().reverse().map(t => `
+    <div class="mission-row"><span class="time">${esc(t.time)}</span><span class="label">${esc(t.label)}</span></div>
+  `).join("");
+}
+
+function ringStyle(pct, color){
+  const p = Math.max(0, Math.min(100, pct));
+  return `background: conic-gradient(${color} ${p}%, rgba(255,150,200,.12) 0)`;
+}
+
+function renderMonitor(d){
+  const habits = d.habits||[];
+  const todayPct = habits.length ? Math.round(100*habits.filter(h=>h.doneToday).length/habits.length) : 0;
+  const budgetPct = d.budget && d.budget.limit ? Math.round(100*d.budget.spent/d.budget.limit) : 0;
+  const cal = d.nutrition || {};
+  const calTxt = cal.caloriesTarget ? Math.round(100*cal.caloriesLogged/cal.caloriesTarget)+"%" : (cal.caloriesLogged||0);
+  document.getElementById("monGauges").innerHTML = `
+    <div class="mon-gauge"><div class="mon-ring" style="${ringStyle(todayPct,'#ff5fa8')}"><div class="mask">${todayPct}%</div></div><div class="lbl">Today</div></div>
+    <div class="mon-gauge"><div class="mon-ring" style="${ringStyle(Math.min(budgetPct,100), budgetPct>100?'#ff5f7a':'#e26fe0')}"><div class="mask">${budgetPct}%</div></div><div class="lbl">Budget</div></div>
+    <div class="mon-gauge"><div class="mon-ring" style="${ringStyle(cal.caloriesTarget?Math.min(100,100*cal.caloriesLogged/cal.caloriesTarget):0,'#7ee6ab')}"><div class="mask" style="font-size:8.5px;">${calTxt}</div></div><div class="lbl">Calories</div></div>
+  `;
+}
+
+function renderBudget(d){
+  const b = d.budget || {spent:0, limit:0, categories:[]};
+  const overallOver = b.limit && b.spent > b.limit;
+  let html = `<div style="font-size:14px; font-weight:500; color:${overallOver?'#ff8fa0':'#ffe3f1'}; margin-bottom:5px;">$${b.spent.toFixed(2)} <span style="font-size:9px; color:#a97b95; font-weight:400;">/ $${b.limit.toFixed(2)}</span></div>`;
+  html += (b.categories||[]).map(c => {
+    const over = c.limit>0 && c.amount > c.limit;
+    const pct = c.limit>0 ? Math.min(100, 100*c.amount/c.limit) : 0;
+    return `<div class="bud-row"><span>${esc(c.name)}</span><span class="${over?'over':''}">$${c.amount.toFixed(2)}</span></div><div class="bud-bar"><span class="${over?'over':''}" style="width:${pct}%"></span></div>`;
+  }).join("");
+  document.getElementById("budgetList").innerHTML = html;
+}
+
+function renderIntegrations(d){
+  document.getElementById("intGrid").innerHTML = (d.selfCheck||[]).map(s => `
+    <div class="int-item"><span class="int-dot ${s.status==='ok'?'on':'off'}"></span><div class="lab">${esc(s.service)}<small style="${s.status!=='ok'?'color:#ff8fa0':''}">${esc(s.status)}</small></div></div>
+  `).join("");
+}
+
+function renderTop(d){
+  document.getElementById("statusDot").className = "dot" + ((d.errors||[]).length ? " err" : "");
+  document.getElementById("statusTxt").textContent = "GHOST STATUS · " + ((d.errors||[]).length ? "ISSUES" : "SYNCED");
+  document.getElementById("presenceTxt").textContent = (d.errors||[]).length ? "Attention needed" : "Watching · synced";
+  if(d.time){
+    const parts = d.time.split(", ");
+    document.getElementById("clockDate").textContent = parts[0] || d.time;
+    document.getElementById("clockTime").textContent = parts[1] || "";
+  }
+  const maxStreak = (d.habits||[]).reduce((m,h)=>Math.max(m,h.streak||0),0);
+  document.getElementById("dockStreak").textContent = `✦ ${maxStreak} day streak`;
+  document.getElementById("dockSub").textContent = (d.errors||[]).length ? "needs attention" : "watching";
+  if(d.escalation){
+    const mins = Math.round((d.escalation.nextResendEta||0)/60);
+    document.getElementById("dockEscalation").textContent = `⚑ ${d.escalation.topic} — stage ${d.escalation.stage} (~${mins}m)`;
+  } else {
+    document.getElementById("dockEscalation").textContent = "⚑ none active";
+  }
+  document.getElementById("navEscCount").textContent = d.escalation ? "1" : "0";
+}
+
+// S42: self-code proposals restored to the v8 dashboard (backend was intact).
+function renderProposals(d){
+  const props = d.proposals || [];
+  const cnt = document.getElementById("propCount"); if(cnt) cnt.textContent = props.length ? props.length : "none";
+  const el = document.getElementById("proposalList"); if(!el) return;
+  if(!props.length){ el.innerHTML = '<div style="font-size:11px;color:#8a6a7c;padding:4px;">No open proposals.</div>'; return; }
+  el.innerHTML = props.map(p => {
+    const col = p.status==='approved' ? '#7ee6ab' : (p.status==='apply_queued' ? '#e6c07e' : '#c98aab');
+    const btn = p.can_apply ? `<button class="prop-apply" onclick="applyProposal(${p.id})">Apply</button>` : '';
+    return `<div class="prop-row"><div style="min-width:0"><span style="color:${col}">#${p.id} ${esc(p.service)}/${esc(p.file)}</span> <span style="font-size:9px;color:#8a6a7c">${esc(p.status)}</span><div style="font-size:10px;color:#9a7a8c">${esc(p.explanation||'')}</div></div>${btn}</div>`;
+  }).join("");
+}
+async function applyProposal(id){
+  if(!confirm("Queue proposal #"+id+" to apply? (it must already be approved via Telegram)")) return;
+  try{
+    const r = await (await fetch("/api/apply",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})})).json();
+    alert(r.ok ? ("Queued #"+id+" — the host runner will apply it.") : ("Couldn't queue: "+(r.error||"unknown")));
+    fetchDashboard();
+  }catch(e){ alert("Apply request failed: "+e); }
+}
+function renderMomentum(m){
+  const set=(role,txt)=>{const e=document.querySelector('[data-role="'+role+'"]'); if(e) e.textContent=txt;};
+  const o = m.overall||{};
+  set("momentum-ratio", o.ratio==null ? "–" : Math.round(o.ratio*100));
+  set("momentum-counts", "closed "+(o.closed??"–")+" / open "+(o.open??"–"));
+  set("momentum-window", "last "+(m.window||60)+" days");
+  // sparkline: per-day closed counts -> polyline in a 240x32 viewBox
+  const spark=document.querySelector('[data-role="momentum-sparkline"]');
+  if(spark){
+    const pts=(m.sparkline||[]).map(s=>s.closed);
+    if(pts.length>1){
+      const max=Math.max(1,...pts), W=240,H=32;
+      const step=W/(pts.length-1);
+      const d=pts.map((v,i)=>(i*step).toFixed(1)+","+(H-2-(v/max)*(H-4)).toFixed(1)).join(" ");
+      spark.innerHTML='<polyline points="'+d+'" fill="none" stroke="var(--accent,#ff5fa8)" stroke-width="1.5" vector-effect="non-scaling-stroke"/>';
+    } else { spark.innerHTML=""; }
+  }
+  // per-bucket chips (stretch): only buckets with any activity
+  const bx=document.querySelector('[data-role="momentum-buckets"]');
+  if(bx){
+    const bs=m.buckets||{};
+    bx.innerHTML=Object.keys(bs).filter(b=>b!=="unsorted"&&(bs[b].closed||bs[b].open))
+      .map(b=>'<span class="mb">'+b+' '+(bs[b].ratio==null?"–":Math.round(bs[b].ratio*100)+"%")+'</span>').join("")
+      || '<span class="mb">no activity in window yet</span>';
+  }
+}
+async function loadMomentum(){
+  try{
+    const res=await fetch("/api/momentum?window=60",{cache:"no-store"});
+    if(res.ok) renderMomentum(await res.json());
+  }catch(e){ console.error("momentum fetch failed:", e); }
+}
+async function fetchDashboard(){
+  try {
+    const res = await fetch(API_URL, {cache:"no-store"});
+    if(!res.ok) throw new Error("HTTP "+res.status);
+    const d = await res.json();
+    renderTop(d);
+    renderOverview(d);
+    renderHabits(d);
+    renderTodos(d);
+    renderTimeline(d);
+    renderMonitor(d);
+    renderBudget(d);
+    renderIntegrations(d);
+    renderProposals(d);
+    loadMomentum();  // momentum is its own endpoint (S57); fire-and-forget alongside the main refresh
+    // bell badge: count of open proposals + active escalation
+    const bb=document.getElementById("bellBadge"); if(bb){ const n=(d.proposals||[]).length+(d.escalation?1:0); bb.textContent=n; bb.style.display=n?"flex":"none"; }
+    applySearch();  // re-apply the habits/todos filter after the lists re-render
+  } catch(e){
+    document.getElementById("statusDot").className = "dot err";
+    document.getElementById("statusTxt").textContent = "GHOST STATUS · OFFLINE";
+    document.getElementById("presenceTxt").textContent = "Can't reach " + API_URL.replace(/^https?:\/\//,"").split("/")[0];
+    const liveEl = document.getElementById("feedLive");
+    if(liveEl){ liveEl.textContent="STALE"; liveEl.classList.add("stale"); }
+    console.error("Dashboard fetch failed:", e);
+  }
+}
+
+fetchDashboard();
+setInterval(fetchDashboard, POLL_MS);
+// S42: Live Feed card removed (redundant with Mission Timeline) — fetchFeed no longer runs.
+
+// S42: wire the left-nav items (were static divs) — scroll to the matching card + mark active.
+(function(){
+  const map = {"Command Center":null,"Habits":"cardHabits","ToDos":"cardTodos","Timeline":"cardTimeline",
+    "Budget":"budgetList","Nutrition":"cardOverview","Vitals":"monGauges","Escalation":"dockEscalation",
+    "Integrations":"intGrid","Chats":"__chat"};
+  document.querySelectorAll('[data-role="nav-item"]').forEach(item=>{
+    if (item.tagName === "A") return; // Horoscope/Tarot are real links to their own pages — leave them alone
+    item.style.cursor="pointer";
+    item.addEventListener("click",()=>{
+      const label = item.textContent;
+      const key = Object.keys(map).find(k=>label.includes(k));
+      document.querySelectorAll('[data-role="nav-item"]').forEach(n=>n.classList.remove("active"));
+      item.classList.add("active");
+      const tid = key ? map[key] : null;
+      if(tid==="__chat"){ openChat('ghost'); return; }
+      if(tid){ const el=document.getElementById(tid); if(el){ (el.closest(".card")||el).scrollIntoView({behavior:"smooth",block:"center"}); } }
+      else { window.scrollTo({top:0,behavior:"smooth"}); }
+    });
+  });
+})();
+
+/* ====== Search: filter the Habits + ToDos lists live (client-side) ====== */
+function applySearch(){
+  const box = document.getElementById("searchBox");
+  const q = (box ? box.value : "").trim().toLowerCase();
+  document.querySelectorAll('[data-role="habit-row"], [data-role="todo-row"]').forEach(row => {
+    row.style.display = (!q || row.textContent.toLowerCase().includes(q)) ? "" : "none";
+  });
+}
+
+/* ====== Ghost + Cephalopod chat overlay (wired to /api/chat & /api/cephalopod-chat) ====== */
+let chatMode = "ghost";
+let chatLastId = 0;   // highest message_log id shown in the Ghost chat, so pollChat only appends genuinely new rows
+function openChat(mode){
+  chatMode = mode || "ghost";
+  document.getElementById("chatOverlay").style.display = "flex";
+  setChatTab(chatMode);
+  const i = document.getElementById("chatInput"); if(i) i.focus();
+}
+function closeChat(){ document.getElementById("chatOverlay").style.display = "none"; }
+function setChatTab(mode){
+  chatMode = mode;
+  document.getElementById("tabGhost").classList.toggle("on", mode==="ghost");
+  document.getElementById("tabCeph").classList.toggle("on", mode==="cephalopod");
+  document.getElementById("chatInput").placeholder = mode==="ghost"
+    ? "message ghost — enter to send (money talk can take ~1 min)"
+    : "message cephalopod — its own memory, not ghost's";
+  loadChatHistory();
+}
+function cmsg(text, cls){ return `<div class="cmsg ${cls}">${esc(text)}</div>`; }
+async function loadChatHistory(){
+  const list = document.getElementById("chatMsgs");
+  list.innerHTML = "<div class='cmsg sys'>loading…</div>";
+  try{
+    if(chatMode==="ghost"){
+      const d = await (await fetch("/api/feed",{cache:"no-store"})).json();
+      // The whole Telegram thread, not just plain chat: chat both ways PLUS the
+      // nudges/briefings/summaries Ghost sends to Telegram (source 'scheduler').
+      // Only 'webhook' rows (scrolling interrupts) aren't Telegram messages.
+      const rows = (d.messages||[]).filter(m => m.source!=="webhook");
+      rows.forEach(m => { chatLastId = Math.max(chatLastId, m.id||0); });
+      list.innerHTML = rows.slice(-60)
+        .map(m => cmsg(m.content, (m.source||"").endsWith("_in") ? "you" : "bot")).join("")
+        || "<div class='cmsg sys'>no messages yet — say hi</div>";
+    } else {
+      const d = await (await fetch("/api/cephalopod-history",{cache:"no-store"})).json();
+      list.innerHTML = (d.messages||[]).slice(-40)
+        .map(m => cmsg(m.content, m.role==="cephalopod" ? "bot" : "you")).join("")
+        || "<div class='cmsg sys'>no messages yet</div>";
+    }
+    list.scrollTop = list.scrollHeight;
+  }catch(e){ list.innerHTML = "<div class='cmsg sys'>couldn't load history</div>"; }
+}
+// Keep the Ghost chat live while it's open: append any new Telegram-thread rows
+// (replies, and nudges Ghost pushes) every 12s, deduped by id via chatLastId.
+async function pollChat(){
+  const ov = document.getElementById("chatOverlay");
+  if(!ov || ov.style.display!=="flex" || chatMode!=="ghost") return;
+  try{
+    const d = await (await fetch("/api/feed?after_id="+chatLastId,{cache:"no-store"})).json();
+    const list = document.getElementById("chatMsgs");
+    let added = false;
+    for(const m of (d.messages||[])){
+      chatLastId = Math.max(chatLastId, m.id||0);   // advance past every row, even ones we don't render
+      if(m.source==="webhook") continue;
+      list.insertAdjacentHTML("beforeend", cmsg(m.content, (m.source||"").endsWith("_in") ? "you" : "bot"));
+      added = true;
+    }
+    if(added) list.scrollTop = list.scrollHeight;
+  }catch(e){}
+}
+setInterval(pollChat, 12000);
+async function sendChat(){
+  const inp = document.getElementById("chatInput");
+  const msg = (inp.value||"").trim(); if(!msg) return;
+  inp.value = "";
+  const list = document.getElementById("chatMsgs");
+  list.insertAdjacentHTML("beforeend", cmsg(msg, "you"));
+  list.insertAdjacentHTML("beforeend", cmsg("…", "sys pending"));
+  list.scrollTop = list.scrollHeight;
+  const url = chatMode==="ghost" ? "/api/chat" : "/api/cephalopod-chat";
+  try{
+    const d = await (await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},
+                                     body:JSON.stringify({message:msg})})).json();
+    document.querySelectorAll("#chatMsgs .pending").forEach(e=>e.remove());
+    list.insertAdjacentHTML("beforeend", cmsg(d.reply || "(no reply)", "bot"));
+    list.scrollTop = list.scrollHeight;
+    if(chatMode==="ghost"){
+      // /api/chat just logged this exchange (dashboard_in/out); advance chatLastId
+      // past it so the 12s pollChat doesn't re-append the same lines as duplicates.
+      try{ const f = await (await fetch("/api/feed",{cache:"no-store"})).json();
+           (f.messages||[]).forEach(m => { chatLastId = Math.max(chatLastId, m.id||0); }); }catch(_){}
+    }
+  }catch(e){
+    document.querySelectorAll("#chatMsgs .pending").forEach(x=>x.remove());
+    list.insertAdjacentHTML("beforeend", cmsg("send failed — try again", "sys"));
+  }
+}
+document.addEventListener("keydown", e => {
+  if(document.getElementById("chatOverlay").style.display==="flex" && e.key==="Escape") closeChat();
+});
+
+/* ====== centerpiece: trace network + dial + rune circle (unchanged from mockup) ====== */
+(function(){
+  const svgNS = "http://www.w3.org/2000/svg";
+  function el(tag, attrs, parent){ const e=document.createElementNS(svgNS,tag); for(const k in attrs) e.setAttribute(k, attrs[k]); if(parent) parent.appendChild(e); return e; }
+  function mulberry32(a){ return function(){ a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a); t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; }
+
+  const traceSvg = document.getElementById('traceSvg');
+  const rand = mulberry32(1337);
+  const cx=400, cy=400;
+  const minX=15,maxX=785,minY=15,maxY=785;
+  const dirs = [[1,0],[0.7071,-0.7071],[0,-1],[-0.7071,-0.7071],[-1,0],[-0.7071,0.7071],[0,1],[0.7071,0.7071]];
+  const turnOptions = [-2,-1,-1,0,0,0,1,1,2];
+  function clamp(v,lo,hi){ return Math.max(lo,Math.min(hi,v)); }
+  function pick(arr){ return arr[Math.floor(rand()*arr.length)]; }
+
+  const gridGroup = el('g',{},traceSvg);
+  for(let i=0;i<13;i++){ const x=30+i*63; el('line',{class:'grid-line', x1:x,y1:5,x2:x,y2:795}, gridGroup); }
+  for(let j=0;j<13;j++){ const y=30+j*63; el('line',{class:'grid-line', x1:5,y1:y,x2:795,y2:y}, gridGroup); }
+
+  const nodePool = [];
+  function walk(startX,startY,dirIdx,segMin,segMax){
+    let x=startX,y=startY,d="M "+x.toFixed(1)+","+y.toFixed(1);
+    const segCount = segMin+Math.floor(rand()*(segMax-segMin+1));
+    let curDir=dirIdx;
+    for(let s=0;s<segCount;s++){
+      curDir=(curDir+pick(turnOptions)+8)%8;
+      const len=20+rand()*46;
+      x=clamp(x+dirs[curDir][0]*len,minX,maxX);
+      y=clamp(y+dirs[curDir][1]*len,minY,maxY);
+      d+=" L "+x.toFixed(1)+","+y.toFixed(1);
+    }
+    return {d,endX:x,endY:y};
+  }
+  function addEndpoint(x,y,delay,dur,small){
+    const roll=rand();
+    if(roll<0.22){
+      const w=12,h=6.5;
+      el('rect',{class:'chip', x:(x-w/2).toFixed(1), y:(y-h/2).toFixed(1), width:w, height:h, rx:1.2, style:'animation-delay:'+delay+'s;animation-duration:'+dur+'s'}, traceSvg);
+    } else {
+      el('circle',{class:'node', cx:x.toFixed(1), cy:y.toFixed(1), r: small?2:3.2, style:'animation-delay:'+delay+'s;animation-duration:'+dur+'s'}, traceSvg);
+      if(!small) el('circle',{class:'node-ring', cx:x.toFixed(1), cy:y.toFixed(1), r:5.6, style:'animation-delay:'+delay+'s;animation-duration:'+dur+'s'}, traceSvg);
+    }
+    nodePool.push({x,y});
+  }
+  const spokeCount = 18;
+  for(let i=0;i<spokeCount;i++){
+    const a=(i/spokeCount)*Math.PI*2+(rand()-0.5)*0.15, r1=60, r2=88+rand()*20;
+    const x1=cx+Math.cos(a)*r1, y1=cy+Math.sin(a)*r1, x2=cx+Math.cos(a)*r2, y2=cy+Math.sin(a)*r2;
+    const delay=(rand()*2.4).toFixed(2), dur=(2+rand()*1.4).toFixed(2);
+    el('path',{class:'trace', d:'M '+x1.toFixed(1)+','+y1.toFixed(1)+' L '+x2.toFixed(1)+','+y2.toFixed(1), style:'animation-delay:'+delay+'s;animation-duration:'+dur+'s'}, traceSvg);
+  }
+  const branchPoints=[];
+  const trunkCount = 40;
+  for(let i=0;i<trunkCount;i++){
+    const dirIdx=i%8, jitter=(rand()-0.5)*90;
+    const perp=[-dirs[dirIdx][1],dirs[dirIdx][0]];
+    const sx=cx+dirs[dirIdx][0]*90+perp[0]*jitter, sy=cy+dirs[dirIdx][1]*90+perp[1]*jitter;
+    const {d,endX,endY}=walk(sx,sy,dirIdx,2,4);
+    const delay=(rand()*2.6).toFixed(2), dur=(2.1+rand()*1.7).toFixed(2);
+    el('path',{class:'trace', d, style:'animation-delay:'+delay+'s;animation-duration:'+dur+'s'}, traceSvg);
+    addEndpoint(endX,endY,delay,dur,false);
+    branchPoints.push({x:sx,y:sy,dirIdx});
+  }
+  const branchCount = 26;
+  for(let i=0;i<branchCount;i++){
+    const bp=pick(branchPoints);
+    const dirIdx=(bp.dirIdx+pick([-2,-1,1,2])+8)%8;
+    const {d,endX,endY}=walk(bp.x,bp.y,dirIdx,1,2);
+    const delay=(rand()*2.8).toFixed(2), dur=(2.2+rand()*1.5).toFixed(2);
+    el('path',{class:'trace thin', d, style:'animation-delay:'+delay+'s;animation-duration:'+dur+'s'}, traceSvg);
+    addEndpoint(endX,endY,delay,dur,true);
+  }
+  let crossDrawn=0, attempts=0;
+  while(crossDrawn<26 && attempts<700){
+    attempts++;
+    const a=pick(nodePool), b=pick(nodePool);
+    const dist=Math.hypot(a.x-b.x,a.y-b.y);
+    if(dist>22 && dist<115){
+      const delay=(rand()*2.6).toFixed(2), dur=(2.3+rand()*1.6).toFixed(2);
+      el('path',{class:'trace cross', d:'M '+a.x.toFixed(1)+','+a.y.toFixed(1)+' L '+b.x.toFixed(1)+','+b.y.toFixed(1), style:'animation-delay:'+delay+'s;animation-duration:'+dur+'s'}, traceSvg);
+      crossDrawn++;
+    }
+  }
+
+  const dialSvg = document.getElementById('dialSvg');
+  const dcx=110, dcy=110;
+  const drand = mulberry32(77);
+
+  el('circle',{class:'dial-bezel', cx:dcx, cy:dcy, r:100}, dialSvg);
+  el('circle',{class:'dial-bezel', cx:dcx, cy:dcy, r:68}, dialSvg);
+  for(let i=0;i<60;i++){
+    const a=(i/60)*Math.PI*2, major=i%5===0;
+    const rOuter=100, rInner=major?90:96;
+    const x1=dcx+Math.cos(a)*rOuter, y1=dcy+Math.sin(a)*rOuter;
+    const x2=dcx+Math.cos(a)*rInner, y2=dcy+Math.sin(a)*rInner;
+    el('line',{class: major?'dial-tick major':'dial-tick', x1:x1.toFixed(1), y1:y1.toFixed(1), x2:x2.toFixed(1), y2:y2.toFixed(1)}, dialSvg);
+  }
+  function arcPath(r, startDeg, endDeg){
+    const s=(startDeg*Math.PI)/180, e=(endDeg*Math.PI)/180;
+    const x1=dcx+Math.cos(s)*r, y1=dcy+Math.sin(s)*r;
+    const x2=dcx+Math.cos(e)*r, y2=dcy+Math.sin(e)*r;
+    const large=(endDeg-startDeg)>180?1:0;
+    return 'M '+x1.toFixed(1)+','+y1.toFixed(1)+' A '+r+','+r+' 0 '+large+' 1 '+x2.toFixed(1)+','+y2.toFixed(1);
+  }
+  [[-100,-40],[-20,50],[70,140],[160,210],[225,280],[295,340]].forEach(seg=>{
+    const delay=(drand()*3).toFixed(2), dur=(3+drand()*2).toFixed(2);
+    el('path',{class:'dial-arc', d:arcPath(84,seg[0],seg[1]), style:'animation-delay:'+delay+'s;animation-duration:'+dur+'s'}, dialSvg);
+  });
+  el('circle',{class:'dial-inner-ring', cx:dcx, cy:dcy, r:78}, dialSvg);
+  el('circle',{class:'dial-inner-ring2', cx:dcx, cy:dcy, r:59}, dialSvg);
+
+  const runeR = 148;
+  el('circle',{class:'rune-ring-track', cx:dcx, cy:dcy, r:runeR}, dialSvg);
+  const runeShapes = [
+    [[0,16,0,-8],[0,-8,-11,-16],[0,-8,11,-16]],
+    [[0,16,0,-16],[0,-16,12,-7],[0,-3,10,-9]],
+    [[-7,16,-7,-11],[-7,-11,11,16]],
+    [[-5,16,-5,-16],[-5,-16,9,-8],[9,-8,-5,0],[-5,0,10,8],[10,8,-5,16]],
+    [[-5,16,-5,-16],[-5,-16,11,-5],[11,-5,-5,7]],
+    [[0,16,0,-16]],
+    [[-7,16,0,2],[0,2,-4,-2],[-4,-2,7,-16]]
+  ];
+  const runeOrbit = el('g',{class:'rune-orbit'}, dialSvg);
+  const runeCount = 20;
+  for(let i=0;i<runeCount;i++){
+    const a=(i/runeCount)*Math.PI*2;
+    const x=dcx+Math.cos(a)*runeR, y=dcy+Math.sin(a)*runeR;
+    const rot=(a*180/Math.PI)+90;
+    const g=el('g',{transform:'translate('+x.toFixed(1)+','+y.toFixed(1)+') rotate('+rot.toFixed(1)+') scale(0.62)'}, runeOrbit);
+    const shape = runeShapes[i % runeShapes.length];
+    const delay=(drand()*2.6).toFixed(2), dur=(2.6+drand()*1.6).toFixed(2);
+    shape.forEach(l=> el('line',{class:'rune-tiny', x1:l[0],y1:l[1],x2:l[2],y2:l[3], style:'animation-delay:'+delay+'s;animation-duration:'+dur+'s'}, g));
+  }
+
+  const orbitA = el('g',{class:'orbit-motes'}, dialSvg);
+  el('circle',{class:'mote', cx:dcx, cy:dcy-118, r:2}, orbitA);
+  el('circle',{class:'mote', cx:dcx, cy:dcy+118, r:1.4}, orbitA);
+  const orbitB = el('g',{class:'orbit-motes rev'}, dialSvg);
+  el('circle',{class:'mote', cx:dcx+122, cy:dcy, r:1.7}, orbitB);
+
+  [0,90,180,270].forEach(deg=>{
+    const a=(deg*Math.PI)/180;
+    const x1=dcx+Math.cos(a)*104, y1=dcy+Math.sin(a)*104;
+    const x2=dcx+Math.cos(a)*118, y2=dcy+Math.sin(a)*118;
+    el('line',{class:'dial-crosshair', x1:x1.toFixed(1), y1:y1.toFixed(1), x2:x2.toFixed(1), y2:y2.toFixed(1)}, dialSvg);
+  });
+  [45,135,225,315].forEach(deg=>{
+    const a=(deg*Math.PI)/180;
+    const bx=dcx+Math.cos(a)*112, by=dcy+Math.sin(a)*112, s=8;
+    const dx=Math.cos(a)>0?-1:1, dy=Math.sin(a)>0?-1:1;
+    const d='M '+(bx+dx*s).toFixed(1)+','+by.toFixed(1)+' L '+bx.toFixed(1)+','+by.toFixed(1)+' L '+bx.toFixed(1)+','+(by+dy*s).toFixed(1);
+    el('path',{class:'dial-bracket', d}, dialSvg);
+  });
+  for(let i=0;i<12;i++){
+    const a=drand()*Math.PI*2, r=100;
+    const x=dcx+Math.cos(a)*r, y=dcy+Math.sin(a)*r;
+    const delay=(drand()*2.5).toFixed(2), dur=(2.4+drand()*1.4).toFixed(2);
+    el('circle',{class:'dial-waypoint', cx:x.toFixed(1), cy:y.toFixed(1), r:1.6, style:'animation-delay:'+delay+'s;animation-duration:'+dur+'s'}, dialSvg);
+  }
+
+  el('line',{class:'rune-main', x1:110, y1:138, x2:110, y2:100}, dialSvg);
+  el('line',{class:'rune-main', x1:110, y1:104, x2:82, y2:76}, dialSvg);
+  el('line',{class:'rune-main', x1:110, y1:104, x2:138, y2:76}, dialSvg);
+
+  el('text',{class:'dial-label', x:dcx, y:dcy+58, 'text-anchor':'middle'}, dialSvg).textContent = 'GHOST';
+  el('text',{class:'dial-sub', x:dcx, y:dcy+68, 'text-anchor':'middle'}, dialSvg).textContent = 'WATCHING · SYNCED';
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ghost Command Center — Horoscope</title>
+<link rel="stylesheet" href="/assets/ghost-common.css?v=59">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { min-height: 100%; }
+  body {
+    color: #ece3f7;
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding-bottom: 60px;
+  }
+  a { color: inherit; text-decoration: none; }
+  input, select, button { font-family: inherit; }
+  .glass {
+    background: rgba(40,20,60,0.42);
+    backdrop-filter: blur(16px) saturate(150%);
+    -webkit-backdrop-filter: blur(16px) saturate(150%);
+    border: 1px solid rgba(190,150,255,0.18);
+    border-radius: 12px;
+    box-shadow: 0 6px 22px rgba(15,0,30,0.4), inset 0 1px 0 rgba(220,200,255,0.07);
+  }
+
+  .topbar { display: flex; align-items: center; gap: 12px; padding: 14px 20px; flex-wrap: wrap; }
+  .backlink { display: flex; align-items: center; gap: 8px; padding: 7px 13px; font-size: 11px; color: #cdb6ee; }
+  .backlink:hover { color: #f0e3ff; }
+  .brand { display: flex; align-items: center; gap: 8px; margin-left: 4px; }
+  .brand-mark { width: 20px; height: 20px; border-radius: 50%; background: radial-gradient(circle at 35% 30%, #e6c9ff, #a85fff 55%, #3d1a6b 100%); box-shadow: 0 0 10px rgba(168,95,255,0.7); flex-shrink:0; }
+  .brand-text b { font-size: 12.5px; letter-spacing: 0.1em; color: var(--witchy-title); text-shadow: 0 0 12px rgba(205,184,234,0.4); }
+  .brand-text span { display:block; font-size: 7.5px; letter-spacing: 0.12em; color: #9c7fc4; }
+  .topbar .spacer { flex: 1 1 auto; }
+  .nav-pill { display:flex; gap:4px; padding: 3px; }
+  .nav-pill a { padding: 6px 12px; font-size: 10.5px; border-radius: 8px; color: #b79bdd; }
+  .nav-pill a.active { background: rgba(255,255,255,0.08); color: var(--gc-ink); }
+
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 6px 20px 20px; display: flex; flex-direction: column; gap: 16px; }
+
+  .intro { padding: 16px 20px; }
+  .intro h1 { font-size: 17px; color: #f0e3ff; letter-spacing: 0.02em; margin-bottom: 6px; }
+  .intro p { font-size: 12px; color: #c3aee0; line-height: 1.55; max-width: 780px; }
+
+  /* profile bar */
+  .profile-bar { padding: 12px 16px; display:flex; align-items:center; gap: 10px; flex-wrap: wrap; }
+  .profile-bar select { padding: 8px 12px; font-size: 11.5px; border-radius: 9px; border: 1px solid rgba(190,150,255,0.25); background: rgba(255,255,255,0.03); color:#ece3f7; }
+  .btn { padding: 8px 14px; font-size: 11px; border-radius: var(--gc-radius); border: 1px solid rgba(255,255,255,0.28); color: var(--gc-ink); background: transparent; cursor: pointer; font-family: var(--gc-serif); font-variant: small-caps; letter-spacing: 0.05em; }
+  .btn:hover { color:#f0e3ff; }
+  .btn.primary { background: var(--gc-ink); color: #150e14; border: none; font-weight:600; }
+  .now-clock { margin-left: auto; font-size: 10.5px; color: #9c7fc4; text-align:right; }
+  .now-clock b { color:#e6d4ff; }
+
+  /* modal */
+  .modal-backdrop { display:none; position: fixed; inset:0; background: rgba(5,2,12,0.7); z-index: 50; align-items:center; justify-content:center; padding: 20px; }
+  .modal-backdrop.show { display:flex; }
+  .modal { width: 100%; max-width: 480px; padding: 22px; max-height: 90vh; overflow-y:auto; }
+  .modal h2 { font-size: 14px; color:#f0e3ff; margin-bottom: 14px; }
+  .field { margin-bottom: 12px; }
+  .field label { display:block; font-size: 10.5px; color:#a98fd6; margin-bottom: 5px; }
+  .field input, .field select { width: 100%; padding: 9px 11px; font-size: 11.5px; border-radius: 8px; border: 1px solid rgba(190,150,255,0.25); background: rgba(255,255,255,0.03); color:#ece3f7; }
+  .field .hint { font-size: 9.5px; color:#7a6295; margin-top: 4px; line-height:1.4; }
+  .field-row { display:flex; gap:10px; }
+  .field-row .field { flex:1; }
+  .checkbox-row { display:flex; align-items:center; gap:8px; font-size: 11px; color:#c3aee0; margin-bottom: 12px; }
+  .modal-actions { display:flex; gap:10px; justify-content:flex-end; margin-top: 16px; }
+
+  /* wheels layout */
+  .wheels { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 860px) { .wheels { grid-template-columns: 1fr; } }
+  .wheel-card { padding: 16px; display:flex; flex-direction:column; align-items:center; gap: 10px; }
+  .wheel-card h3 { font-size: 12px; color:#f0e3ff; letter-spacing:0.04em; align-self:flex-start; }
+  .wheel-card .sub { font-size: 9.5px; color:#8a72ad; align-self:flex-start; margin-top:-6px; }
+  .wheel-svg { width: 100%; max-width: 380px; }
+
+  .placements { padding: 16px 18px; }
+  .placements h3 { font-size: 12px; color:#f0e3ff; margin-bottom: 10px; }
+  .big-three { display:grid; grid-template-columns: repeat(3,1fr); gap: 10px; margin-bottom: 14px; }
+  @media (max-width: 640px) { .big-three { grid-template-columns: 1fr; } }
+  .bt-card { padding: 12px; border-radius: 10px; background: rgba(255,255,255,0.03); border: 1px solid rgba(190,150,255,0.14); text-align:center; }
+  .bt-card .lbl { font-size: 9px; letter-spacing:0.08em; text-transform:uppercase; color:#9c7fc4; margin-bottom:5px; }
+  .bt-card .glyph { font-size: 22px; color:#e6d4ff; }
+  .bt-card .signname { font-size: 12.5px; color:#f0e3ff; font-weight:600; margin-top:4px; }
+  .bt-card .desc { font-size: 9.5px; color:#a98fd6; margin-top:4px; line-height:1.4; }
+
+  .planet-table { width:100%; border-collapse: collapse; font-size: 11px; }
+  .planet-table td { padding: 6px 8px; border-bottom: 1px solid rgba(190,150,255,0.08); color:#c3aee0; }
+  .planet-table .pg { width: 22px; font-size:14px; color:#e6d4ff; }
+  .planet-table .pn { color:#e6d4ff; }
+  .planet-table .retro { color:#ff9ecb; font-size:9px; margin-left:4px; }
+  .planet-table .pd { text-align:right; color:#8a72ad; font-size: 9.5px; }
+
+  .edu { padding: 16px 18px; }
+  .edu h2 { font-size: 13px; color:#f0e3ff; margin-bottom: 10px; }
+  .edu-grid { display:grid; grid-template-columns: repeat(3,1fr); gap: 12px; }
+  @media (max-width: 860px) { .edu-grid { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 560px) { .edu-grid { grid-template-columns: 1fr; } }
+  .edu p { font-size: 11px; color:#b79bdd; line-height:1.55; }
+  .edu-item { padding: 10px; border-radius: 9px; background: rgba(255,255,255,0.02); }
+  .edu-item .t { font-size: 10.5px; color:#f0e3ff; font-weight:600; margin-bottom:3px; }
+  .edu-item .d { font-size: 10px; color:#a98fd6; line-height:1.4; }
+
+  .signs-glossary { display:grid; grid-template-columns: repeat(4,1fr); gap:8px; margin-top:12px; }
+  @media (max-width: 760px) { .signs-glossary { grid-template-columns: repeat(2,1fr); } }
+  .sign-chip { padding: 8px 9px; border-radius: 8px; background: rgba(255,255,255,0.02); font-size: 10px; color:#a98fd6; }
+  .sign-chip b { color:#e6d4ff; display:block; font-size: 11px; margin-bottom:2px; }
+
+  /* collapsible detail sections (Session 49) */
+  details.section { padding: 4px 18px; }
+  details.section > summary { cursor:pointer; list-style:none; padding: 13px 0; font-size: 13px; color:#f0e3ff; letter-spacing:0.02em; display:flex; align-items:center; gap:8px; }
+  details.section > summary::-webkit-details-marker { display:none; }
+  details.section > summary::before { content:"▸"; color:var(--gc-ink-dim); font-size:11px; }
+  details.section[open] > summary::before { content:"▾"; }
+  details.section > summary .cnt { margin-left:auto; font-size:9.5px; color:#8a72ad; font-weight:400; letter-spacing:0; }
+  .section-inner { padding-bottom: 14px; }
+  .section-inner > .sub { font-size: 9.5px; color:#8a72ad; margin: -2px 0 12px; }
+  .section h2 { font-size: 13px; color:#f0e3ff; margin-bottom: 4px; }
+
+  .transit-list { display:flex; flex-direction:column; }
+  .transit-row { display:flex; align-items:baseline; gap:10px; padding:7px 2px; border-bottom:1px solid rgba(190,150,255,0.08); font-size:11px; }
+  .transit-row:last-child { border-bottom:none; }
+  .transit-row .tg { font-size:15px; color:#e6d4ff; width:20px; flex-shrink:0; text-align:center; }
+  .transit-row .tb { color:#e6d4ff; width:70px; flex-shrink:0; font-weight:600; }
+  .transit-row .tsign { color:#c3aee0; width:130px; flex-shrink:0; }
+  .transit-row .tsign .retro { color:#ff9ecb; font-size:9px; margin-left:4px; }
+  .transit-row .tnote { color:#a98fd6; flex:1; min-width:140px; }
+  .transit-row.moon { background: rgba(196,139,255,0.06); border-radius:6px; }
+
+  .moon-weather { padding:11px 13px; border-radius:9px; background:rgba(196,139,255,0.09); border:1px solid rgba(190,150,255,0.2); font-size:11.5px; color:#e6d4ff; line-height:1.55; margin-bottom:14px; }
+  .moon-weather b { color:#f0e3ff; }
+  .aspect-list { display:flex; flex-direction:column; }
+  .aspect-row { padding:8px 2px; border-bottom:1px solid rgba(190,150,255,0.08); font-size:11px; color:#c3aee0; line-height:1.5; }
+  .aspect-row:last-child { border-bottom:none; }
+  .aspect-row .ah { color:#e6d4ff; }
+  .aspect-row .atag { display:block; font-size:9px; color:#8a72ad; margin-top:2px; letter-spacing:0.03em; }
+  .aspect-none { font-size:11px; color:#a98fd6; line-height:1.5; }
+
+  .sign-depth-card { padding:12px 14px; border-radius:10px; background:rgba(255,255,255,0.02); border:1px solid rgba(190,150,255,0.14); margin-bottom:10px; }
+  .sign-depth-card:last-child { margin-bottom:0; }
+  .sign-depth-card .sdh { display:flex; align-items:baseline; gap:8px; margin-bottom:6px; }
+  .sign-depth-card .sdh .g { font-size:19px; color:#e6d4ff; }
+  .sign-depth-card .sdh .n { font-size:13px; color:#f0e3ff; font-weight:600; }
+  .sign-depth-card .sdh .role { font-size:8.5px; color:#8a72ad; margin-left:auto; text-transform:uppercase; letter-spacing:0.06em; }
+  .sign-depth-card .meta { font-size:10px; color:#9c7fc4; margin-bottom:7px; }
+  .sign-depth-card .line { font-size:10.5px; color:#c3aee0; line-height:1.5; margin-bottom:3px; }
+  .sign-depth-card .line b { color:#d9c3ff; }
+  .sign-depth-card .rolenote { font-size:10px; color:#8a72ad; line-height:1.5; margin-top:6px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <a class="backlink glass" href="ghost-dashboard-live.html">← Command Center</a>
+  <div class="brand"><span class="brand-mark"></span><span class="brand-text"><b>GHOST</b><span>MYSTIC MODULE</span></span></div>
+  <div class="spacer"></div>
+  <div class="nav-pill glass">
+    <a href="ghost-horoscope.html" class="active">Horoscope</a>
+    <a href="ghost-tarot.html">Tarot</a>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <div class="intro glass">
+    <h1>Horoscope</h1>
+    <p>Sun, Moon, and Rising positions calculated live in your browser from real orbital mechanics — no external astrology API, so it works for any date and never goes stale. Nothing about your birth details is written into this file; your profile lives only in this browser's local storage.</p>
+  </div>
+
+  <div class="profile-bar glass">
+    <select id="profileSelect" data-role="profile-select"></select>
+    <button class="btn" id="addProfileBtn">+ Add profile</button>
+    <button class="btn" id="editProfileBtn">Edit</button>
+    <div class="now-clock">Sky calculated for <b id="nowStamp">—</b></div>
+  </div>
+
+  <div class="wheels">
+    <div class="wheel-card glass">
+      <h3>Sky Right Now</h3>
+      <div class="sub">Aries at 12 o'clock, reading clockwise — every body's current position</div>
+      <svg class="wheel-svg" id="wheelNow" viewBox="0 0 380 380"></svg>
+    </div>
+    <div class="wheel-card glass">
+      <h3 id="natalTitle">Natal Chart</h3>
+      <div class="sub" id="natalSub">Same orientation, plus your Ascendant marker</div>
+      <svg class="wheel-svg" id="wheelNatal" viewBox="0 0 380 380"></svg>
+    </div>
+  </div>
+
+  <details class="section glass" id="todaySkySection" open>
+    <summary>Today's Sky — where every body is right now<span class="cnt" id="todaySkyCnt"></span></summary>
+    <div class="section-inner">
+      <div class="sub">Live positions and what each planet is currently colouring. The Moon is the fast one — it sets the day's mood and shifts sign every ~2.5 days.</div>
+      <div class="transit-list" id="transitList"></div>
+    </div>
+  </details>
+
+  <div class="placements glass">
+    <h3>Your Big Three</h3>
+    <div class="big-three" id="bigThree"></div>
+    <table class="planet-table" id="planetTable"><tbody></tbody></table>
+  </div>
+
+  <details class="section glass" id="todayForYouSection" open style="display:none;">
+    <summary>How today's sky touches your chart<span class="cnt" id="todayForYouCnt"></span></summary>
+    <div class="section-inner">
+      <div class="sub">Real transit-to-natal aspects — where today's moving planets line up with your birth chart, tightest first. This is the "how it affects <b>you</b>" layer, not a generic sun-sign column.</div>
+      <div id="moonWeather"></div>
+      <div class="aspect-list" id="aspectList"></div>
+    </div>
+  </details>
+
+  <details class="section glass" id="signDepthSection" style="display:none;">
+    <summary>Your Sun, Moon &amp; Rising — in depth</summary>
+    <div class="section-inner">
+      <div class="sub">The fuller picture of your big three — element, mode, ruling planet, strengths and the growth edge of each.</div>
+      <div id="signDepth"></div>
+    </div>
+  </details>
+
+  <div class="edu glass">
+    <h2>Sun, Moon &amp; Rising — what they actually mean</h2>
+    <div class="edu-grid">
+      <div class="edu-item"><div class="t">☉ Sun sign</div><div class="d">The "you" most people mean by your star sign — core identity and ego. Needs only your birth date; it doesn't move fast enough for time or place to matter.</div></div>
+      <div class="edu-item"><div class="t">☾ Moon sign</div><div class="d">Your emotional inner world — how you actually feel and self-soothe, versus how you present. The Moon changes sign roughly every 2.5 days, so an accurate birth date and time genuinely matter here.</div></div>
+      <div class="edu-item"><div class="t">↑ Rising sign (Ascendant)</div><div class="d">The mask you present, first impressions, how others read you on meeting. Changes roughly every 2 hours — the most sensitive of the three to a precise birth time and location.</div></div>
+    </div>
+    <h2 style="margin-top:16px">The twelve signs</h2>
+    <div class="signs-glossary" id="signsGlossary"></div>
+  </div>
+
+</div>
+
+<div class="modal-backdrop" id="modalBackdrop">
+  <div class="modal glass">
+    <h2 id="modalTitle">Add a profile</h2>
+    <div class="field">
+      <label>Name</label>
+      <input type="text" id="fName" placeholder="e.g. Lea">
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label>Date of birth</label>
+        <input type="date" id="fDate">
+      </div>
+      <div class="field">
+        <label>Time of birth</label>
+        <input type="time" id="fTime">
+      </div>
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" id="fUnknownTime">
+      <label for="fUnknownTime">I don't know the exact birth time (Sun sign only — Moon/Rising need a real time)</label>
+    </div>
+    <div class="field">
+      <label>Birth place — pick a city, or choose "Custom / other" for manual coordinates</label>
+      <select id="fCity"></select>
+    </div>
+    <div class="field-row" id="customCoordsRow" style="display:none">
+      <div class="field"><label>Latitude</label><input type="number" step="0.0001" id="fLat" placeholder="e.g. -33.8688"></div>
+      <div class="field"><label>Longitude</label><input type="number" step="0.0001" id="fLon" placeholder="e.g. 151.2093"></div>
+    </div>
+    <div class="field">
+      <label>UTC offset at time of birth (hours)</label>
+      <input type="number" step="0.5" id="fOffset" placeholder="e.g. 10 for AEST">
+      <div class="hint">Auto-filled from the city, but double-check it — this is <b>standard time</b>, and if the birth date fell during daylight saving in that location, add 1. This is what most affects Rising sign accuracy along with the time above.</div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" id="cancelProfileBtn">Cancel</button>
+      <button class="btn primary" id="saveProfileBtn">Save profile</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ===================== Ephemeris — low-precision orbital elements ==========================
+   Standard "planetary positions" formulas (heliocentric orbital elements, epoch J2000.0,
+   linear secular rates). Accurate to roughly an arcminute for the Sun, a few arcminutes
+   for the planets — far more precision than sign-placement astrology needs. No network
+   calls, works for any date. */
+const D2R = Math.PI/180, R2D = 180/Math.PI;
+function normDeg(x){ x = x % 360; if (x < 0) x += 360; return x; }
+function daysSinceJ2000(date){ return (date.getTime() - Date.UTC(2000,0,1,12,0,0)) / 86400000; }
+
+function solveKepler(M_deg, e){
+  let M = M_deg * D2R;
+  let E = M + e*Math.sin(M)*(1+e*Math.cos(M));
+  for (let i=0;i<8;i++){
+    const dE = (E - e*Math.sin(E) - M) / (1 - e*Math.cos(E));
+    E -= dE;
+  }
+  return E;
+}
+
+const ELEMENTS = {
+  sun:     d => ({N:0, i:0, w: 282.9404+4.70935e-5*d, a:1.000000, e:0.016709-1.151e-9*d, M:356.0470+0.9856002585*d}),
+  moon:    d => ({N:125.1228-0.0529538083*d, i:5.1454, w:318.0634+0.1643573223*d, a:60.2666, e:0.054900, M:115.3654+13.0649929509*d}),
+  mercury: d => ({N:48.3313+3.24587e-5*d, i:7.0047+5.00e-8*d, w:29.1241+1.01444e-5*d, a:0.387098, e:0.205635+5.59e-10*d, M:168.6562+4.0923344368*d}),
+  venus:   d => ({N:76.6799+2.46590e-5*d, i:3.3946+2.75e-8*d, w:54.8910+1.38374e-5*d, a:0.723330, e:0.006773-1.302e-9*d, M:48.0052+1.6021302244*d}),
+  mars:    d => ({N:49.5574+2.11081e-5*d, i:1.8497-1.78e-8*d, w:286.5016+2.92961e-5*d, a:1.523688, e:0.093405+2.516e-9*d, M:18.6021+0.5240207766*d}),
+  jupiter: d => ({N:100.4542+2.76854e-5*d, i:1.3030-1.557e-7*d, w:273.8777+1.64505e-5*d, a:5.20256, e:0.048498+4.469e-9*d, M:19.8950+0.0830853001*d}),
+  saturn:  d => ({N:113.6634+2.38980e-5*d, i:2.4886-1.081e-7*d, w:339.3939+2.97661e-5*d, a:9.55475, e:0.055546-9.499e-9*d, M:316.9670+0.0334442282*d}),
+  uranus:  d => ({N:74.0005+1.3978e-5*d, i:0.7733+1.9e-8*d, w:96.6612+3.0565e-5*d, a:19.18171-1.55e-8*d, e:0.047318+7.45e-9*d, M:142.5905+0.011725806*d}),
+  neptune: d => ({N:131.7806+3.0173e-5*d, i:1.7700-2.55e-7*d, w:272.8461-6.027e-6*d, a:30.05826+3.313e-8*d, e:0.008606+2.15e-9*d, M:260.2471+0.005995147*d})
+};
+
+function heliocentricXYZ(el){
+  const E = solveKepler(el.M, el.e);
+  const xv = el.a*(Math.cos(E) - el.e);
+  const yv = el.a*(Math.sqrt(1-el.e*el.e)*Math.sin(E));
+  const v = Math.atan2(yv, xv);
+  const r = Math.sqrt(xv*xv+yv*yv);
+  const Nr = el.N*D2R, ir = el.i*D2R, vw = v + el.w*D2R;
+  const xh = r*(Math.cos(Nr)*Math.cos(vw) - Math.sin(Nr)*Math.sin(vw)*Math.cos(ir));
+  const yh = r*(Math.sin(Nr)*Math.cos(vw) + Math.cos(Nr)*Math.sin(vw)*Math.cos(ir));
+  const zh = r*(Math.sin(vw)*Math.sin(ir));
+  return {x:xh, y:yh, z:zh};
+}
+function sunGeo(d){
+  const h = heliocentricXYZ(ELEMENTS.sun(d)); // Sun's element set is defined geocentrically already
+  return {lon: normDeg(Math.atan2(h.y,h.x)*R2D), x:h.x, y:h.y};
+}
+function moonGeo(d){
+  const h = heliocentricXYZ(ELEMENTS.moon(d));
+  return {lon: normDeg(Math.atan2(h.y,h.x)*R2D)};
+}
+function planetGeo(name, d){
+  const h = heliocentricXYZ(ELEMENTS[name](d));
+  const s = sunGeo(d);
+  const xg = h.x + s.x, yg = h.y + s.y;
+  return {lon: normDeg(Math.atan2(yg,xg)*R2D)};
+}
+function obliquity(d){ return 23.4393 - 3.563e-7*d; }
+
+const BODY_ORDER = ["sun","moon","mercury","venus","mars","jupiter","saturn","uranus","neptune"];
+const BODY_GLYPH = {sun:"☉",moon:"☾",mercury:"☿",venus:"♀",mars:"♂",jupiter:"♃",saturn:"♄",uranus:"♅",neptune:"♆"};
+const BODY_NAME  = {sun:"Sun",moon:"Moon",mercury:"Mercury",venus:"Venus",mars:"Mars",jupiter:"Jupiter",saturn:"Saturn",uranus:"Uranus",neptune:"Neptune"};
+
+function bodyLongitude(name, d){ return name==="sun" ? sunGeo(d).lon : name==="moon" ? moonGeo(d).lon : planetGeo(name,d).lon; }
+
+function isRetrograde(name, d){
+  if (name==="sun" || name==="moon") return false;
+  const l1 = bodyLongitude(name, d), l0 = bodyLongitude(name, d-1);
+  let diff = l1 - l0; if (diff > 180) diff -= 360; if (diff < -180) diff += 360;
+  return diff < 0;
+}
+
+const SIGNS = ["Aries","Taurus","Gemini","Cancer","Leo","Virgo","Libra","Scorpio","Sagittarius","Capricorn","Aquarius","Pisces"];
+const SIGN_GLYPH = ["♈","♉","♊","♋","♌","♍","♎","♏","♐","♑","♒","♓"];
+const SIGN_INFO = [
+ ["Cardinal Fire","initiative, courage, directness"],
+ ["Fixed Earth","stability, sensuality, persistence"],
+ ["Mutable Air","curiosity, communication, adaptability"],
+ ["Cardinal Water","nurturing, emotional depth, protectiveness"],
+ ["Fixed Fire","confidence, creativity, warmth"],
+ ["Mutable Earth","precision, service, analysis"],
+ ["Cardinal Air","balance, partnership, diplomacy"],
+ ["Fixed Water","intensity, transformation, depth"],
+ ["Mutable Fire","adventure, philosophy, honesty"],
+ ["Cardinal Earth","ambition, discipline, structure"],
+ ["Fixed Air","originality, independence, idealism"],
+ ["Mutable Water","imagination, empathy, intuition"]
+];
+function signOf(lon){ return Math.floor(normDeg(lon)/30); }
+
+/* ===================== Extended interpretation (Session 49) ===================== */
+const BODY_GOV = {sun:"identity and vitality", moon:"mood and instinct", mercury:"thinking and talking",
+  venus:"love and taste", mars:"drive and temper", jupiter:"growth and luck", saturn:"work and limits",
+  uranus:"change and rebellion", neptune:"dreams and intuition"};
+const TRANSIT_ROLE = {sun:"The Sun's spotlight", moon:"The Moon's mood", mercury:"Mercury's mental weather",
+  venus:"Venus's warmth", mars:"Mars's push", jupiter:"Jupiter's expansion", saturn:"Saturn's pressure",
+  uranus:"Uranus's jolt", neptune:"Neptune's fog"};
+const BODY_THEME = {sun:"your core identity", moon:"your emotions and inner world", mercury:"your thinking and words",
+  venus:"your love life and values", mars:"your drive and temper", jupiter:"your growth and opportunities",
+  saturn:"your discipline and limits", uranus:"your need for change", neptune:"your dreams and intuition",
+  asc:"how you come across"};
+const ASPECTS = [
+  {name:"conjunction", angle:0,   orb:6, verb:"supercharges",             sym:"☌"},
+  {name:"sextile",     angle:60,  orb:4, verb:"opens a helpful door for", sym:"⚹"},
+  {name:"square",      angle:90,  orb:6, verb:"puts pressure on",         sym:"□"},
+  {name:"trine",       angle:120, orb:6, verb:"smoothly supports",        sym:"△"},
+  {name:"opposition",  angle:180, orb:6, verb:"pulls against",            sym:"☍"}
+];
+function angleSep(a,b){ let d = Math.abs(normDeg(a)-normDeg(b)); if(d>180) d=360-d; return d; }
+
+const SIGN_RULER = ["Mars","Venus","Mercury","the Moon","the Sun","Mercury","Venus","Pluto & Mars","Jupiter","Saturn","Uranus & Saturn","Neptune & Jupiter"];
+const SIGN_STRENGTH = [
+ "brave, direct, quick to start things","steady, loyal, deeply sensual and patient",
+ "curious, witty and endlessly adaptable","nurturing, intuitive and fiercely protective",
+ "warm, generous, magnetic and creative","precise, helpful, quietly brilliant with detail",
+ "fair, charming, a natural peacemaker","intense, perceptive, unafraid of the depths",
+ "adventurous, honest, philosophically restless","disciplined, ambitious, built for the long game",
+ "original, independent, ideas ahead of their time","imaginative, empathic, dissolving every boundary"];
+const SIGN_GROWTH = [
+ "patience, and finishing what you start","flexibility, and loosening the grip on comfort",
+ "focus, and following through past the novelty","boundaries, and not taking everything to heart",
+ "humility, and sharing the spotlight","self-compassion, and easing the inner critic",
+ "decisiveness, and holding your own line","trust, and letting some control go",
+ "tact, and staying for the follow-through","play, and letting the warmth show",
+ "intimacy, and coming down from the abstract","grounding, and firmer edges"];
+const ROLE_NOTE = {
+  Sun: "Your core self — the identity you're here to grow into.",
+  Moon: "Your emotional nature — how you actually feel and self-soothe, under the surface.",
+  Rising: "Your mask and first impression — how you meet the world and how it first reads you."};
+
+function renderTransits(nowBodies){
+  const list = document.getElementById("transitList");
+  const cnt = document.getElementById("todaySkyCnt");
+  if(!list) return;
+  const retros = nowBodies.filter(b=>b.retro).length;
+  if(cnt) cnt.textContent = retros ? `${retros} retrograde` : "all direct";
+  list.innerHTML = nowBodies.map(b=>{
+    const s = signOf(b.lon);
+    const deg = (normDeg(b.lon)%30).toFixed(0);
+    const note = `${TRANSIT_ROLE[b.name]} moves through ${SIGNS[s]} — colouring ${BODY_GOV[b.name]} with ${SIGN_INFO[s][1]}.`
+      + (b.retro ? " Retrograde: that theme turns inward, slows, or asks for a review." : "");
+    return `<div class="transit-row ${b.name==='moon'?'moon':''}">
+      <span class="tg">${b.glyph}</span><span class="tb">${b.label}</span>
+      <span class="tsign">${SIGN_GLYPH[s]} ${SIGNS[s]} ${deg}°${b.retro?'<span class="retro">℞</span>':''}</span>
+      <span class="tnote">${note}</span></div>`;
+  }).join("");
+}
+
+function renderTodayForYou(natalBodies, nowBodies, ascInfo){
+  const section = document.getElementById("todayForYouSection");
+  const moonEl = document.getElementById("moonWeather");
+  const listEl = document.getElementById("aspectList");
+  const cnt = document.getElementById("todayForYouCnt");
+  if(!section) return;
+  section.style.display = "";
+  const natalPts = natalBodies.map(b=>({name:b.name, label:b.label, glyph:b.glyph, lon:b.lon}));
+  if(ascInfo) natalPts.push({name:"asc", label:"Ascendant", glyph:"↑", lon:ascInfo.asc});
+
+  const tMoon = nowBodies.find(b=>b.name==="moon");
+  const mSign = signOf(tMoon.lon);
+  const natalSun = natalBodies.find(b=>b.name==="sun");
+  const sunSeason = signOf(nowBodies.find(b=>b.name==="sun").lon) === signOf(natalSun.lon);
+  moonEl.innerHTML = `<div class="moon-weather"><b>Today's emotional weather:</b> the Moon is in ${SIGN_GLYPH[mSign]} ${SIGNS[mSign]} — ${SIGN_INFO[mSign][1]}. That's the felt tone of the day for everyone; for you it lands through the aspects below.`
+    + (sunSeason ? " <b>It's your solar-return season</b> — the Sun is back in your own sign, a personal new year." : "") + `</div>`;
+
+  const hits = [];
+  nowBodies.forEach(t=> natalPts.forEach(n=>{
+    const sep = angleSep(t.lon, n.lon);
+    ASPECTS.forEach(a=>{ const orb = Math.abs(sep - a.angle); if(orb <= a.orb) hits.push({t, n, a, orb}); });
+  }));
+  hits.sort((x,y)=>x.orb - y.orb);
+  const top = hits.slice(0, 10);
+  if(cnt) cnt.textContent = `${top.length} active`;
+  if(!top.length){
+    listEl.innerHTML = `<div class="aspect-none">No tight aspects between today's sky and your chart right now — a quiet day astrologically. The Moon's sign above still sets the tone.</div>`;
+    return;
+  }
+  listEl.innerHTML = top.map(h=>{
+    const line = `${TRANSIT_ROLE[h.t.name]} ${h.a.verb} ${BODY_THEME[h.n.name]}`;
+    const tag = `${h.t.glyph} ${h.a.sym} ${h.n.glyph} · ${h.a.name}, ${h.orb.toFixed(1)}° off${h.t.retro?' · ℞ retrograde':''}`;
+    return `<div class="aspect-row"><span class="ah">${line}.</span><span class="atag">${tag}</span></div>`;
+  }).join("");
+}
+
+function signDepthCard(role, glyph, sign){
+  if(sign===null || sign===undefined) return "";
+  const modeElem = SIGN_INFO[sign][0];
+  const elem = modeElem.split(" ")[1];
+  const polarity = (elem==="Fire"||elem==="Air") ? "Yang · active, outward" : "Yin · receptive, inward";
+  return `<div class="sign-depth-card">
+    <div class="sdh"><span class="g">${glyph} ${SIGN_GLYPH[sign]}</span><span class="n">${SIGNS[sign]}</span><span class="role">${role}</span></div>
+    <div class="meta">${modeElem} · ruled by ${SIGN_RULER[sign]} · ${polarity}</div>
+    <div class="line"><b>At its best:</b> ${SIGN_STRENGTH[sign]}.</div>
+    <div class="line"><b>Growth edge:</b> ${SIGN_GROWTH[sign]}.</div>
+    <div class="line"><b>Core themes:</b> ${SIGN_INFO[sign][1]}.</div>
+    <div class="rolenote">${ROLE_NOTE[role]}</div></div>`;
+}
+function renderSignDepth(cards){
+  const section = document.getElementById("signDepthSection");
+  const host = document.getElementById("signDepth");
+  if(!section || !host) return;
+  section.style.display = "";
+  host.innerHTML = cards.map(c=> signDepthCard(c.lbl, c.glyph, c.sign)).join("");
+}
+
+/* Ascendant (Rising sign) — Local Sidereal Time -> RAMC -> Ascendant ecliptic longitude.
+   Standard formula: Asc = atan2(-cos(RAMC), sin(ecl)*tan(lat) + cos(ecl)*sin(RAMC)) */
+function ascendant(birthUTC, lat, lonEast){
+  const dFull = daysSinceJ2000(birthUTC);
+  const midnight = new Date(Date.UTC(birthUTC.getUTCFullYear(), birthUTC.getUTCMonth(), birthUTC.getUTCDate(), 0,0,0));
+  const d0 = daysSinceJ2000(midnight);
+  const Ls0 = sunGeo(d0).lon;
+  const GMST0 = normDeg(Ls0 + 180);
+  const utHours = (birthUTC.getTime() - midnight.getTime()) / 3600000;
+  const GMST = normDeg(GMST0 + utHours*15.041067);
+  const RAMC = normDeg(GMST + lonEast);
+  const ecl = obliquity(dFull) * D2R;
+  const ramcR = RAMC * D2R, latR = lat * D2R;
+  let asc = Math.atan2(Math.cos(ramcR), -(Math.sin(ecl)*Math.tan(latR)) - Math.cos(ecl)*Math.sin(ramcR)) * R2D;
+  asc = normDeg(asc);
+  const mc = normDeg(Math.atan2(Math.sin(ramcR), Math.cos(ramcR)*Math.cos(ecl)) * R2D);
+  return {asc, mc, RAMC};
+}
+
+/* ===================== City list (defaults; manual lat/lon/offset always available) ===================== */
+const CITIES = [
+["Sydney, AU",-33.8688,151.2093,10],["Melbourne, AU",-37.8136,144.9631,10],["Brisbane, AU",-27.4698,153.0251,10],
+["Perth, AU",-31.9505,115.8605,8],["Adelaide, AU",-34.9285,138.6007,9.5],["Canberra, AU",-35.2809,149.1300,10],
+["Hobart, AU",-42.8821,147.3272,10],["Darwin, AU",-12.4634,130.8456,9.5],["Gold Coast, AU",-28.0167,153.4000,10],
+["Newcastle, AU",-32.9283,151.7817,10],["Wollongong, AU",-34.4278,150.8931,10],["Cairns, AU",-16.9186,145.7781,10],
+["Geelong, AU",-38.1499,144.3617,10],["Auckland, NZ",-36.8485,174.7633,12],["Wellington, NZ",-41.2865,174.7762,12],
+["Christchurch, NZ",-43.5321,172.6362,12],["Suva, FJ",-18.1416,178.4419,12],
+["Tokyo, JP",35.6762,139.6503,9],["Seoul, KR",37.5665,126.9780,9],["Beijing, CN",39.9042,116.4074,8],
+["Shanghai, CN",31.2304,121.4737,8],["Hong Kong, HK",22.3193,114.1694,8],["Taipei, TW",25.0330,121.5654,8],
+["Singapore, SG",1.3521,103.8198,8],["Bangkok, TH",13.7563,100.5018,7],["Manila, PH",14.5995,120.9842,8],
+["Jakarta, ID",-6.2088,106.8456,7],["Kuala Lumpur, MY",3.1390,101.6869,8],["Ho Chi Minh City, VN",10.8231,106.6297,7],
+["Mumbai, IN",19.0760,72.8777,5.5],["Delhi, IN",28.7041,77.1025,5.5],["Bangalore, IN",12.9716,77.5946,5.5],
+["Dubai, AE",25.2048,55.2708,4],["Tel Aviv, IL",32.0853,34.7818,2],["Riyadh, SA",24.7136,46.6753,3],
+["London, GB",51.5074,-0.1278,0],["Paris, FR",48.8566,2.3522,1],["Berlin, DE",52.5200,13.4050,1],
+["Madrid, ES",40.4168,-3.7038,1],["Rome, IT",41.9028,12.4964,1],["Amsterdam, NL",52.3676,4.9041,1],
+["Dublin, IE",53.3498,-6.2603,0],["Lisbon, PT",38.7223,-9.1393,0],["Vienna, AT",48.2082,16.3738,1],
+["Zurich, CH",47.3769,8.5417,1],["Stockholm, SE",59.3293,18.0686,1],["Oslo, NO",59.9139,10.7522,1],
+["Copenhagen, DK",55.6761,12.5683,1],["Athens, GR",37.9838,23.7275,2],["Moscow, RU",55.7558,37.6173,3],
+["Warsaw, PL",52.2297,21.0122,1],["Prague, CZ",50.0755,14.4378,1],["Brussels, BE",50.8503,4.3517,1],
+["Budapest, HU",47.4979,19.0402,1],["Istanbul, TR",41.0082,28.9784,3],
+["Cairo, EG",30.0444,31.2357,2],["Johannesburg, ZA",-26.2041,28.0473,2],["Nairobi, KE",-1.2921,36.8219,3],
+["Lagos, NG",6.5244,3.3792,1],["Cape Town, ZA",-33.9249,18.4241,2],
+["New York, US",40.7128,-74.0060,-5],["Los Angeles, US",34.0522,-118.2437,-8],["Chicago, US",41.8781,-87.6298,-6],
+["San Francisco, US",37.7749,-122.4194,-8],["Seattle, US",47.6062,-122.3321,-8],["Miami, US",25.7617,-80.1918,-5],
+["Houston, US",29.7604,-95.3698,-6],["Boston, US",42.3601,-71.0589,-5],["Washington DC, US",38.9072,-77.0369,-5],
+["Atlanta, US",33.7490,-84.3880,-5],["Denver, US",39.7392,-104.9903,-7],["Honolulu, US",21.3069,-157.8583,-10],
+["Toronto, CA",43.6532,-79.3832,-5],["Vancouver, CA",49.2827,-123.1207,-8],["Mexico City, MX",19.4326,-99.1332,-6],
+["São Paulo, BR",-23.5505,-46.6333,-3],["Buenos Aires, AR",-34.6037,-58.3816,-3],["Rio de Janeiro, BR",-22.9068,-43.1729,-3],
+["Lima, PE",-12.0464,-77.0428,-5],["Bogotá, CO",4.7110,-74.0721,-5],["Santiago, CL",-33.4489,-70.6693,-4]
+];
+
+/* ===================== Profiles (localStorage — never written to this file) ===================== */
+const LS_KEY = "ghost_horoscope_profiles_v1";
+/* Demo mode (Session 54): birth data here is 100% browser-local (never sent to the server),
+   so there is no server endpoint to gate — the demo treatment is necessarily client-side.
+   Under ?demo=1 we ignore the real localStorage profiles entirely and render from a single
+   placeholder profile, and saving is disabled, so a real name / birth time / location is
+   never shown on screen or written while demoing. */
+const DEMO = new URLSearchParams(location.search).get("demo") === "1";
+const DEMO_PROFILE = {id:"demo", name:"Demo Profile", date:"1990-06-15", time:"12:00",
+                      unknownTime:false, lat:40.0, lon:-74.0, offset:-5};
+function loadProfiles(){
+  if (DEMO) return [Object.assign({}, DEMO_PROFILE)];
+  try { return JSON.parse(localStorage.getItem(LS_KEY)) || []; } catch(e){ return []; }
+}
+function saveProfiles(list){ if (DEMO) return; try { localStorage.setItem(LS_KEY, JSON.stringify(list)); } catch(e){} }
+let profiles = loadProfiles();
+let activeProfileId = null;
+
+function populateCitySelect(){
+  const sel = document.getElementById("fCity");
+  sel.innerHTML = `<option value="custom">Custom / other (enter coordinates)</option>` +
+    CITIES.map((c,i)=>`<option value="${i}">${c[0]}</option>`).join("");
+  sel.addEventListener("change", ()=>{
+    const row = document.getElementById("customCoordsRow");
+    if (sel.value === "custom"){ row.style.display = "flex"; }
+    else {
+      row.style.display = "none";
+      const c = CITIES[parseInt(sel.value,10)];
+      document.getElementById("fLat").value = c[1];
+      document.getElementById("fLon").value = c[2];
+      document.getElementById("fOffset").value = c[3];
+    }
+  });
+}
+populateCitySelect();
+
+function refreshProfileSelect(){
+  const sel = document.getElementById("profileSelect");
+  sel.innerHTML = profiles.map(p=>`<option value="${p.id}">${p.name}</option>`).join("");
+  if (profiles.length){
+    if (!activeProfileId || !profiles.find(p=>p.id===activeProfileId)) activeProfileId = profiles[0].id;
+    sel.value = activeProfileId;
+  }
+}
+document.getElementById("profileSelect").addEventListener("change", (e)=>{
+  activeProfileId = e.target.value; render();
+});
+
+/* ===================== Modal / add profile ===================== */
+const modalBackdrop = document.getElementById("modalBackdrop");
+function openModal(editing){
+  document.getElementById("modalTitle").textContent = editing ? "Edit profile" : "Add a profile";
+  if (editing){
+    const p = profiles.find(x=>x.id===activeProfileId);
+    if (p){
+      document.getElementById("fName").value = p.name;
+      document.getElementById("fDate").value = p.date;
+      document.getElementById("fTime").value = p.time || "12:00";
+      document.getElementById("fUnknownTime").checked = !!p.unknownTime;
+      document.getElementById("fLat").value = p.lat;
+      document.getElementById("fLon").value = p.lon;
+      document.getElementById("fOffset").value = p.offset;
+      document.getElementById("fCity").value = "custom";
+      document.getElementById("customCoordsRow").style.display = "flex";
+    }
+  } else {
+    document.getElementById("fName").value = "";
+    document.getElementById("fDate").value = "";
+    document.getElementById("fTime").value = "12:00";
+    document.getElementById("fUnknownTime").checked = false;
+    document.getElementById("fLat").value = "";
+    document.getElementById("fLon").value = "";
+    document.getElementById("fOffset").value = "";
+    document.getElementById("fCity").value = "custom";
+    document.getElementById("customCoordsRow").style.display = "flex";
+  }
+  modalBackdrop.classList.add("show");
+}
+document.getElementById("addProfileBtn").addEventListener("click", ()=>openModal(false));
+document.getElementById("editProfileBtn").addEventListener("click", ()=>{
+  if (activeProfileId) openModal(true); else openModal(false);
+});
+document.getElementById("cancelProfileBtn").addEventListener("click", ()=>modalBackdrop.classList.remove("show"));
+document.getElementById("saveProfileBtn").addEventListener("click", ()=>{
+  const name = document.getElementById("fName").value.trim() || "Unnamed";
+  const date = document.getElementById("fDate").value;
+  const unknownTime = document.getElementById("fUnknownTime").checked;
+  const time = unknownTime ? "12:00" : (document.getElementById("fTime").value || "12:00");
+  const lat = parseFloat(document.getElementById("fLat").value);
+  const lon = parseFloat(document.getElementById("fLon").value);
+  const offset = parseFloat(document.getElementById("fOffset").value);
+  if (!date || isNaN(lat) || isNaN(lon) || isNaN(offset)){
+    alert("Please fill in date of birth, and a location (city or manual coordinates) with a UTC offset.");
+    return;
+  }
+  const editing = modalBackdrop.dataset.editing === "1" || document.getElementById("modalTitle").textContent === "Edit profile";
+  if (editing && activeProfileId){
+    const p = profiles.find(x=>x.id===activeProfileId);
+    Object.assign(p, {name,date,time,unknownTime,lat,lon,offset});
+  } else {
+    const id = "p" + Date.now();
+    profiles.push({id,name,date,time,unknownTime,lat,lon,offset});
+    activeProfileId = id;
+  }
+  saveProfiles(profiles);
+  refreshProfileSelect();
+  modalBackdrop.classList.remove("show");
+  render();
+});
+
+/* ===================== Wheel rendering ===================== */
+function polar(cx,cy,r,lonDeg){
+  const a = lonDeg * D2R;
+  return { x: cx + r*Math.sin(a), y: cy - r*Math.cos(a) };
+}
+function drawWheel(svgEl, bodies, opts){
+  opts = opts || {};
+  const cx=190, cy=190, rOuter=170, rSignRing=150, rBody=120, rAsc=170;
+  let svg = `<circle cx="${cx}" cy="${cy}" r="${rOuter}" fill="none" stroke="rgba(190,150,255,0.25)" stroke-width="1"/>`;
+  for (let s=0;s<12;s++){
+    const a0 = s*30, a1 = (s+1)*30;
+    const p0 = polar(cx,cy,rOuter,a0), p1 = polar(cx,cy,rOuter,a1);
+    svg += `<line x1="${cx}" y1="${cy}" x2="${p0.x}" y2="${p0.y}" stroke="rgba(190,150,255,0.12)" stroke-width="1"/>`;
+    if (s%2===0) {
+      const largeArc = 0;
+      svg += `<path d="M${cx},${cy} L${p0.x},${p0.y} A${rOuter},${rOuter} 0 0 1 ${p1.x},${p1.y} Z" fill="rgba(190,150,255,0.05)"/>`;
+    }
+    const mid = polar(cx,cy,rSignRing+12,a0+15);
+    svg += `<text x="${mid.x}" y="${mid.y}" fill="#c3aee0" font-size="13" text-anchor="middle" dominant-baseline="middle">${SIGN_GLYPH[s]}</text>`;
+  }
+  // body markers, offset overlapping labels slightly outward in pairs
+  const used = [];
+  bodies.forEach((b,idx)=>{
+    let r = rBody;
+    // nudge radius for bodies close in longitude so labels don't stack
+    for (const u of used){ if (Math.abs(u.lon-b.lon) < 6 || Math.abs(u.lon-b.lon)>354) r -= 14; }
+    used.push({lon:b.lon});
+    const p = polar(cx,cy,r,b.lon);
+    svg += `<circle cx="${p.x}" cy="${p.y}" r="9" fill="rgba(196,139,255,0.18)" stroke="#c48bff" stroke-width="1"/>`;
+    svg += `<text x="${p.x}" y="${p.y}" fill="#f0e3ff" font-size="10.5" text-anchor="middle" dominant-baseline="middle">${b.glyph}</text>`;
+  });
+  if (opts.asc !== undefined){
+    const p = polar(cx,cy,rAsc,opts.asc);
+    const p2 = polar(cx,cy,rAsc+16,opts.asc);
+    svg += `<line x1="${p.x}" y1="${p.y}" x2="${p2.x}" y2="${p2.y}" stroke="#8fe6b0" stroke-width="1.5"/>`;
+    svg += `<text x="${p2.x}" y="${p2.y}" fill="#8fe6b0" font-size="10" text-anchor="middle" dominant-baseline="middle">ASC</text>`;
+  }
+  svgEl.innerHTML = svg;
+}
+
+/* ===================== Render ===================== */
+function computeBodiesFor(d){
+  return BODY_ORDER.map(name => ({
+    name, glyph: BODY_GLYPH[name], label: BODY_NAME[name],
+    lon: bodyLongitude(name, d), retro: isRetrograde(name, d)
+  }));
+}
+
+function render(){
+  const now = new Date();
+  document.getElementById("nowStamp").textContent = now.toLocaleString(undefined,{dateStyle:"medium",timeStyle:"short"});
+  const dNow = daysSinceJ2000(now);
+  const nowBodies = computeBodiesFor(dNow);
+  drawWheel(document.getElementById("wheelNow"), nowBodies, {});
+  renderTransits(nowBodies);
+
+  refreshProfileSelect();
+  const profile = profiles.find(p=>p.id===activeProfileId);
+  const bigThree = document.getElementById("bigThree");
+  const natalTitleEl = document.getElementById("natalTitle");
+  const natalSubEl = document.getElementById("natalSub");
+  const table = document.querySelector("#planetTable tbody");
+
+  if (!profile){
+    document.getElementById("wheelNatal").innerHTML = "";
+    natalTitleEl.textContent = "Natal Chart";
+    natalSubEl.textContent = "Add a profile to see a natal chart here";
+    bigThree.innerHTML = `<div class="bt-card" style="grid-column:1/-1">No profile yet — click "+ Add profile" above to calculate a Sun / Moon / Rising for yourself or a guest.</div>`;
+    table.innerHTML = "";
+    document.getElementById("todayForYouSection").style.display = "none";
+    document.getElementById("signDepthSection").style.display = "none";
+    return;
+  }
+
+  const [y,m,day] = profile.date.split("-").map(Number);
+  const [hh,mm] = profile.time.split(":").map(Number);
+  const localMs = Date.UTC(y, m-1, day, hh, mm, 0);
+  const birthUTC = new Date(localMs - profile.offset*3600000);
+  const dBirth = daysSinceJ2000(birthUTC);
+
+  const natalBodies = computeBodiesFor(dBirth);
+  let ascInfo = null;
+  if (!profile.unknownTime){
+    ascInfo = ascendant(birthUTC, profile.lat, profile.lon);
+  }
+  drawWheel(document.getElementById("wheelNatal"), natalBodies, ascInfo ? {asc: ascInfo.asc} : {});
+  natalTitleEl.textContent = profile.name + "'s Natal Chart";
+  natalSubEl.textContent = profile.unknownTime ? "Birth time unknown — Ascendant omitted" : "Green ASC marker = your Rising sign";
+
+  const sunSign = signOf(natalBodies.find(b=>b.name==="sun").lon);
+  const moonSign = signOf(natalBodies.find(b=>b.name==="moon").lon);
+  const cards = [
+    {lbl:"Sun", glyph:"☉", sign: sunSign},
+    {lbl:"Moon", glyph:"☾", sign: moonSign}
+  ];
+  if (ascInfo) cards.push({lbl:"Rising", glyph:"↑", sign: signOf(ascInfo.asc)});
+  else cards.push({lbl:"Rising", glyph:"↑", sign: null});
+
+  bigThree.innerHTML = cards.map(c=>{
+    if (c.sign===null) return `<div class="bt-card"><div class="lbl">${c.lbl}</div><div class="glyph">—</div><div class="signname">Unknown</div><div class="desc">Add a birth time to calculate this</div></div>`;
+    return `<div class="bt-card"><div class="lbl">${c.lbl}</div><div class="glyph">${c.glyph} ${SIGN_GLYPH[c.sign]}</div><div class="signname">${SIGNS[c.sign]}</div><div class="desc">${SIGN_INFO[c.sign][0]} — ${SIGN_INFO[c.sign][1]}</div></div>`;
+  }).join("");
+
+  renderTodayForYou(natalBodies, nowBodies, ascInfo);
+  renderSignDepth(cards);
+
+  table.innerHTML = natalBodies.map(b=>{
+    const s = signOf(b.lon);
+    const deg = (normDeg(b.lon) % 30).toFixed(1);
+    return `<tr><td class="pg">${b.glyph}</td><td class="pn">${b.label}${b.retro?'<span class="retro">℞ retrograde</span>':''}</td>
+      <td>${SIGNS[s]} ${SIGN_GLYPH[s]}</td><td class="pd">${deg}° into sign</td></tr>`;
+  }).join("");
+  if (ascInfo){
+    const mcSign = signOf(ascInfo.mc);
+    table.innerHTML += `<tr><td class="pg">MC</td><td class="pn">Midheaven</td><td>${SIGNS[mcSign]} ${SIGN_GLYPH[mcSign]}</td><td class="pd">career/public-facing axis</td></tr>`;
+  }
+}
+
+/* signs glossary */
+document.getElementById("signsGlossary").innerHTML = SIGNS.map((s,i)=>
+  `<div class="sign-chip"><b>${SIGN_GLYPH[i]} ${s}</b>${SIGN_INFO[i][0]} — ${SIGN_INFO[i][1]}</div>`).join("");
+
+render();
+</script>
+</body>
+</html>

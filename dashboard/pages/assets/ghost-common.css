@@ -1,0 +1,114 @@
+/* Ghost — shared UI design system (Session 59, 03/09/2026).
+   Implements [[Ghost — UI Design System]] (confirmed 03/09/2026): ONE shared dark base for every
+   page (no per-section background tint), flat hairline-border panels (replacing .glass's blur/glow),
+   small-caps serif ornament typography, the monochrome sigil mark, and a single restrained pastel
+   accent per section applied ONLY to that page's title/wordmark.
+
+   Loaded via <link> in each page's <head> BEFORE its own <style>, so the page's later rules can still
+   override where needed. Pages delete their own body-background + .glass blocks so THESE govern.
+   Grain data-URI is a faithful feTurbulence build per the spec (the exact artboard bytes live on the
+   external Claude Design canvas, not fetchable as markup — this reproduces the described effect). */
+:root {
+  /* one shared dark base — identical on every page */
+  --gc-base: radial-gradient(ellipse at 50% 0%, #150e14 0%, #050308 65%);
+
+  /* flat panel treatment (the "ledger page", not phone-glass) */
+  --gc-panel-bg:      rgba(0,0,0,0.32);
+  --gc-panel-border:  rgba(255,255,255,0.10);
+  --gc-hairline:      rgba(255,255,255,0.08);   /* internal row dividers */
+  --gc-radius:        5px;
+
+  /* monochrome ink */
+  --gc-ink:      #e6dde2;   /* primary text / solid-button fill */
+  --gc-ink-dim:  #b9adb4;   /* secondary */
+  --gc-ink-faint:#7d7480;   /* meta */
+
+  /* ornament type */
+  --gc-serif: Georgia, "Times New Roman", serif;
+
+  /* the four locked section-title pastels (S 55% L 82%, hue per section) — LOCKED 03/09/2026.
+     Applied ONLY to a page's own title/wordmark (and an explicit accent variant where one is
+     already meaningful, e.g. a streak pill). Never a background tint. */
+  --ghost-title:  #eab8c0;   /* Ghost — habits/food (main app) */
+  --bills-title:  #b8d1ea;   /* Bills */
+  --witchy-title: #cdb8ea;   /* Horoscope / Tarot */
+  --rook-title:   #eadeb8;   /* Quest Log / Rook */
+
+  /* back-compat: S57's momentum card reads var(--accent); default it to Ghost's pastel.
+     (The dashboard's escalation code still overrides --accent at runtime — deliberate.) */
+  --accent: var(--ghost-title);
+}
+
+/* Shared base background — one place, every page. background-attachment fixed so it (and the grain)
+   don't scroll. Only sets the background; each page keeps its own color/font/padding on body. */
+body {
+  background: var(--gc-base) fixed !important;
+}
+
+/* Fine film grain over the whole scene (feTurbulence noise, overlay blend, subtle). */
+body::before {
+  content: "";
+  position: fixed; inset: 0;
+  pointer-events: none;
+  z-index: 9998;
+  opacity: 0.55;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.45'/%3E%3C/svg%3E");
+}
+
+/* Large near-invisible sigil watermark behind all content (z-index:-1 sits above the body
+   background but below in-flow content, so no per-page z-index work is needed). */
+body::after {
+  content: "";
+  position: fixed;
+  top: 50%; left: 50%;
+  width: 400px; height: 400px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  z-index: -1;
+  opacity: 0.05;
+  background-repeat: no-repeat;
+  background-position: center;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' fill='none' stroke='%23e6dde2' stroke-width='0.6'%3E%3Ccircle cx='50' cy='50' r='40'/%3E%3Ccircle cx='50' cy='50' r='33'/%3E%3Cpolygon points='50,17 78,66 22,66'/%3E%3Ccircle cx='50' cy='50' r='2.6' fill='%23e6dde2' stroke='none'/%3E%3Cline x1='50' y1='3' x2='50' y2='12'/%3E%3Cline x1='50' y1='88' x2='50' y2='97'/%3E%3Cline x1='3' y1='50' x2='12' y2='50'/%3E%3Cline x1='88' y1='50' x2='97' y2='50'/%3E%3C/svg%3E");
+}
+
+/* Flat panels — replaces every page's old blurred/glowing .glass. Pages delete their local .glass
+   block so this one governs uniformly. */
+.glass {
+  background: var(--gc-panel-bg) !important;
+  border: 1px solid var(--gc-panel-border) !important;
+  border-radius: var(--gc-radius) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  box-shadow: none !important;
+}
+
+/* Shared component helpers (used by the new markup + available to pages as they migrate). */
+.gc-sigil { display: inline-block; vertical-align: middle; color: var(--gc-ink-dim); }
+.gc-btn {
+  font-family: var(--gc-serif); font-variant: small-caps; letter-spacing: 0.06em;
+  background: var(--gc-ink); color: #150e14; border: none;
+  border-radius: var(--gc-radius); padding: 7px 13px; cursor: pointer;
+}
+.gc-btn-outline {
+  font-family: var(--gc-serif); font-variant: small-caps; letter-spacing: 0.06em;
+  background: transparent; color: var(--gc-ink); border: 1px solid rgba(255,255,255,0.28);
+  border-radius: var(--gc-radius); padding: 7px 13px; cursor: pointer;
+}
+.gc-tag {
+  font-family: var(--gc-serif); font-variant: small-caps; letter-spacing: 0.05em;
+  background: transparent; border: 1px solid var(--gc-panel-border);
+  border-radius: var(--gc-radius); padding: 2px 8px; font-size: 9px; color: var(--gc-ink-dim);
+}
+
+/* Every page's .brand-mark orb becomes the monochrome sigil (one place, all pages). Keeps each
+   page's own width/height; only the appearance changes. */
+.brand-mark {
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23b9adb4' stroke-width='1.1'%3E%3Ccircle cx='12' cy='12' r='6.3'/%3E%3Ccircle cx='12' cy='12' r='1.1' fill='%23b9adb4' stroke='none'/%3E%3Cline x1='12' y1='2' x2='12' y2='4.5'/%3E%3Cline x1='12' y1='19.5' x2='12' y2='22'/%3E%3Cline x1='2' y1='12' x2='4.5' y2='12'/%3E%3Cline x1='19.5' y1='12' x2='22' y2='12'/%3E%3C/svg%3E") center / contain no-repeat !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+}
+
+/* Ornament typography for wordmarks/titles (serif small-caps). Colour is set per page to its
+   locked pastel; this only sets the face + small-caps so it's consistent everywhere. */
+.brand-text b, .brand-text > b { font-family: var(--gc-serif) !important; font-variant: small-caps; letter-spacing: 0.07em; }
