@@ -16,6 +16,8 @@ PAGE_HOOKS = {
     "ghost-quest-log.html": ["quest-list"],
     "ghost-horoscope.html": ["profile-select"],
     "ghost-tarot.html":     ["tarot-board"],
+    # Ghost 2.0 Phase 1 — native Habits & Todos
+    "ghost-habits.html":    ["nav-item", "habits-list", "todos-list", "level-panel"],
 }
 
 # API endpoints that must return HTTP 200 (checked in live mode only — they need the backend)
@@ -30,6 +32,9 @@ API_ENDPOINTS = [
     "/api/bill-settings",
     "/api/liveness",
     "/api/version",
+    "/api/habits",
+    "/api/todos",
+    "/api/level",
 ]
 
 PAGES = list(PAGE_HOOKS.keys())
