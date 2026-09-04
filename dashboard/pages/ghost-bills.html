@@ -17,13 +17,10 @@
     font-size: 13px;
   }
   a { color: #9ec7ff; text-decoration: none; }
-  .glass {
-    background: rgba(18,34,62,0.42);
-    backdrop-filter: blur(16px) saturate(150%);
-    -webkit-backdrop-filter: blur(16px) saturate(150%);
-    border: 1px solid rgba(120,170,255,0.15);
-    border-radius: 12px;
-    box-shadow: 0 6px 22px rgba(0,10,30,0.4), inset 0 1px 0 rgba(200,220,255,0.07);
+    .panel {
+    background: rgba(0,0,0,0.32);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 5px;
   }
   .wrap { max-width: 1180px; margin: 0 auto; }
 
@@ -124,22 +121,22 @@
 
   <!-- headline summary cards -->
   <div class="cards">
-    <div class="card glass"><div class="lbl">Monthly total</div><div class="big" id="cMonthly">—</div><div class="note" id="cMonthlyNote"></div></div>
-    <div class="card glass"><div class="lbl">Due before next payday</div><div class="big" id="cPayday">—</div><div class="note" id="cPaydayNote"></div></div>
-    <div class="card glass"><div class="lbl">Set aside this cycle</div><div class="big" id="cSetAside">—</div><div class="note" id="cSetAsideNote"></div></div>
-    <div class="card glass"><div class="lbl">Overdue</div><div class="big" id="cOverdue">—</div><div class="note" id="cOverdueNote"></div></div>
+    <div class="card panel"><div class="lbl">Monthly total</div><div class="big" id="cMonthly">—</div><div class="note" id="cMonthlyNote"></div></div>
+    <div class="card panel"><div class="lbl">Due before next payday</div><div class="big" id="cPayday">—</div><div class="note" id="cPaydayNote"></div></div>
+    <div class="card panel"><div class="lbl">Set aside this cycle</div><div class="big" id="cSetAside">—</div><div class="note" id="cSetAsideNote"></div></div>
+    <div class="card panel"><div class="lbl">Overdue</div><div class="big" id="cOverdue">—</div><div class="note" id="cOverdueNote"></div></div>
   </div>
 
   <!-- secondary metrics -->
   <div class="cards mini">
-    <div class="card glass"><div class="lbl">Annual total</div><div class="big" id="cAnnual">—</div></div>
-    <div class="card glass"><div class="lbl">Due next 7 days</div><div class="big" id="cDue7">—</div><div class="note" id="cDue7Note"></div></div>
-    <div class="card glass"><div class="lbl">Due next 14 days</div><div class="big" id="cDue14">—</div><div class="note" id="cDue14Note"></div></div>
-    <div class="card glass"><div class="lbl">Due next 30 days</div><div class="big" id="cDue30">—</div><div class="note" id="cDue30Note"></div></div>
+    <div class="card panel"><div class="lbl">Annual total</div><div class="big" id="cAnnual">—</div></div>
+    <div class="card panel"><div class="lbl">Due next 7 days</div><div class="big" id="cDue7">—</div><div class="note" id="cDue7Note"></div></div>
+    <div class="card panel"><div class="lbl">Due next 14 days</div><div class="big" id="cDue14">—</div><div class="note" id="cDue14Note"></div></div>
+    <div class="card panel"><div class="lbl">Due next 30 days</div><div class="big" id="cDue30">—</div><div class="note" id="cDue30Note"></div></div>
   </div>
 
   <!-- settings -->
-  <details class="settings glass" id="settingsBox">
+  <details class="settings panel" id="settingsBox">
     <summary>Pay cadence &amp; settings</summary>
     <div class="set-row">
       <label class="f">Pay frequency
@@ -162,7 +159,7 @@
   </details>
 
   <!-- table -->
-  <div class="table-card glass">
+  <div class="table-card panel">
     <div class="table-head">
       <span class="title">All bills</span>
       <span class="spacer"></span>
@@ -193,7 +190,7 @@
 
 <!-- add/edit modal -->
 <div class="modal-bg" id="modalBg" onclick="if(event.target===this)closeForm()">
-  <div class="modal glass">
+  <div class="modal panel">
     <h2 id="modalTitle">Add bill</h2>
     <div class="grid2">
       <label class="f full">Name<input type="text" id="fName" placeholder="e.g. Electricity"></label>

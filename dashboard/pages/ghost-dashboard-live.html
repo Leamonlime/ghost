@@ -15,13 +15,10 @@
     color: #f3e6ee;
     font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
   }
-  .glass {
-    background: rgba(50,16,36,0.42);
-    backdrop-filter: blur(16px) saturate(150%);
-    -webkit-backdrop-filter: blur(16px) saturate(150%);
-    border: 1px solid rgba(255,150,200,0.15);
-    border-radius: 12px;
-    box-shadow: 0 6px 22px rgba(30,0,20,0.4), inset 0 1px 0 rgba(255,200,225,0.07);
+    .panel {
+    background: rgba(0,0,0,0.32);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 5px;
   }
 
   .app { display: flex; height: 100vh; }
@@ -170,7 +167,10 @@
   }
   /* Chat overlay (Ghost + Cephalopod) */
   .chat-overlay { display:none; position:fixed; inset:0; background:rgba(10,3,8,0.55); z-index:100; align-items:flex-end; justify-content:flex-end; padding:20px; }
-  .chat-panel { width:380px; max-width:92vw; height:520px; max-height:82vh; display:flex; flex-direction:column; border-radius:16px; overflow:hidden; }
+  /* S64: opaque background — this panel is a position:fixed overlay ON TOP of the dashboard, so
+     the design-system .panel bg (rgba(0,0,0,0.32), fine over the page's own base) let the cards
+     behind it show through (Lea's chat-leak report). An overlay needs a solid fill. */
+  .chat-panel { width:380px; max-width:92vw; height:520px; max-height:82vh; display:flex; flex-direction:column; border-radius:16px; overflow:hidden; background:#160d14; }
   .chat-head { display:flex; align-items:center; justify-content:space-between; padding:10px 14px; border-bottom:1px solid rgba(255,150,200,0.12); }
   .chat-tabs { display:flex; gap:6px; }
   .chat-tab { font-size:11px; letter-spacing:.04em; padding:4px 12px; border-radius:10px; cursor:pointer; color:#a97b95; background:rgba(255,150,200,0.06); }
@@ -195,7 +195,7 @@
 <body>
 <div class="app">
 
-  <div class="sidebar glass" id="sidebar" style="border-radius:0;">
+  <div class="sidebar panel" id="sidebar" style="border-radius:0;">
     <div class="brand">
       <div class="brand-mark"></div>
       <div class="brand-text"><b>GHOST</b><span>COMMAND CENTER</span></div>
@@ -217,25 +217,25 @@
       <a class="nav-item" data-role="nav-item" href="ghost-tarot.html"><span class="ic">🂠</span>Tarot</a>
       <a class="nav-item" data-role="nav-item" href="ghost-quest-log.html"><span class="ic">🧭</span>Quest Engine</a>
     </div>
-    <div class="presence glass">
+    <div class="presence panel">
       <div class="lbl">Presence</div>
       <div class="presence-orb"></div>
       <div class="wave"><span style="animation-delay:0s"></span><span style="animation-delay:0.15s"></span><span style="animation-delay:0.3s"></span><span style="animation-delay:0.1s"></span><span style="animation-delay:0.25s"></span></div>
       <div class="status-txt" id="presenceTxt">Connecting…</div>
     </div>
-    <div class="quiet-btn glass">◐ Quiet Hours</div>
+    <div class="quiet-btn panel">◐ Quiet Hours</div>
   </div>
 
   <div class="main-col">
 
     <div class="topbar">
-      <div class="status-pill glass"><span class="dot" id="statusDot"></span><span id="statusTxt">GHOST STATUS · CONNECTING</span></div>
-      <div class="clock glass" style="padding:5px 16px;"><div class="d" id="clockDate">—</div><div class="t" id="clockTime">—</div></div>
-      <input class="search-box glass" id="searchBox" placeholder="🔍 Search habits & todos…" oninput="applySearch()" autocomplete="off" style="border:none;outline:none;color:#f3e6ee;">
-      <div class="icon-btn glass" id="btnMenu" title="Toggle sidebar" onclick="document.getElementById('sidebar').classList.toggle('collapsed')">▦</div>
-      <div class="icon-btn glass" id="btnBell" title="Open chat / respond to nudges" onclick="openChat('ghost')">🔔<span id="bellBadge" class="bell-badge"></span></div>
-      <div class="icon-btn glass" id="btnSettings" title="Toggle demo mode" onclick="location.search = location.search.indexOf('demo=1')>=0 ? '' : '?demo=1'">⚙</div>
-      <div class="profile glass"><div class="av"></div><div><div class="name">Lea</div><div class="role">Operator</div></div></div>
+      <div class="status-pill panel"><span class="dot" id="statusDot"></span><span id="statusTxt">GHOST STATUS · CONNECTING</span></div>
+      <div class="clock panel" style="padding:5px 16px;"><div class="d" id="clockDate">—</div><div class="t" id="clockTime">—</div></div>
+      <input class="search-box panel" id="searchBox" placeholder="🔍 Search habits & todos…" oninput="applySearch()" autocomplete="off" style="border:none;outline:none;color:#f3e6ee;">
+      <div class="icon-btn panel" id="btnMenu" title="Toggle sidebar" onclick="document.getElementById('sidebar').classList.toggle('collapsed')">▦</div>
+      <div class="icon-btn panel" id="btnBell" title="Open chat / respond to nudges" onclick="openChat('ghost')">🔔<span id="bellBadge" class="bell-badge"></span></div>
+      <div class="icon-btn panel" id="btnSettings" title="Toggle demo mode" onclick="location.search = location.search.indexOf('demo=1')>=0 ? '' : '?demo=1'">⚙</div>
+      <div class="profile panel"><div class="av"></div><div><div class="name">Lea</div><div class="role">Operator</div></div></div>
     </div>
 
     <div class="content">
@@ -248,48 +248,48 @@
            data-role hooks (habits/todos/overview/proposals) stayed on the inner list divs —
            only the parent cards' grid positions changed. -->
       <div class="row1">
-        <div class="card glass" id="cardHabits">
+        <div class="card panel" id="cardHabits">
           <div class="card-title">Habits — Habitica</div>
           <div class="scroll-list" id="habitsList" data-role="habits"></div>
         </div>
 
-        <div class="card glass" id="cardTodos">
+        <div class="card panel" id="cardTodos">
           <div class="card-title">ToDos — Habitica</div>
           <div class="scroll-list" id="todosList" data-role="todos"></div>
         </div>
       </div>
 
       <div class="row2">
-        <div class="card glass" id="cardOverview">
+        <div class="card panel" id="cardOverview">
           <div class="card-title">Ghost Core Overview</div>
           <div id="overviewList"></div>
         </div>
 
-        <div class="card glass" id="cardTimeline">
+        <div class="card panel" id="cardTimeline">
           <div class="card-title">Mission Timeline<span style="font-size:8px;color:#8a6a7c;" id="tlDate">Today</span></div>
           <div class="tl-axis"><span>6a</span><span>9a</span><span>12p</span><span>3p</span><span>6p</span><span>9p</span></div>
           <div class="tl-track" id="tlTrack" style="margin-bottom:6px;"></div>
           <div class="scroll-list" id="missionList"></div>
         </div>
 
-        <div class="card glass" id="cardProposals">
+        <div class="card panel" id="cardProposals">
           <div class="card-title">Self-Code Proposals<span class="count" id="propCount" style="margin-left:auto;font-size:9px;color:#8a6a7c;"></span></div>
           <div class="scroll-list" id="proposalList"></div>
         </div>
       </div>
 
       <div class="row3">
-        <div class="card glass">
+        <div class="card panel">
           <div class="card-title">System Monitor</div>
           <div class="mon-gauges" id="monGauges"></div>
         </div>
 
-        <div class="card glass">
+        <div class="card panel">
           <div class="card-title">Budget This Month</div>
           <div class="scroll-list" id="budgetList" data-role="budget"></div>
         </div>
 
-        <div class="card glass">
+        <div class="card panel">
           <div class="card-title">Integrations</div>
           <div class="int-grid" id="intGrid"></div>
         </div>
@@ -297,7 +297,7 @@
 
       <!-- Momentum signal (Session 57): "am I actually moving, over time" — one number + sparkline -->
       <div class="row4">
-        <div class="card glass" id="cardMomentum" data-role="momentum">
+        <div class="card panel" id="cardMomentum" data-role="momentum">
           <div class="card-title">Momentum<span style="font-size:8px;color:#8a6a7c;margin-left:auto;" data-role="momentum-window">last 60 days</span></div>
           <div class="mom-wrap">
             <div class="mom-num"><span data-role="momentum-ratio" id="momRatio">–</span><span class="mom-pct">%</span></div>
@@ -311,19 +311,19 @@
     </div>
 
     <div class="dock">
-      <div class="dock-chip glass" id="dockStreak">✦ — day streak</div>
+      <div class="dock-chip panel" id="dockStreak">✦ — day streak</div>
       <div class="talk-pill" onclick="openChat('ghost')" style="cursor:pointer">
         <div class="mini-wave"><span style="height:5px;animation-delay:0s"></span><span style="height:11px;animation-delay:.1s"></span><span style="height:7px;animation-delay:.2s"></span><span style="height:13px;animation-delay:.15s"></span><span style="height:5px;animation-delay:.25s"></span></div>
         <div class="txt"><b>OPEN GHOST CHAT</b><span id="dockSub">watching</span></div>
       </div>
-      <div class="dock-chip glass" id="dockEscalation">⚑ none active</div>
+      <div class="dock-chip panel" id="dockEscalation">⚑ none active</div>
     </div>
 
   </div>
 </div>
 
 <div id="chatOverlay" class="chat-overlay" onclick="if(event.target===this)closeChat()">
-  <div class="chat-panel glass">
+  <div class="chat-panel panel">
     <div class="chat-head">
       <div class="chat-tabs">
         <span id="tabGhost" class="chat-tab on" onclick="setChatTab('ghost')">Ghost</span>

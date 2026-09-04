@@ -16,13 +16,10 @@
     padding-bottom: 60px;
   }
   a { color: inherit; text-decoration: none; }
-  .glass {
-    background: rgba(58,40,14,0.42);
-    backdrop-filter: blur(16px) saturate(150%);
-    -webkit-backdrop-filter: blur(16px) saturate(150%);
-    border: 1px solid rgba(255,199,110,0.16);
-    border-radius: 12px;
-    box-shadow: 0 6px 22px rgba(20,10,0,0.4), inset 0 1px 0 rgba(255,225,180,0.06);
+    .panel {
+    background: rgba(0,0,0,0.32);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 5px;
   }
 
   /* ===== Top bar (matches Ghost's shell language, amber variant) ===== */
@@ -112,22 +109,22 @@
 <body>
 
 <div class="topbar">
-  <a class="backlink glass" href="ghost-dashboard-live.html">← Command Center</a>
+  <a class="backlink panel" href="ghost-dashboard-live.html">← Command Center</a>
   <div class="brand"><span class="brand-mark"></span><span class="brand-text"><b>GHOST</b><span>QUEST LOG</span></span></div>
   <div class="spacer"></div>
-  <div class="nav-pill glass">
+  <div class="nav-pill panel">
     <a href="ghost-quest-log.html" class="active">Quest Engine</a>
   </div>
 </div>
 
 <div class="wrap">
 
-  <div class="intro glass">
+  <div class="intro panel">
     <h1>Quest Engine</h1>
     <p>The maintenance systems (cleaning, food, habits) plus the daily quests they support — formerly "Sidequesting," renamed 01/09/2026. <strong>Launch pushed back a week (decided 31/08/2026)</strong> — Week 0 is prep: make cleaning + meal-prep systems actually bulletproof, buy the camera + tripod, before the sprint starts. Mirrors the vault note directly — edit either to update both, once Obsidian sync ships.</p>
   </div>
 
-  <div class="card glass">
+  <div class="card panel">
     <div class="card-title"><h2>Week 0 — Camera &amp; Tripod</h2><span class="count" id="rigCount"></span></div>
     <p style="font-size:11px;color:#9a8161;margin-bottom:10px;">The only capture gear that actually blocks the sprint starting — the box build below doesn't.</p>
     <div id="rigList" data-role="quest-list">
@@ -136,7 +133,7 @@
     </div>
   </div>
 
-  <div class="card glass">
+  <div class="card panel">
     <div class="card-title"><h2>Quest Engine Build — TDaW/food studio box</h2><span class="count" id="buildCount"></span></div>
     <p style="font-size:11px;color:#9a8161;margin-bottom:10px;">Reclassified 01/09/2026 — not sprint-blocking, this is product photography setup for TDaW/food content specifically. Good candidate for its own weekend sidequest rather than a Week 0 chore.</p>
     <div id="buildList">
@@ -152,7 +149,7 @@
     </div>
   </div>
 
-  <div class="card glass">
+  <div class="card panel">
     <div class="card-title"><h2>Week 0 — Everything Else</h2><span class="count" id="week0Count"></span></div>
     <div id="week0List">
       <label class="todo"><input type="checkbox" data-id="w0-1"><div><div class="todo-title">Make the cleaning schedule bulletproof</div><div class="todo-sub">Actually run it this week, not just have it built</div></div></label>
@@ -164,7 +161,7 @@
     </div>
   </div>
 
-  <div class="card glass">
+  <div class="card panel">
     <div class="card-title"><h2>Shopping List — Photo Rig Build</h2><span class="count" id="shopCount"></span></div>
     <p style="font-size:11px;color:#9a8161;margin-bottom:10px;">White box = TDaW (white walls, dark table). Dark box = food (dark wall, faux-limewash). Both fold flat via taped hinges.</p>
     <div id="shopList">
@@ -179,7 +176,7 @@
     </div>
   </div>
 
-  <div class="card glass">
+  <div class="card panel">
     <div class="card-title"><h2>Cleaning Engine</h2><span class="card-link"><a href="obsidian://open?vault=Central%20Vault&file=Admin%2FHome%2FHome%20index" style="color:inherit;">full version ↗</a></span></div>
     <table class="mini-table">
       <tr><th>Day</th><th>Task</th></tr>
@@ -194,7 +191,7 @@
     <p class="rule-note">Plus daily dishes/surfaces/litter/tidy every day. Monthly deep-clean tier is cycle-timed: skip it during period week, target it post-period, let it roll in luteal — no catch-up guilt.</p>
   </div>
 
-  <div class="card glass">
+  <div class="card panel">
     <div class="card-title"><h2>Food Engine</h2><span class="card-link"><a href="obsidian://open?vault=Central%20Vault&file=Admin%2FHome%2FHome%20index" style="color:inherit;">full version ↗</a></span></div>
     <div class="shape-step"><div class="lbl">Weekend</div><div class="txt">Batch/prep engine — cook the big stuff (roast, rice, boiled potatoes/eggs, ragù, caramelized onion, garlic-in-oil) and freeze portions for the week.</div></div>
     <div class="shape-step"><div class="lbl">Thu–Fri</div><div class="txt">Medium-effort assembly, using up what the weekend produced — a Batch &amp; Reuse surplus, not a from-scratch cook.</div></div>
@@ -202,7 +199,7 @@
     <p class="rule-note">If Mon–Wed dinner needs more than reheating/assembling, the weekend prep didn't do its job — fix next weekend's batch list, don't muscle through a real cook on a work night.</p>
   </div>
 
-  <div class="card glass">
+  <div class="card panel">
     <div class="card-title"><h2>The Whole Board</h2></div>
     <div class="legend" style="margin-bottom:14px;">
       <span><span class="dot" style="background:#ffb84d;box-shadow:0 0 6px rgba(255,184,77,.8);"></span>Sidequesting thread</span>
