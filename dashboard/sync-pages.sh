@@ -15,7 +15,7 @@ set -euo pipefail
 VAULT="${GHOST_VAULT_DIR:-$HOME/CentralVault/Projects/Tech/Ghost}"
 DEST="$(cd "$(dirname "$0")" && pwd)/pages"
 
-PAGES=(ghost-dashboard-live.html ghost-bills.html ghost-horoscope.html ghost-tarot.html ghost-quest-log.html)
+PAGES=(ghost-dashboard-live.html ghost-bills.html ghost-horoscope.html ghost-tarot.html ghost-quest-log.html ghost-habits.html)
 
 mkdir -p "$DEST/assets"
 for p in "${PAGES[@]}"; do

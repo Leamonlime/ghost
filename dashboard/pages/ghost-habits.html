@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ghost — Habits &amp; Todos</title>
+<!-- Ghost 2.0 Phase 1 (native Habits & Todos). Built to the "Habits & Todos" + "Level Up"
+     artboards on the Ghost 2.0 Screens canvas, in the confirmed gothic-monochrome design
+     system. Served live from the vault; data comes from the native.py-backed /api/habits,
+     /api/todos, /api/level (same code path the Telegram bot uses). Styling reuses the shared
+     tokens/base/grain/watermark from ghost-common.css; component styles below are lifted from
+     the artboards. -->
+<link rel="stylesheet" href="/assets/ghost-common.css?v=61">
+<style>
+  :root{
+    --ink:#e6dde2; --ink-dim:#a8949e; --ink-faint:#8a7784; --ink-faintest:#5c5058;
+    --accent:#eab8c0; --accent-soft:rgba(234,184,192,0.13);
+    --ok:#8fc9a3; --warn:#d9b872; --alert:#d97a8c;
+    --border:rgba(255,255,255,0.10); --border-2:rgba(255,255,255,0.08);
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html,body{min-height:100%;}
+  body{
+    color:var(--ink);
+    font-family:-apple-system,"Segoe UI",Roboto,sans-serif;
+    padding-bottom:40px;
+  }
+  a{color:inherit;text-decoration:none;}
+
+  /* topbar — shared shell language */
+  .topbar{display:flex;align-items:center;gap:12px;padding:14px 20px;}
+  .backlink{display:flex;align-items:center;gap:8px;padding:7px 13px;font-size:11px;color:var(--ink-dim);}
+  .backlink:hover{color:var(--ink);}
+  .brand{display:flex;align-items:center;gap:8px;margin-left:4px;}
+  .brand-mark{width:20px;height:20px;flex-shrink:0;}
+  .brand-text b{font-size:12.5px;letter-spacing:0.1em;color:var(--accent);}
+  .brand-text span{display:block;font-size:7.5px;letter-spacing:0.12em;color:var(--ink-faint);}
+  .topbar .spacer{flex:1 1 auto;}
+  .nav-pill{display:flex;gap:4px;padding:3px;}
+  .nav-pill a, .nav-pill button{
+    padding:6px 12px;font-size:10.5px;border-radius:5px;color:var(--ink-faint);
+    background:transparent;border:none;cursor:pointer;font-family:inherit;
+  }
+  .nav-pill a.active, .nav-pill button.active{background:rgba(255,255,255,0.08);color:var(--ink);}
+
+  .wrap{max-width:760px;margin:0 auto;padding:6px 20px 20px;display:flex;flex-direction:column;gap:14px;}
+
+  .panel{background:var(--gc-panel-bg);border:1px solid var(--border);border-radius:5px;}
+  .section{padding:14px 15px 10px 15px;}
+  .section-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
+  .card-title{font-family:var(--gc-serif);text-transform:uppercase;font-variant:small-caps;letter-spacing:0.07em;color:var(--ink-dim);font-size:11px;font-weight:700;}
+  .section-sub{font-size:10px;color:var(--ink-faint);}
+  .add-btn{font-family:var(--gc-serif);font-variant:small-caps;letter-spacing:0.05em;font-size:10.5px;color:var(--ink-dim);background:transparent;border:1px solid var(--border);border-radius:5px;padding:3px 10px;cursor:pointer;}
+  .add-btn:hover{color:var(--ink);border-color:rgba(255,255,255,0.25);}
+
+  /* habit / todo rows */
+  .habit-row,.todo-row{display:flex;align-items:center;gap:10px;padding:10px 4px;border-bottom:1px solid var(--border-2);}
+  .habit-row:last-child,.todo-row:last-child{border-bottom:none;}
+  .row-icon{width:28px;height:28px;border-radius:3px;flex-shrink:0;display:flex;align-items:center;justify-content:center;border:1px solid var(--border);color:var(--ink-dim);font-size:13px;}
+  .row-main{flex:1;min-width:0;}
+  .row-name{font-size:13.5px;font-weight:500;color:var(--ink);}
+  .row-name.done{color:var(--ink-faint);text-decoration:line-through;}
+  .row-meta{font-size:9.5px;color:var(--ink-faint);margin-top:2px;font-variant:small-caps;letter-spacing:0.02em;}
+
+  .streak-pill{display:inline-flex;align-items:center;gap:4px;font-size:9.5px;font-weight:700;color:var(--ink-dim);border:1px solid var(--border);padding:2px 8px;border-radius:20px;flex-shrink:0;}
+  .streak-pill.risk{color:var(--alert);border-color:rgba(217,122,140,0.4);}
+  .streak-pill.done{color:var(--accent);border-color:rgba(234,184,192,0.4);}
+
+  .tap-btns{display:flex;gap:5px;flex-shrink:0;}
+  .tap-btn{width:27px;height:27px;border-radius:3px;display:flex;align-items:center;justify-content:center;border:1px solid var(--border);font-size:15px;font-weight:600;background:var(--gc-panel-bg);cursor:pointer;color:var(--ink-dim);}
+  .tap-btn.plus{color:var(--ok);}
+  .tap-btn.minus{color:var(--alert);}
+  .tap-btn.check{color:var(--ok);border-color:rgba(143,201,163,0.4);}
+  .tap-btn.check.on{background:var(--ok);color:#150e14;}
+  .tap-btn:active{transform:scale(0.92);}
+
+  .checklist-mini{padding-left:38px;margin-top:-2px;padding-bottom:8px;}
+  .checklist-item{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--ink-dim);padding:3px 0;cursor:pointer;}
+  .checklist-item .box{width:12px;height:12px;border-radius:2px;border:1.5px solid var(--ink-faintest);flex-shrink:0;}
+  .checklist-item.done{color:var(--ink-faint);text-decoration:line-through;}
+  .checklist-item.done .box{background:var(--ink);border-color:var(--ink);}
+
+  .todo-check{width:18px;height:18px;border-radius:2px;flex-shrink:0;border:1.5px solid var(--ink-faintest);cursor:pointer;position:relative;}
+  .todo-check.done{background:var(--ink);border-color:var(--ink);}
+  .todo-check.done::after{content:"";position:absolute;left:5px;top:1px;width:4px;height:9px;border:solid #150e14;border-width:0 2px 2px 0;transform:rotate(40deg);}
+  .todo-p{font-size:8px;font-weight:700;text-transform:uppercase;font-variant:small-caps;letter-spacing:0.03em;padding:2px 7px;border-radius:3px;flex-shrink:0;border:1px solid var(--border);}
+  .todo-p.high{color:var(--alert);border-color:rgba(217,122,140,0.35);}
+  .todo-p.med{color:var(--warn);border-color:rgba(217,184,114,0.35);}
+  .todo-p.low{color:var(--ink-faint);}
+  .todo-due{font-size:9.5px;color:var(--ink-faint);flex-shrink:0;font-variant:small-caps;}
+  .todo-due.overdue{color:var(--alert);font-weight:700;}
+
+  .empty{font-size:11px;color:var(--ink-faint);padding:8px 4px;font-style:italic;}
+
+  /* create forms */
+  .create-form{display:none;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 4px 4px;border-top:1px dashed var(--border);margin-top:8px;}
+  .create-form.open{display:flex;}
+  .create-form input, .create-form select{
+    background:rgba(0,0,0,0.35);border:1px solid var(--border);border-radius:4px;color:var(--ink);
+    font-size:12px;padding:6px 8px;font-family:inherit;
+  }
+  .create-form input[type="text"]{flex:1;min-width:150px;}
+  .create-form .go{font-family:var(--gc-serif);font-variant:small-caps;letter-spacing:0.05em;background:var(--ink);color:#150e14;border:none;border-radius:4px;padding:6px 12px;cursor:pointer;}
+
+  /* ===== Level Up view ===== */
+  #levelView{display:none;flex-direction:column;gap:14px;align-items:center;}
+  #levelView.on{display:flex;}
+  .sigil-wrap{position:relative;width:200px;height:200px;margin:10px auto 2px;}
+  .sigil-wrap svg.sigil-bg{position:absolute;inset:0;width:100%;height:100%;color:var(--ink-faintest);opacity:0.55;}
+  .sigil-wrap svg.sigil-ring{position:absolute;inset:0;width:100%;height:100%;}
+  .sigil-main{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;}
+  .sigil-level{font-family:var(--gc-serif);font-size:42px;font-weight:700;color:var(--ink);line-height:1;font-variant:small-caps;}
+  .sigil-sub{font-size:9.5px;letter-spacing:0.14em;text-transform:uppercase;font-variant:small-caps;color:var(--accent);margin-top:5px;font-weight:700;}
+  .headline{text-align:center;}
+  .headline-title{font-family:var(--gc-serif);font-size:18px;font-weight:700;color:var(--ink);font-variant:small-caps;letter-spacing:0.03em;}
+  .headline-sub{font-size:11px;color:var(--ink-dim);margin-top:6px;line-height:1.6;}
+  .lvlpanel{width:100%;}
+  .bucket-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:6px;}
+  .bucket{display:flex;flex-direction:column;align-items:center;}
+  .mon-ring{position:relative;width:60px;height:60px;}
+  .mon-ring svg{width:100%;height:100%;transform:rotate(-90deg);}
+  .mon-ring-track{fill:none;stroke:rgba(255,255,255,0.07);stroke-width:3;}
+  .mon-ring-fill{fill:none;stroke-width:3;stroke-linecap:round;}
+  .mon-ring-val{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:var(--ink);}
+  .bucket-label{font-size:8.5px;color:var(--ink-faint);text-transform:uppercase;font-variant:small-caps;letter-spacing:0.03em;margin-top:7px;text-align:center;}
+  .streak-summary{display:flex;gap:10px;margin-top:4px;}
+  .streak-stat{flex:1;text-align:center;padding:11px 4px;border:1px solid var(--border-2);border-radius:4px;}
+  .streak-stat-val{font-size:15px;font-weight:700;color:var(--warn);}
+  .streak-stat-label{font-size:8.5px;color:var(--ink-faint);text-transform:uppercase;font-variant:small-caps;letter-spacing:0.03em;margin-top:3px;}
+  .stub-note{font-size:9px;color:var(--ink-faintest);text-align:center;font-style:italic;margin-top:2px;}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <a class="backlink glass" href="/">← Command Center</a>
+  <div class="brand"><span class="brand-mark"></span><span class="brand-text"><b>GHOST</b><span>HABITS &amp; TODOS</span></span></div>
+  <div class="spacer"></div>
+  <div class="nav-pill glass" data-role="nav-item">
+    <button id="tabHabits" class="active" onclick="showView('habits')">Habits &amp; Todos</button>
+    <button id="tabLevel" onclick="showView('level')">Level Up</button>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <!-- ===== Habits & Todos view ===== -->
+  <div id="habitsView">
+
+    <div class="panel section">
+      <div class="section-head">
+        <div class="card-title">Today's Habits</div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span class="section-sub" id="habitsSub"></span>
+          <button class="add-btn" onclick="toggleForm('habitForm')">+ New habit</button>
+        </div>
+      </div>
+      <div id="habitsList" data-role="habits-list"><div class="empty">Loading…</div></div>
+      <div class="create-form" id="habitForm">
+        <input type="text" id="hName" placeholder="Habit name">
+        <select id="hField">
+          <option value="tickbox">tickbox</option>
+          <option value="positive">positive</option>
+          <option value="negative">negative</option>
+          <option value="both">positive + negative</option>
+          <option value="checklist">checklist</option>
+        </select>
+        <select id="hFreq">
+          <option value="weekdays">every day</option>
+          <option value="count">N×/week</option>
+        </select>
+        <button class="go" onclick="createHabit()">Add</button>
+      </div>
+    </div>
+
+    <div class="panel section">
+      <div class="section-head">
+        <div class="card-title">Todos</div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span class="section-sub" id="todosSub"></span>
+          <button class="add-btn" onclick="toggleForm('todoForm')">+ New todo</button>
+        </div>
+      </div>
+      <div id="todosList" data-role="todos-list"><div class="empty">Loading…</div></div>
+      <div class="create-form" id="todoForm">
+        <input type="text" id="tText" placeholder="Todo text">
+        <select id="tPriority"><option value="med">Med</option><option value="high">High</option><option value="low">Low</option></select>
+        <input type="date" id="tDue">
+        <button class="go" onclick="createTodo()">Add</button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ===== Level Up view ===== -->
+  <div id="levelView" data-role="level-panel">
+    <div class="sigil-wrap">
+      <svg class="sigil-bg" viewBox="0 0 200 200" fill="none" stroke="currentColor" stroke-width="0.7">
+        <circle cx="100" cy="100" r="80"/><circle cx="100" cy="100" r="55"/>
+        <polygon points="100,35 155,140 45,140"/>
+        <line x1="100" y1="16" x2="100" y2="35"/><line x1="100" y1="165" x2="100" y2="184"/>
+        <line x1="16" y1="100" x2="35" y2="100"/><line x1="165" y1="100" x2="184" y2="100"/>
+      </svg>
+      <svg class="sigil-ring" viewBox="0 0 200 200" style="transform:rotate(-90deg);">
+        <circle cx="100" cy="100" r="90" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="1.5"/>
+        <circle id="levelRing" cx="100" cy="100" r="90" fill="none" stroke="#eab8c0" stroke-width="1.5"
+                stroke-linecap="round" stroke-dasharray="565" stroke-dashoffset="565"/>
+      </svg>
+      <div class="sigil-main">
+        <div class="sigil-level" id="levelNum">–</div>
+        <div class="sigil-sub">Level</div>
+      </div>
+    </div>
+    <div class="headline">
+      <div class="headline-title" id="levelHeadline">Your level</div>
+      <div class="headline-sub" id="levelSubline"></div>
+    </div>
+    <div class="panel section lvlpanel">
+      <div class="card-title">Bucket Stats</div>
+      <div class="bucket-grid" id="bucketGrid"></div>
+    </div>
+    <div class="panel section lvlpanel">
+      <div class="card-title" style="margin-bottom:9px;">Since Last Level</div>
+      <div class="streak-summary" id="sinceStats"></div>
+    </div>
+    <div class="stub-note" id="stubNote"></div>
+  </div>
+
+</div>
+
+<script>
+(function(){
+  var BUCKET_COLORS = {
+    "Maintenance":"#8fc9a3","Habits":"#eab8c0","Work":"#d9b872",
+    "Business":"#a8949e","Sidequests":"#d97a8c","Creative/Relax":"#8fc9a3"
+  };
+  function esc(s){ return (s==null?"":String(s)).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];}); }
+  function post(url, body){ return fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body||{})}); }
+
+  window.showView = function(v){
+    document.getElementById("habitsView").style.display = (v==="habits")?"block":"none";
+    document.getElementById("levelView").classList.toggle("on", v==="level");
+    document.getElementById("tabHabits").classList.toggle("active", v==="habits");
+    document.getElementById("tabLevel").classList.toggle("active", v==="level");
+    if(v==="level") loadLevel();
+  };
+  window.toggleForm = function(id){ document.getElementById(id).classList.toggle("open"); };
+
+  // ---- Habits ----
+  function habitRow(h){
+    var streakCls = h.done_today ? "done" : ((h.due_today && h.streak>0) ? "risk" : "");
+    var meta = esc(h.frequency_label) + " · " + esc(h.field_label);
+    var taps = "";
+    if(h.field_type==="tickbox"){
+      taps = '<div class="tap-btns"><div class="tap-btn check '+(h.done_today?"on":"")+'" title="tick" onclick="tap('+h.id+',\'check\')">✓</div></div>';
+    } else if(h.field_type==="checklist"){
+      taps = '';
+    } else if(h.field_type==="positive"){
+      taps = '<div class="tap-btns"><div class="tap-btn plus" onclick="tap('+h.id+',\'up\')">+</div></div>';
+    } else if(h.field_type==="negative"){
+      taps = '<div class="tap-btns"><div class="tap-btn minus" onclick="tap('+h.id+',\'down\')">−</div></div>';
+    } else { // both
+      taps = '<div class="tap-btns"><div class="tap-btn minus" onclick="tap('+h.id+',\'down\')">−</div><div class="tap-btn plus" onclick="tap('+h.id+',\'up\')">+</div></div>';
+    }
+    var row = '<div class="habit-row">'
+      + '<div class="row-icon">◈</div>'
+      + '<div class="row-main"><div class="row-name">'+esc(h.name)+'</div><div class="row-meta">'+meta+(h.streak_rule==="min_taps"?(" · needs "+h.streak_min_taps+" taps"):"")+'</div></div>'
+      + '<div class="streak-pill '+streakCls+'">🔥 '+h.streak+'</div>'
+      + taps
+      + '</div>';
+    if(h.field_type==="checklist" && h.checklist && h.checklist.length){
+      row += '<div class="checklist-mini">';
+      h.checklist.forEach(function(c){
+        row += '<div class="checklist-item '+(c.done?"done":"")+'" onclick="checkHabitItem('+c.id+','+(!c.done)+')"><span class="box"></span>'+esc(c.text)+'</div>';
+      });
+      row += '</div>';
+    }
+    return row;
+  }
+  function loadHabits(){
+    fetch("/api/habits").then(function(r){return r.json();}).then(function(d){
+      var list = d.habits||[];
+      var el = document.getElementById("habitsList");
+      if(!list.length){ el.innerHTML = '<div class="empty">No native habits yet — add one, or tell Ghost "create habit: ...".</div>'; document.getElementById("habitsSub").textContent=""; return; }
+      var touched = list.filter(function(h){return h.done_today||h.today_up||h.today_check;}).length;
+      document.getElementById("habitsSub").textContent = touched + " of " + list.length + " touched";
+      el.innerHTML = list.map(habitRow).join("");
+    }).catch(function(){ document.getElementById("habitsList").innerHTML='<div class="empty">Could not load habits.</div>'; });
+  }
+  window.tap = function(id, dir){ post("/api/habits/tap",{id:id,direction:dir}).then(function(){ loadHabits(); }); };
+  window.checkHabitItem = function(id, done){ post("/api/habits/checklist",{id:id,done:done}).then(function(){ loadHabits(); }); };
+  window.createHabit = function(){
+    var name=document.getElementById("hName").value.trim(); if(!name) return;
+    var body={name:name,field_type:document.getElementById("hField").value,frequency_kind:document.getElementById("hFreq").value};
+    if(body.frequency_kind==="count") body.frequency_count=3;
+    post("/api/habits/create",body).then(function(){ document.getElementById("hName").value=""; toggleForm("habitForm"); loadHabits(); });
+  };
+
+  // ---- Todos ----
+  function todoRow(t){
+    var due = "";
+    if(t.due_date){
+      var lbl = "Due " + t.due_date.slice(5);
+      due = '<div class="todo-due '+(t.overdue?"overdue":"")+'">'+esc(lbl)+'</div>';
+    }
+    var meta = (t.kind==="checklist" && t.checklist && t.checklist.length) ? ('<div class="row-meta">checklist · '+t.checklist.filter(function(c){return c.done;}).length+' of '+t.checklist.length+'</div>') : "";
+    return '<div class="todo-row">'
+      + '<div class="todo-check '+(t.done?"done":"")+'" onclick="completeTodo('+t.id+','+(!t.done)+')"></div>'
+      + '<div class="row-main"><div class="row-name '+(t.done?"done":"")+'">'+esc(t.text)+'</div>'+meta+'</div>'
+      + (t.priority?'<div class="todo-p '+t.priority+'">'+t.priority.charAt(0).toUpperCase()+t.priority.slice(1)+'</div>':"")
+      + due + '</div>';
+  }
+  function loadTodos(){
+    fetch("/api/todos").then(function(r){return r.json();}).then(function(d){
+      var list = d.todos||[];
+      var el = document.getElementById("todosList");
+      if(!list.length){ el.innerHTML = '<div class="empty">No todos yet — add one, or tell Ghost "add todo: ...".</div>'; document.getElementById("todosSub").textContent=""; return; }
+      var overdue = list.filter(function(t){return t.overdue;}).length;
+      document.getElementById("todosSub").textContent = overdue ? (overdue+" overdue") : (list.filter(function(t){return !t.done;}).length+" open");
+      el.innerHTML = list.map(todoRow).join("");
+    }).catch(function(){ document.getElementById("todosList").innerHTML='<div class="empty">Could not load todos.</div>'; });
+  }
+  window.completeTodo = function(id, done){ post("/api/todos/complete",{id:id,done:done}).then(function(){ loadTodos(); if(document.getElementById("levelView").classList.contains("on")) loadLevel(); }); };
+  window.createTodo = function(){
+    var text=document.getElementById("tText").value.trim(); if(!text) return;
+    var body={text:text,priority:document.getElementById("tPriority").value};
+    var due=document.getElementById("tDue").value; if(due) body.due_date=due;
+    post("/api/todos/create",body).then(function(){ document.getElementById("tText").value=""; document.getElementById("tDue").value=""; toggleForm("todoForm"); loadTodos(); });
+  };
+
+  // ---- Level ----
+  function ring(pct, color){
+    var C = 2*Math.PI*26; var off = C*(1-(pct/100));
+    return '<div class="mon-ring"><svg viewBox="0 0 62 62"><circle class="mon-ring-track" cx="31" cy="31" r="26"/>'
+      + '<circle class="mon-ring-fill" cx="31" cy="31" r="26" stroke="'+color+'" stroke-dasharray="'+C.toFixed(0)+'" stroke-dashoffset="'+off.toFixed(0)+'"/></svg>'
+      + '<div class="mon-ring-val">'+pct+'%</div></div>';
+  }
+  window.loadLevel = function(){
+    fetch("/api/level").then(function(r){return r.json();}).then(function(d){
+      if(!d || d.error){ return; }
+      document.getElementById("levelNum").textContent = d.level;
+      document.getElementById("levelHeadline").textContent = "Level " + d.level;
+      document.getElementById("levelSubline").innerHTML = d.total_completions + " completions logged · " + d.pct_to_next + "% toward level " + (d.level+1);
+      // overall ring (circumference for r=90)
+      var C = 2*Math.PI*90; document.getElementById("levelRing").setAttribute("stroke-dasharray", C.toFixed(0));
+      document.getElementById("levelRing").setAttribute("stroke-dashoffset", (C*(1-(d.pct_to_next/100))).toFixed(0));
+      var grid = (d.buckets||[]).map(function(b){
+        return '<div class="bucket">'+ring(b.pct, BUCKET_COLORS[b.bucket]||"#a8949e")+'<div class="bucket-label">'+esc(b.bucket.replace("/","/<br>"))+'</div></div>';
+      }).join("");
+      document.getElementById("bucketGrid").innerHTML = grid;
+      var s = d.since||{};
+      document.getElementById("sinceStats").innerHTML =
+        '<div class="streak-stat"><div class="streak-stat-val">'+(s.longest_streak||0)+'</div><div class="streak-stat-label">Longest streak</div></div>'
+        + '<div class="streak-stat"><div class="streak-stat-val">'+(s.days_active||0)+'</div><div class="streak-stat-label">Days active</div></div>'
+        + '<div class="streak-stat"><div class="streak-stat-val">'+(s.todos_done||0)+'</div><div class="streak-stat-label">Todos done</div></div>';
+      document.getElementById("stubNote").textContent = d._placeholder || "";
+    }).catch(function(){});
+  };
+
+  loadHabits(); loadTodos();
+})();
+</script>
+
+</body>
+</html>
