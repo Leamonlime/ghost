@@ -16,13 +16,10 @@
     padding-bottom: 60px;
   }
   a { color: inherit; text-decoration: none; }
-  .glass {
-    background: rgba(40,20,60,0.42);
-    backdrop-filter: blur(16px) saturate(150%);
-    -webkit-backdrop-filter: blur(16px) saturate(150%);
-    border: 1px solid rgba(190,150,255,0.18);
-    border-radius: 12px;
-    box-shadow: 0 6px 22px rgba(15,0,30,0.4), inset 0 1px 0 rgba(220,200,255,0.07);
+    .panel {
+    background: rgba(0,0,0,0.32);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 5px;
   }
 
   /* ===== Top bar (matches Ghost's shell language, purple variant) ===== */
@@ -193,10 +190,10 @@
 <body>
 
 <div class="topbar">
-  <a class="backlink glass" href="ghost-dashboard-live.html">← Command Center</a>
+  <a class="backlink panel" href="ghost-dashboard-live.html">← Command Center</a>
   <div class="brand"><span class="brand-mark"></span><span class="brand-text"><b>GHOST</b><span>MYSTIC MODULE</span></span></div>
   <div class="spacer"></div>
-  <div class="nav-pill glass">
+  <div class="nav-pill panel">
     <a href="ghost-horoscope.html">Horoscope</a>
     <a href="ghost-tarot.html" class="active">Tarot</a>
   </div>
@@ -204,12 +201,12 @@
 
 <div class="wrap">
 
-  <div class="intro glass">
+  <div class="intro panel">
     <h1>Tarot</h1>
     <p>A 78-card deck, drawn with a cryptographically-seeded Fisher–Yates shuffle so every reading is an unbiased, no-repeat pull from the full deck — no card can appear twice in the same reading. Pick a spread, draw, then click each card to flip it and read the meaning below.</p>
   </div>
 
-  <div class="controls glass">
+  <div class="controls panel">
     <div class="spread-select">
       <button class="spread-btn active" data-spread="1">Single Card</button>
       <button class="spread-btn" data-spread="3">Three Card</button>
@@ -219,15 +216,15 @@
     <div class="rng-note"><span class="dot"></span> crypto.getRandomValues shuffle</div>
   </div>
 
-  <div class="spread-info glass" id="spreadInfo"></div>
+  <div class="spread-info panel" id="spreadInfo"></div>
 
   <div class="board n1" id="board" data-role="tarot-board"></div>
 
-  <div class="synthesis glass" id="readingSynthesis" style="display:none;"></div>
+  <div class="synthesis panel" id="readingSynthesis" style="display:none;"></div>
 
   <div class="reading-detail" id="readingDetail"></div>
 
-  <div class="edu glass">
+  <div class="edu panel">
     <h2>How this works, if you're new to it</h2>
     <div class="edu-grid">
       <div>
@@ -512,7 +509,7 @@ function renderBoard(){
     boardEl.appendChild(slot);
 
     const detail = document.createElement("div");
-    detail.className = "detail-card glass";
+    detail.className = "detail-card panel";
     detail.id = "detail-" + idx;
     const meaning = draw.reversed ? draw.card.rev : draw.card.up;
     const altMeaning = draw.reversed ? draw.card.up : draw.card.rev;

@@ -94,6 +94,13 @@
 
   .empty{font-size:11px;color:var(--ink-faint);padding:8px 4px;font-style:italic;}
 
+  /* S64: hairline delete (archive) button — restrained, not a red delete-everywhere pattern */
+  .row-del{width:24px;height:24px;border-radius:3px;flex-shrink:0;display:flex;align-items:center;justify-content:center;border:1px solid var(--border);color:var(--ink-faintest);cursor:pointer;font-size:12px;line-height:1;}
+  .row-del:hover{color:var(--alert);border-color:rgba(217,122,140,0.4);}
+  /* S64: add-item control for checklist habits */
+  .chk-add{display:inline-block;font-size:10px;color:var(--ink-faint);cursor:pointer;padding:4px 0 2px 0;font-variant:small-caps;letter-spacing:0.04em;}
+  .chk-add:hover{color:var(--ink-dim);}
+
   /* create forms */
   .create-form{display:none;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 4px 4px;border-top:1px dashed var(--border);margin-top:8px;}
   .create-form.open{display:flex;}
@@ -135,10 +142,10 @@
 <body>
 
 <div class="topbar">
-  <a class="backlink glass" href="/">← Command Center</a>
+  <a class="backlink panel" href="/">← Command Center</a>
   <div class="brand"><span class="brand-mark"></span><span class="brand-text"><b>GHOST</b><span>HABITS &amp; TODOS</span></span></div>
   <div class="spacer"></div>
-  <div class="nav-pill glass" data-role="nav-item">
+  <div class="nav-pill panel" data-role="nav-item">
     <button id="tabHabits" class="active" onclick="showView('habits')">Habits &amp; Todos</button>
     <button id="tabLevel" onclick="showView('level')">Level Up</button>
   </div>
@@ -171,6 +178,7 @@
           <option value="weekdays">every day</option>
           <option value="count">N×/week</option>
         </select>
+        <input type="text" id="hItems" placeholder="checklist items, comma-separated (optional)">
         <button class="go" onclick="createHabit()">Add</button>
       </div>
     </div>
@@ -264,17 +272,23 @@
     } else { // both
       taps = '<div class="tap-btns"><div class="tap-btn minus" onclick="tap('+h.id+',\'down\')">−</div><div class="tap-btn plus" onclick="tap('+h.id+',\'up\')">+</div></div>';
     }
+    var del = '<div class="row-del" title="Archive this habit" onclick="delHabit('+h.id+',\''+esc(h.name).replace(/'/g,"\\'")+'\')">✕</div>';
     var row = '<div class="habit-row">'
       + '<div class="row-icon">◈</div>'
       + '<div class="row-main"><div class="row-name">'+esc(h.name)+'</div><div class="row-meta">'+meta+(h.streak_rule==="min_taps"?(" · needs "+h.streak_min_taps+" taps"):"")+'</div></div>'
       + '<div class="streak-pill '+streakCls+'">🔥 '+h.streak+'</div>'
       + taps
+      + del
       + '</div>';
-    if(h.field_type==="checklist" && h.checklist && h.checklist.length){
+    if(h.field_type==="checklist"){
+      // S64: render the checklist area for EVERY checklist habit (even with 0 items) so the
+      // "+ add item" control is always available — Session 62's create form collected no items,
+      // so checklist habits had nothing to tick and no way to add.
       row += '<div class="checklist-mini">';
-      h.checklist.forEach(function(c){
+      (h.checklist||[]).forEach(function(c){
         row += '<div class="checklist-item '+(c.done?"done":"")+'" onclick="checkHabitItem('+c.id+','+(!c.done)+')"><span class="box"></span>'+esc(c.text)+'</div>';
       });
+      row += '<span class="chk-add" onclick="addChecklistItem('+h.id+')">+ add item</span>';
       row += '</div>';
     }
     return row;
@@ -291,11 +305,24 @@
   }
   window.tap = function(id, dir){ post("/api/habits/tap",{id:id,direction:dir}).then(function(){ loadHabits(); }); };
   window.checkHabitItem = function(id, done){ post("/api/habits/checklist",{id:id,done:done}).then(function(){ loadHabits(); }); };
+  window.addChecklistItem = function(habitId){
+    var text = prompt("New checklist item:"); if(!text || !text.trim()) return;
+    post("/api/habits/checklist/add",{id:habitId,text:text.trim()}).then(function(){ loadHabits(); });
+  };
+  window.delHabit = function(id, name){
+    if(!confirm('Archive habit "'+name+'"? It stops showing here; its history is kept.')) return;
+    post("/api/habits/delete",{id:id}).then(function(){ loadHabits(); });
+  };
   window.createHabit = function(){
     var name=document.getElementById("hName").value.trim(); if(!name) return;
     var body={name:name,field_type:document.getElementById("hField").value,frequency_kind:document.getElementById("hFreq").value};
     if(body.frequency_kind==="count") body.frequency_count=3;
-    post("/api/habits/create",body).then(function(){ document.getElementById("hName").value=""; toggleForm("habitForm"); loadHabits(); });
+    // S64: collect checklist items at create time (comma-separated) — only meaningful for a checklist habit
+    if(body.field_type==="checklist"){
+      var raw=(document.getElementById("hItems").value||"").split(",").map(function(s){return s.trim();}).filter(Boolean);
+      if(raw.length) body.checklist=raw;
+    }
+    post("/api/habits/create",body).then(function(){ document.getElementById("hName").value=""; document.getElementById("hItems").value=""; toggleForm("habitForm"); loadHabits(); });
   };
 
   // ---- Todos ----
@@ -306,11 +333,12 @@
       due = '<div class="todo-due '+(t.overdue?"overdue":"")+'">'+esc(lbl)+'</div>';
     }
     var meta = (t.kind==="checklist" && t.checklist && t.checklist.length) ? ('<div class="row-meta">checklist · '+t.checklist.filter(function(c){return c.done;}).length+' of '+t.checklist.length+'</div>') : "";
+    var del = '<div class="row-del" title="Archive this todo" onclick="delTodo('+t.id+',\''+esc(t.text).replace(/'/g,"\\'")+'\')">✕</div>';
     return '<div class="todo-row">'
       + '<div class="todo-check '+(t.done?"done":"")+'" onclick="completeTodo('+t.id+','+(!t.done)+')"></div>'
       + '<div class="row-main"><div class="row-name '+(t.done?"done":"")+'">'+esc(t.text)+'</div>'+meta+'</div>'
       + (t.priority?'<div class="todo-p '+t.priority+'">'+t.priority.charAt(0).toUpperCase()+t.priority.slice(1)+'</div>':"")
-      + due + '</div>';
+      + due + del + '</div>';
   }
   function loadTodos(){
     fetch("/api/todos").then(function(r){return r.json();}).then(function(d){
@@ -323,6 +351,10 @@
     }).catch(function(){ document.getElementById("todosList").innerHTML='<div class="empty">Could not load todos.</div>'; });
   }
   window.completeTodo = function(id, done){ post("/api/todos/complete",{id:id,done:done}).then(function(){ loadTodos(); if(document.getElementById("levelView").classList.contains("on")) loadLevel(); }); };
+  window.delTodo = function(id, text){
+    if(!confirm('Archive todo "'+text+'"? It stops showing here; its record is kept.')) return;
+    post("/api/todos/delete",{id:id}).then(function(){ loadTodos(); });
+  };
   window.createTodo = function(){
     var text=document.getElementById("tText").value.trim(); if(!text) return;
     var body={text:text,priority:document.getElementById("tPriority").value};

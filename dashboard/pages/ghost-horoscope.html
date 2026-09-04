@@ -17,13 +17,10 @@
   }
   a { color: inherit; text-decoration: none; }
   input, select, button { font-family: inherit; }
-  .glass {
-    background: rgba(40,20,60,0.42);
-    backdrop-filter: blur(16px) saturate(150%);
-    -webkit-backdrop-filter: blur(16px) saturate(150%);
-    border: 1px solid rgba(190,150,255,0.18);
-    border-radius: 12px;
-    box-shadow: 0 6px 22px rgba(15,0,30,0.4), inset 0 1px 0 rgba(220,200,255,0.07);
+    .panel {
+    background: rgba(0,0,0,0.32);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 5px;
   }
 
   .topbar { display: flex; align-items: center; gap: 12px; padding: 14px 20px; flex-wrap: wrap; }
@@ -152,10 +149,10 @@
 <body>
 
 <div class="topbar">
-  <a class="backlink glass" href="ghost-dashboard-live.html">← Command Center</a>
+  <a class="backlink panel" href="ghost-dashboard-live.html">← Command Center</a>
   <div class="brand"><span class="brand-mark"></span><span class="brand-text"><b>GHOST</b><span>MYSTIC MODULE</span></span></div>
   <div class="spacer"></div>
-  <div class="nav-pill glass">
+  <div class="nav-pill panel">
     <a href="ghost-horoscope.html" class="active">Horoscope</a>
     <a href="ghost-tarot.html">Tarot</a>
   </div>
@@ -163,12 +160,12 @@
 
 <div class="wrap">
 
-  <div class="intro glass">
+  <div class="intro panel">
     <h1>Horoscope</h1>
     <p>Sun, Moon, and Rising positions calculated live in your browser from real orbital mechanics — no external astrology API, so it works for any date and never goes stale. Nothing about your birth details is written into this file; your profile lives only in this browser's local storage.</p>
   </div>
 
-  <div class="profile-bar glass">
+  <div class="profile-bar panel">
     <select id="profileSelect" data-role="profile-select"></select>
     <button class="btn" id="addProfileBtn">+ Add profile</button>
     <button class="btn" id="editProfileBtn">Edit</button>
@@ -176,19 +173,19 @@
   </div>
 
   <div class="wheels">
-    <div class="wheel-card glass">
+    <div class="wheel-card panel">
       <h3>Sky Right Now</h3>
       <div class="sub">Aries at 12 o'clock, reading clockwise — every body's current position</div>
       <svg class="wheel-svg" id="wheelNow" viewBox="0 0 380 380"></svg>
     </div>
-    <div class="wheel-card glass">
+    <div class="wheel-card panel">
       <h3 id="natalTitle">Natal Chart</h3>
       <div class="sub" id="natalSub">Same orientation, plus your Ascendant marker</div>
       <svg class="wheel-svg" id="wheelNatal" viewBox="0 0 380 380"></svg>
     </div>
   </div>
 
-  <details class="section glass" id="todaySkySection" open>
+  <details class="section panel" id="todaySkySection" open>
     <summary>Today's Sky — where every body is right now<span class="cnt" id="todaySkyCnt"></span></summary>
     <div class="section-inner">
       <div class="sub">Live positions and what each planet is currently colouring. The Moon is the fast one — it sets the day's mood and shifts sign every ~2.5 days.</div>
@@ -196,13 +193,13 @@
     </div>
   </details>
 
-  <div class="placements glass">
+  <div class="placements panel">
     <h3>Your Big Three</h3>
     <div class="big-three" id="bigThree"></div>
     <table class="planet-table" id="planetTable"><tbody></tbody></table>
   </div>
 
-  <details class="section glass" id="todayForYouSection" open style="display:none;">
+  <details class="section panel" id="todayForYouSection" open style="display:none;">
     <summary>How today's sky touches your chart<span class="cnt" id="todayForYouCnt"></span></summary>
     <div class="section-inner">
       <div class="sub">Real transit-to-natal aspects — where today's moving planets line up with your birth chart, tightest first. This is the "how it affects <b>you</b>" layer, not a generic sun-sign column.</div>
@@ -211,7 +208,7 @@
     </div>
   </details>
 
-  <details class="section glass" id="signDepthSection" style="display:none;">
+  <details class="section panel" id="signDepthSection" style="display:none;">
     <summary>Your Sun, Moon &amp; Rising — in depth</summary>
     <div class="section-inner">
       <div class="sub">The fuller picture of your big three — element, mode, ruling planet, strengths and the growth edge of each.</div>
@@ -219,7 +216,7 @@
     </div>
   </details>
 
-  <div class="edu glass">
+  <div class="edu panel">
     <h2>Sun, Moon &amp; Rising — what they actually mean</h2>
     <div class="edu-grid">
       <div class="edu-item"><div class="t">☉ Sun sign</div><div class="d">The "you" most people mean by your star sign — core identity and ego. Needs only your birth date; it doesn't move fast enough for time or place to matter.</div></div>
@@ -233,7 +230,7 @@
 </div>
 
 <div class="modal-backdrop" id="modalBackdrop">
-  <div class="modal glass">
+  <div class="modal panel">
     <h2 id="modalTitle">Add a profile</h2>
     <div class="field">
       <label>Name</label>
