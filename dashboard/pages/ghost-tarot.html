@@ -93,9 +93,19 @@
   .board.n10 .cc8 { left: calc(var(--sx) - var(--cw) / 2); top: calc(var(--cy) - var(--colH) * 0.5 - var(--ch) / 2); }            /* Hopes & Fears */
   .board.n10 .cc7 { left: calc(var(--sx) - var(--cw) / 2); top: calc(var(--cy) + var(--colH) * 0.5 - var(--ch) / 2); }            /* External Influences */
   .board.n10 .cc6 { left: calc(var(--sx) - var(--cw) / 2); top: calc(var(--cy) + var(--colH) * 1.5 - var(--ch) / 2); }            /* Your Stance — staff bottom */
-  .board.n10 .cc1 { z-index: 5; }
-  .board.n10 .cc1 .card { transform: rotate(90deg); transition: transform 0.5s cubic-bezier(.4,.2,.2,1); }   /* the crossing card lies across the centre */
-  .board.n10 .cc1 .card.flipped { transform: rotate(0deg); z-index: 30; }   /* straighten + raise it when clicked, so card 2 is fully readable */
+  /* S65: the crossing slot sits exactly over cc0 (Present) at the cross centre. Its box (cw×ch,
+     unrotated) fully covers cc0 even though the card inside is rotated — so an empty slot would
+     block clicks to cc0. pointer-events:none on the SLOT lets clicks pass through to cc0 beneath;
+     the card itself re-enables them, so only the (rotated, or flipped-and-moved) card is clickable.
+     This is what makes cc0 clickable both before and after the crossing card is flipped. */
+  .board.n10 .cc1 { z-index: 5; pointer-events: none; }
+  .board.n10 .cc1 .card { transform: rotate(90deg); transition: transform 0.5s cubic-bezier(.4,.2,.2,1); pointer-events: auto; }   /* the crossing card lies across the centre */
+  /* S65: on flip, straighten AND move the card down-and-right into the open pocket below the cross
+     centre (translate cw,ch) so it no longer overlaps cc0 (both fronts readable at once). A pure
+     translateX(cw) would fully clear cc0 but land on cc5/Near Future — the cross has only a ~0.5cw
+     gap either side — so the diagonal pocket is the one spot that clears cc0, cc2 AND cc5 (verified
+     by a headless render: 0px overlap with all three). */
+  .board.n10 .cc1 .card.flipped { transform: rotate(0deg) translate(var(--cw), var(--ch)); z-index: 30; }
   .board.n10 .cc1 .pos-label { display: none; }         /* its position shows on click, in the detail panel */
   @media (max-width: 640px) {
     /* very narrow: abandon the cross, lay the ten cards out as a simple readable grid */
@@ -104,6 +114,7 @@
     .board.n10 .card { width: 100%; max-width: 150px; }
     .board.n10 .slot .pos-label { position: static; }
     .board.n10 .cc1 .card { transform: none; }
+    .board.n10 .cc1 .card.flipped { transform: none; }   /* S65: the desktop diagonal offset must not leak into the static narrow grid */
     .board.n10 .cc1 .pos-label { display: block; }
   }
 
