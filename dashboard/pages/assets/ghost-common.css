@@ -32,7 +32,7 @@
   --ghost-title:  #eab8c0;   /* Ghost — habits/food (main app) */
   --bills-title:  #b8d1ea;   /* Bills */
   --witchy-title: #cdb8ea;   /* Horoscope / Tarot */
-  --rook-title:   #eadeb8;   /* Quest Log / Rook */
+  --questlog-title: #eadeb8; /* Quest Log */
 
   /* back-compat: S57's momentum card reads var(--accent); default it to Ghost's pastel.
      (The dashboard's escalation code still overrides --accent at runtime — deliberate.) */
