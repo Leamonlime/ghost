@@ -72,16 +72,9 @@ body::after {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' fill='none' stroke='%23e6dde2' stroke-width='0.6'%3E%3Ccircle cx='50' cy='50' r='40'/%3E%3Ccircle cx='50' cy='50' r='33'/%3E%3Cpolygon points='50,17 78,66 22,66'/%3E%3Ccircle cx='50' cy='50' r='2.6' fill='%23e6dde2' stroke='none'/%3E%3Cline x1='50' y1='3' x2='50' y2='12'/%3E%3Cline x1='50' y1='88' x2='50' y2='97'/%3E%3Cline x1='3' y1='50' x2='12' y2='50'/%3E%3Cline x1='88' y1='50' x2='97' y2='50'/%3E%3C/svg%3E");
 }
 
-/* Flat panels — replaces every page's old blurred/glowing .glass. Pages delete their local .glass
-   block so this one governs uniformly. */
-.glass {
-  background: var(--gc-panel-bg) !important;
-  border: 1px solid var(--gc-panel-border) !important;
-  border-radius: var(--gc-radius) !important;
-  backdrop-filter: none !important;
-  -webkit-backdrop-filter: none !important;
-  box-shadow: none !important;
-}
+/* Flat panels: every page now defines its own `.panel` (the locked spec — flat rgba(0,0,0,0.32),
+   hairline border, 5px radius) directly. The old shared `.glass{…!important}` override was removed
+   in Session 65 once Session 64's glass-to-panel rename left zero glass-classed elements on any page. */
 
 /* Shared component helpers (used by the new markup + available to pages as they migrate). */
 .gc-sigil { display: inline-block; vertical-align: middle; color: var(--gc-ink-dim); }
