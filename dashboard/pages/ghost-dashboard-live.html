@@ -2,6 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<!-- S63: ghost-silhouette tab favicon (inline base64 SVG, no separate file/route). Consistent across all pages. -->
+<link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAzMiAzMic+PHBhdGggZD0nTTYgMTVhMTAgMTAgMCAwIDEgMjAgMHYxMC42bC0zLjM1LTIuMy0zLjMgMi4zLTMuMzUtMi4zLTMuMzUgMi4zLTMuMy0yLjNMNiAyNS42WicgZmlsbD0nbm9uZScgc3Ryb2tlPScjZWFiOGMwJyBzdHJva2Utd2lkdGg9JzEuNycgc3Ryb2tlLWxpbmVqb2luPSdyb3VuZCcvPjxjaXJjbGUgY3g9JzEyLjQnIGN5PScxNC42JyByPScxLjUnIGZpbGw9JyNlYWI4YzAnLz48Y2lyY2xlIGN4PScxOS42JyBjeT0nMTQuNicgcj0nMS41JyBmaWxsPScjZWFiOGMwJy8+PC9zdmc+">
 <title>Ghost Command Center — live</title>
 <!-- Shared design tokens (S57), served same-origin from /assets. Additive: only defines
      CSS custom properties, styles no elements, so it can't break the page. -->
@@ -61,23 +63,34 @@
   .profile .name { font-size: 10.5px; color: #ffe3f1; }
   .profile .role { font-size: 8px; color: #a97b95; }
 
-  .content { flex: 1 1 auto; min-height: 0; display: grid; grid-template-rows: 1.5fr 1fr 0.82fr auto; gap: 7px; }
+  /* S63: row2 is now content-driven (auto) — it holds the sparse Overview/Proposals + Timeline,
+     which should read compact, not a fixed slab. The two content-rich Habitica lists live in the
+     tall 1.5fr row1 instead. */
+  .content { flex: 1 1 auto; min-height: 0; display: grid; grid-template-rows: 1.5fr auto 0.82fr auto; gap: 7px; }
   .row4 { display: grid; grid-template-columns: 1fr; gap: 7px; }
   /* Momentum card (S57). Uses the shared design tokens (var(--accent) etc.) with hard fallbacks
      so it renders even if ghost-common.css hasn't loaded. */
   .mom-wrap { display: grid; grid-template-columns: auto auto 1fr; align-items: center; gap: 14px; padding: 2px 4px; }
-  .mom-num { font-size: 30px; font-weight: 700; color: var(--accent, #ff5fa8); line-height: 1; display: flex; align-items: baseline; }
+  .mom-num { font-size: 30px; font-weight: 700; color: var(--accent, #ff5fa8); line-height: 1; display: flex; align-items: baseline; font-family: var(--gc-serif); }  /* S63: gothic serif */
   .mom-num .mom-pct { font-size: 13px; opacity: .6; margin-left: 2px; }
   .mom-meta { font-size: 10px; color: #b98fa8; }
   .mom-spark { width: 100%; height: 32px; align-self: center; }
   .mom-buckets { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; font-size: 9px; color: #8a6a7c; }
   .mom-buckets .mb { padding: 1px 6px; border-radius: var(--gc-radius); background: transparent; border: 1px solid var(--gc-hairline); }
-  .row1 { display: grid; grid-template-columns: minmax(0,1fr) 320px; gap: 7px; min-height: 0; }  /* S60: legacy rune/dial centerpiece removed; row1 = Habits (left, fills) + Self-Code Proposals (right) */
-  .row2 { display: grid; grid-template-columns: 1fr 1.15fr 1fr; gap: 7px; min-height: 0; }
+  /* S63: row1 = the two content-rich Habitica lists (Habits + ToDos), equal widths, in the tall
+     row so neither is squeezed; each card's own .scroll-list handles overflow (the grid fraction
+     bounds the height, so the row never grows unbounded). */
+  .row1 { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; min-height: 0; }
+  /* S63: row2 = Overview + Timeline + Proposals. align-items:start so the sparse Overview/Proposals
+     stay compact (a min-height floor, not stretched to Timeline's height); Timeline drives the row. */
+  .row2 { display: grid; grid-template-columns: 1fr 1.15fr 1fr; gap: 7px; min-height: 0; align-items: start; }
+  #cardOverview, #cardProposals { min-height: 116px; }
+  #cardTimeline .scroll-list { max-height: 210px; }   /* bound the timeline so row2 stays compact */
+  #cardProposals .scroll-list { max-height: 240px; }  /* a rare proposal burst scrolls, doesn't push layout */
   .row3 { display: grid; grid-template-columns: 1fr 1fr 1.2fr; gap: 7px; min-height: 0; }
 
   .card { padding: 9px 11px; display: flex; flex-direction: column; min-height: 0; }
-  .card-title { font-size: 10px; color: var(--gc-ink-dim); font-family: var(--gc-serif); font-variant: small-caps; letter-spacing: 0.06em; margin-bottom: 6px; font-weight: 500; flex: 0 0 auto; display:flex; justify-content:space-between; }
+  .card-title { font-size: 12.5px; color: var(--gc-ink-dim); font-family: var(--gc-serif); font-variant: small-caps; letter-spacing: 0.06em; margin-bottom: 6px; font-weight: 500; flex: 0 0 auto; display:flex; justify-content:space-between; align-items: baseline; }  /* S63: 10px -> 12.5px */
   .card-title .live { font-size: 7.5px; background: rgba(126,230,171,0.16); color: #7ee6ab; padding: 1px 5px; border-radius: 8px; letter-spacing: 0.05em; }
   .card-title .live.stale { background: rgba(255,95,122,0.18); color: #ff8fa0; }
   .scroll-list { overflow-y: auto; min-height: 0; flex: 1 1 auto; }
@@ -189,8 +202,8 @@
     </div>
     <div class="nav-list">
       <div class="nav-item active" data-role="nav-item"><span class="ic">◈</span>Command Center</div>
-      <div class="nav-item" data-role="nav-item"><span class="ic">✦</span>Habits<span class="count" id="navHabitCount">–</span></div>
-      <div class="nav-item" data-role="nav-item"><span class="ic">☑</span>ToDos<span class="count" id="navTodoCount">–</span></div>
+      <a class="nav-item" data-role="nav-item" href="ghost-habits.html"><span class="ic">✦</span>Habits<span class="count" id="navHabitCount">–</span></a>
+      <a class="nav-item" data-role="nav-item" href="ghost-habits.html"><span class="ic">☑</span>ToDos<span class="count" id="navTodoCount">–</span></a>
       <div class="nav-item" data-role="nav-item"><span class="ic">◷</span>Timeline</div>
       <div class="nav-item" data-role="nav-item"><span class="ic">◎</span>Budget</div>
       <a class="nav-item" data-role="nav-item" href="ghost-bills.html"><span class="ic">▤</span>Bills</a>
@@ -230,15 +243,19 @@
       <!-- S42 layout: Habits enlarged in the top-left slot; Ghost Core Overview moved down
            to row2; Live Feed removed (redundant with Mission Timeline); Self-Code Proposals
            restored in the freed top-right slot. -->
+      <!-- S63: row1 now pairs the two content-rich Habitica lists (Habits + ToDos); Self-Code
+           Proposals moved down to row2 (ToDos' old slot) since it's almost always sparse. The
+           data-role hooks (habits/todos/overview/proposals) stayed on the inner list divs —
+           only the parent cards' grid positions changed. -->
       <div class="row1">
         <div class="card glass" id="cardHabits">
           <div class="card-title">Habits — Habitica</div>
           <div class="scroll-list" id="habitsList" data-role="habits"></div>
         </div>
 
-        <div class="card glass" id="cardProposals">
-          <div class="card-title">Self-Code Proposals<span class="count" id="propCount" style="margin-left:auto;font-size:9px;color:#8a6a7c;"></span></div>
-          <div class="scroll-list" id="proposalList"></div>
+        <div class="card glass" id="cardTodos">
+          <div class="card-title">ToDos — Habitica</div>
+          <div class="scroll-list" id="todosList" data-role="todos"></div>
         </div>
       </div>
 
@@ -255,9 +272,9 @@
           <div class="scroll-list" id="missionList"></div>
         </div>
 
-        <div class="card glass" id="cardTodos">
-          <div class="card-title">ToDos — Habitica</div>
-          <div class="scroll-list" id="todosList" data-role="todos"></div>
+        <div class="card glass" id="cardProposals">
+          <div class="card-title">Self-Code Proposals<span class="count" id="propCount" style="margin-left:auto;font-size:9px;color:#8a6a7c;"></span></div>
+          <div class="scroll-list" id="proposalList"></div>
         </div>
       </div>
 
@@ -449,7 +466,7 @@ function renderMonitor(d){
 function renderBudget(d){
   const b = d.budget || {spent:0, limit:0, categories:[]};
   const overallOver = b.limit && b.spent > b.limit;
-  let html = `<div style="font-size:14px; font-weight:500; color:${overallOver?'#ff8fa0':'#ffe3f1'}; margin-bottom:5px;">$${b.spent.toFixed(2)} <span style="font-size:9px; color:#a97b95; font-weight:400;">/ $${b.limit.toFixed(2)}</span></div>`;
+  let html = `<div style="font-family:var(--gc-serif); font-size:14px; font-weight:500; color:${overallOver?'#ff8fa0':'#ffe3f1'}; margin-bottom:5px;">$${b.spent.toFixed(2)} <span style="font-size:9px; color:#a97b95; font-weight:400;">/ $${b.limit.toFixed(2)}</span></div>`;
   html += (b.categories||[]).map(c => {
     const over = c.limit>0 && c.amount > c.limit;
     const pct = c.limit>0 ? Math.min(100, 100*c.amount/c.limit) : 0;
@@ -571,7 +588,9 @@ setInterval(fetchDashboard, POLL_MS);
 
 // S42: wire the left-nav items (were static divs) — scroll to the matching card + mark active.
 (function(){
-  const map = {"Command Center":null,"Habits":"cardHabits","ToDos":"cardTodos","Timeline":"cardTimeline",
+  // S63: Habits/ToDos are now real <a> links to ghost-habits.html (its own add/edit/tick UI),
+  // so their map entries were removed — <a> nav-items return early below before consulting this map.
+  const map = {"Command Center":null,"Timeline":"cardTimeline",
     "Budget":"budgetList","Nutrition":"cardOverview","Vitals":"monGauges","Escalation":"dockEscalation",
     "Integrations":"intGrid","Chats":"__chat"};
   document.querySelectorAll('[data-role="nav-item"]').forEach(item=>{
