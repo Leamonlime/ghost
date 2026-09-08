@@ -12,7 +12,7 @@ PAGE_HOOKS = {
         "nav-item", "habits", "todos", "budget",
         "momentum", "momentum-ratio", "momentum-sparkline", "momentum-counts",
     ],
-    "ghost-bills.html":     ["bills-table"],
+    "ghost-bills.html":     ["bills-table", "spending-summary"],
     "ghost-quest-log.html": ["quest-list"],
     "ghost-horoscope.html": ["profile-select"],
     "ghost-tarot.html":     ["tarot-board"],
@@ -35,6 +35,7 @@ API_ENDPOINTS = [
     "/api/habits",
     "/api/todos",
     "/api/level",
+    "/api/bills/spending",
 ]
 
 PAGES = list(PAGE_HOOKS.keys())
