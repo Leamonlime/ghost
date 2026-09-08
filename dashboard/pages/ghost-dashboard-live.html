@@ -680,9 +680,19 @@ async function pollChat(){
   }catch(e){}
 }
 setInterval(pollChat, 12000);
+// S66: re-entrancy guard — the chat has two independent send triggers (the textarea's Enter
+// handler and the Send button's click). Nothing in the markup obviously double-fires, but Lea
+// reported double-sends on desktop, so this closes the door defensively: while one send is in
+// flight, a second (fast double-Enter, double-click, or one of each) is ignored until the fetch
+// settles. Exactly one message + one reply per turn.
+var chatSending = false;
 async function sendChat(){
+  if(chatSending) return;
   const inp = document.getElementById("chatInput");
   const msg = (inp.value||"").trim(); if(!msg) return;
+  chatSending = true;
+  const sendBtn = document.querySelector(".chat-send");
+  if(sendBtn){ sendBtn.disabled = true; sendBtn.style.opacity = "0.5"; }
   inp.value = "";
   const list = document.getElementById("chatMsgs");
   list.insertAdjacentHTML("beforeend", cmsg(msg, "you"));
@@ -704,6 +714,9 @@ async function sendChat(){
   }catch(e){
     document.querySelectorAll("#chatMsgs .pending").forEach(x=>x.remove());
     list.insertAdjacentHTML("beforeend", cmsg("send failed — try again", "sys"));
+  }finally{
+    chatSending = false;
+    if(sendBtn){ sendBtn.disabled = false; sendBtn.style.opacity = ""; }
   }
 }
 document.addEventListener("keydown", e => {
