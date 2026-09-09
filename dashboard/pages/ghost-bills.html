@@ -203,6 +203,19 @@
       <div id="spendMonths"></div>
       <button id="spendToggle" onclick="toggleAllMonths()" style="display:none;margin-top:6px;font-family:var(--gc-serif);font-variant:small-caps;letter-spacing:.05em;font-size:10.5px;color:var(--gc-ink-dim);background:transparent;border:1px solid var(--gc-hairline);border-radius:5px;padding:4px 12px;cursor:pointer;"></button>
       <div id="spendMeta" style="font-size:9.5px;color:var(--gc-ink-faint);margin-top:8px;"></div>
+
+      <!-- S71: review & fix categories inline (no CSV edit, no re-upload). Fixing one merchant can
+           optionally teach the note so every future transaction from it auto-categorises. -->
+      <div id="reviewSection" data-role="spending-review" style="margin-top:18px;border-top:1px solid var(--gc-hairline);padding-top:12px;">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
+          <span style="font-family:var(--gc-serif);font-variant:small-caps;letter-spacing:.06em;color:var(--bills-title);font-size:13px;">Review &amp; fix categories</span>
+          <span style="flex:1"></span>
+          <button id="revFilterUncategorized" class="revfilter" onclick="setReviewFilter('uncategorized')">Uncategorised</button>
+          <button id="revFilterAll" class="revfilter" onclick="setReviewFilter('all')">All transactions</button>
+        </div>
+        <div id="reviewHint" style="font-size:10.5px;color:var(--gc-ink-faint);margin-bottom:8px;"></div>
+        <div id="reviewList"></div>
+      </div>
     </div>
   </div>
 </div>
@@ -496,6 +509,96 @@ function renderMonths(){
   } else { tog.style.display = "none"; }
 }
 function toggleAllMonths(){ showAllMonths = !showAllMonths; renderMonths(); }
+
+// --- S71: review & fix categories inline ---
+var CATS = [], reviewFilter = "uncategorized";
+function guessKeyword(desc){
+  // strip digits/punctuation, drop tiny tokens, take the first meaningful word as a merchant guess.
+  const words = String(desc||"").toLowerCase().replace(/[^a-z\s]/g," ").split(/\s+/).filter(w=>w.length>2);
+  return words[0] || String(desc||"").toLowerCase().trim();
+}
+async function loadCategories(){
+  try{ const r = await (await fetch("/api/bills/categories",{cache:"no-store"})).json();
+       if(r && r.ok) CATS = r.categories||[]; }
+  catch(e){ console.error("categories load failed", e); }
+}
+function catOptions(sel){
+  const opts = CATS.map(k=>`<option value="${esc(k)}"${k===sel?" selected":""}>${esc(catLabel(k))}</option>`).join("");
+  return opts + `<option value="__new__">+ type a new category…</option>`;
+}
+function reviewRow(t){
+  const isUnc = t.category==="uncategorised";
+  const kw = esc(guessKeyword(t.description));
+  return `<div class="revrow" data-id="${t.id}" style="border:1px solid var(--gc-hairline);border-radius:6px;padding:8px 10px;margin-bottom:8px;">
+    <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;">
+      <span style="font-variant-numeric:tabular-nums;color:var(--gc-ink-faint);font-size:11px;">${esc(t.date)}</span>
+      <span style="flex:1;min-width:140px;color:var(--gc-ink);font-size:12.5px;">${esc(t.description)}</span>
+      <span style="font-variant-numeric:tabular-nums;font-family:var(--gc-serif);font-size:13px;color:${t.amount<0?'var(--gc-ink)':'var(--ok,#8fc9a3)'};">${money(t.amount)}</span>
+      ${t.manual?'<span title="manually set" style="font-size:9px;color:var(--gc-ink-faint);">✎ manual</span>':''}
+      ${isUnc?'<span style="font-size:9px;color:#d97a8c;">⚑ uncategorised</span>':`<span style="font-size:9px;color:var(--gc-ink-faint);">${esc(catLabel(t.category))}</span>`}
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:7px;">
+      <select id="cat_${t.id}" onchange="onCatChange(${t.id})" style="font-size:12px;padding:4px 6px;border:1px solid var(--gc-hairline);border-radius:5px;background:transparent;color:var(--gc-ink);">
+        <option value="" selected disabled>Pick a category…</option>${catOptions("")}
+      </select>
+      <input id="newcat_${t.id}" placeholder="new category name" style="display:none;font-size:12px;padding:4px 6px;border:1px solid var(--gc-hairline);border-radius:5px;background:transparent;color:var(--gc-ink);width:140px;">
+      <button onclick="saveRow(${t.id})" class="btn" style="font-size:11px;padding:4px 12px;">Save</button>
+      <span id="st_${t.id}" style="font-size:10.5px;color:var(--gc-ink-faint);"></span>
+    </div>
+    <label style="display:flex;gap:6px;align-items:center;margin-top:6px;font-size:10.5px;color:var(--gc-ink-dim);">
+      <input type="checkbox" id="teach_${t.id}" onchange="document.getElementById('kw_${t.id}').disabled=!this.checked;">
+      always categorise transactions like this as the above, matching
+      <input id="kw_${t.id}" value="${kw}" disabled style="font-size:11px;padding:2px 6px;border:1px solid var(--gc-hairline);border-radius:5px;background:transparent;color:var(--gc-ink);width:120px;">
+    </label>
+  </div>`;
+}
+function onCatChange(id){
+  const sel = document.getElementById("cat_"+id), nc = document.getElementById("newcat_"+id);
+  nc.style.display = (sel.value==="__new__") ? "" : "none";
+}
+function setReviewFilter(f){ reviewFilter = f; loadReview(); }
+async function loadReview(){
+  for(const f of ["uncategorized","all"]){
+    const b = document.getElementById("revFilter"+f[0].toUpperCase()+f.slice(1));
+    if(b){ b.style.cssText = "font-family:var(--gc-serif);font-variant:small-caps;letter-spacing:.05em;font-size:10.5px;border-radius:5px;padding:4px 12px;cursor:pointer;border:1px solid var(--gc-hairline);"
+      + (f===reviewFilter ? "background:var(--bills-title);color:#fff;" : "background:transparent;color:var(--gc-ink-dim);"); }
+  }
+  try{
+    const r = await (await fetch("/api/bills/transactions?filter="+reviewFilter,{cache:"no-store"})).json();
+    const list = document.getElementById("reviewList"), hint = document.getElementById("reviewHint");
+    if(!r || !r.ok){ list.innerHTML=""; hint.textContent="Couldn't load transactions."; return; }
+    if(!r.transactions.length){
+      list.innerHTML="";
+      hint.textContent = reviewFilter==="uncategorized" ? "Nothing uncategorised — every transaction has a category." : "No transactions yet.";
+      return;
+    }
+    hint.textContent = reviewFilter==="uncategorized"
+      ? r.count+" transaction"+(r.count===1?"":"s")+" need a category. Assign one — it sticks, even after re-importing."
+      : "Showing "+r.count+" transaction"+(r.count===1?"":"s")+". Correct any wrong category; a manual set is kept on re-import.";
+    list.innerHTML = r.transactions.map(reviewRow).join("");
+  }catch(e){ console.error("review load failed", e); }
+}
+async function saveRow(id){
+  const sel = document.getElementById("cat_"+id), st = document.getElementById("st_"+id);
+  let category = sel.value;
+  if(category==="__new__") category = (document.getElementById("newcat_"+id).value||"").trim();
+  if(!category){ st.style.color="#d97a8c"; st.textContent="pick a category first"; return; }
+  const teach = document.getElementById("teach_"+id).checked;
+  const keyword = (document.getElementById("kw_"+id).value||"").trim();
+  st.style.color="var(--gc-ink-dim)"; st.textContent="saving…";
+  try{
+    const r = await (await fetch("/api/bills/categorize",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({id, category, category_label:category, teach, keyword})})).json();
+    if(!r.ok){ st.style.color="#d97a8c"; st.textContent=r.error||"failed"; return; }
+    st.style.color="var(--ok,#8fc9a3)";
+    st.textContent = "saved" + (teach ? (r.taught==="already present" ? " (rule already there)" : r.taught==="created"||r.taught==="appended" ? " + taught" : "") : "");
+    const row = document.querySelector('.revrow[data-id="'+id+'"]');
+    if(reviewFilter==="uncategorized" && row){ setTimeout(()=>{ row.remove(); if(!document.querySelectorAll('.revrow').length) loadReview(); }, 700); }
+    // refresh the month totals so the correction shows in the numbers
+    await loadSpending();
+  }catch(e){ st.style.color="#d97a8c"; st.textContent="error: "+e; }
+}
+
 async function loadSpending(){
   try{
     const r = await (await fetch("/api/bills/spending"+Q,{cache:"no-store"})).json();
@@ -525,6 +628,8 @@ async function importCsv(){
       msg.style.color = "var(--ok, #8fc9a3)";
       msg.textContent = `Imported ${f.name}: ${r.inserted} new, ${r.updated_deduped} already there (skipped). ${r.total_in_db} transactions total.`;
       await loadSpending();
+      await loadCategories();
+      await loadReview();
     }
   }catch(e){
     msg.style.color = "#d97a8c"; msg.textContent = "Import failed — " + e;
@@ -541,6 +646,8 @@ document.addEventListener("keydown", e=>{ if(e.key==="Escape") closeForm(); });
   await loadSettings();
   await loadAll();
   await loadSpending();
+  await loadCategories();
+  await loadReview();
 })();
 </script>
 </body>
