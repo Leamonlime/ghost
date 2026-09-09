@@ -200,27 +200,8 @@
     <div class="empty" id="spendingEmpty">No spending imported yet. Import a bank CSV export to see your monthly picture.</div>
     <div id="spendingContent" style="display:none;padding:4px 2px 2px;">
       <div id="spendNarr" style="font-size:12.5px;line-height:1.55;color:var(--gc-ink);border-left:2px solid var(--bills-title);padding:6px 0 6px 12px;margin:4px 0 12px;white-space:pre-wrap;"></div>
-      <div style="display:flex;gap:10px;margin:0 0 12px;flex-wrap:wrap;">
-        <div style="flex:1;min-width:120px;border:1px solid var(--gc-hairline);border-radius:5px;padding:8px 10px;">
-          <div style="font-size:9px;text-transform:uppercase;font-variant:small-caps;letter-spacing:.05em;color:var(--gc-ink-faint);">Income</div>
-          <div id="spInc" style="font-family:var(--gc-serif);font-size:15px;color:var(--ok,#8fc9a3);">—</div>
-        </div>
-        <div style="flex:1;min-width:120px;border:1px solid var(--gc-hairline);border-radius:5px;padding:8px 10px;">
-          <div style="font-size:9px;text-transform:uppercase;font-variant:small-caps;letter-spacing:.05em;color:var(--gc-ink-faint);">Spent</div>
-          <div id="spSpent" style="font-family:var(--gc-serif);font-size:15px;color:var(--gc-ink);">—</div>
-        </div>
-        <div id="spTransferBox" style="flex:1;min-width:120px;border:1px solid var(--gc-hairline);border-radius:5px;padding:8px 10px;display:none;">
-          <div style="font-size:9px;text-transform:uppercase;font-variant:small-caps;letter-spacing:.05em;color:var(--gc-ink-faint);">Transfers <span style="opacity:.7;">(own accounts, excluded)</span></div>
-          <div id="spTransfer" style="font-family:var(--gc-serif);font-size:15px;color:var(--gc-ink-dim);">—</div>
-        </div>
-      </div>
-      <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:6px;">
-        <span id="spendMonth" style="font-family:var(--gc-serif);font-variant:small-caps;letter-spacing:.06em;color:var(--gc-ink-dim);font-size:12px;"></span>
-        <span id="spendUnc" style="font-size:10.5px;color:#d97a8c;"></span>
-        <span class="spacer" style="flex:1"></span>
-        <span id="spendTotal" style="font-family:var(--gc-serif);color:var(--gc-ink);font-size:13px;"></span>
-      </div>
-      <table style="width:100%;border-collapse:collapse;font-size:12px;"><tbody id="spendCats"></tbody></table>
+      <div id="spendMonths"></div>
+      <button id="spendToggle" onclick="toggleAllMonths()" style="display:none;margin-top:6px;font-family:var(--gc-serif);font-variant:small-caps;letter-spacing:.05em;font-size:10.5px;color:var(--gc-ink-dim);background:transparent;border:1px solid var(--gc-hairline);border-radius:5px;padding:4px 12px;cursor:pointer;"></button>
       <div id="spendMeta" style="font-size:9.5px;color:var(--gc-ink-faint);margin-top:8px;"></div>
     </div>
   </div>
@@ -476,6 +457,45 @@ async function loadAll(){ await Promise.all([loadBills(), loadSummary()]); }
 
 // --- Spending — Current picture (CSV import + Ollama narration) ---
 function catLabel(k){ return cap(String(k||"").replace(/_/g," ")); }
+var SPEND = null, showAllMonths = false;
+function monthLabel(m){ const [y,mo]=m.split("-"); return new Date(y,mo-1,1).toLocaleDateString("en-AU",{month:"long",year:"numeric"}); }
+function statBox(label,val,color,extra){
+  return `<div style="flex:1;min-width:110px;border:1px solid var(--gc-hairline);border-radius:5px;padding:7px 9px;">
+    <div style="font-size:8.5px;text-transform:uppercase;font-variant:small-caps;letter-spacing:.05em;color:var(--gc-ink-faint);">${label}${extra||''}</div>
+    <div style="font-family:var(--gc-serif);font-size:14px;color:${color};">${val}</div></div>`;
+}
+function monthBlock(m, b){
+  const tr = b.transfers||{};
+  let boxes = statBox("Income", money(b.income||0), "var(--ok,#8fc9a3)")
+            + statBox("Spent", money(b.spent||0), "var(--gc-ink)");
+  if(tr.count) boxes += statBox("Transfers", money(tr.volume||0), "var(--gc-ink-dim)", ' <span style="opacity:.7">(own accts, excl.)</span>');
+  const cats = b.categories||{};
+  const rows = Object.entries(cats).map(([k,v])=>{
+    const unc = k==="uncategorised";
+    return `<tr style="border-bottom:1px solid var(--gc-hairline);">
+      <td style="padding:4px 0;${unc?'color:#d97a8c;':'color:var(--gc-ink);'}">${esc(catLabel(k))}${unc?' ⚑':''}</td>
+      <td style="padding:4px 0;text-align:right;font-variant-numeric:tabular-nums;color:var(--gc-ink);">${money(v)}</td></tr>`;
+  }).join("") || `<tr><td style="color:var(--gc-ink-faint);padding:5px 0;">No spending this month.</td></tr>`;
+  const unc = Number(b.uncategorised_pct||0);
+  const uncTag = unc>=15 ? `<span style="font-size:10px;color:#d97a8c;margin-left:8px;">${unc}% uncategorised</span>` : "";
+  return `<div style="margin:0 0 16px;">
+    <div style="font-family:var(--gc-serif);font-variant:small-caps;letter-spacing:.06em;color:var(--bills-title);font-size:13px;margin-bottom:6px;">${esc(monthLabel(m))}${uncTag}</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;">${boxes}</div>
+    <table style="width:100%;border-collapse:collapse;font-size:12px;"><tbody>${rows}</tbody></table>
+  </div>`;
+}
+function renderMonths(){
+  if(!SPEND) return;
+  const months = SPEND.months||[];
+  const shown = showAllMonths ? months : (SPEND.default_months||months.slice(0,3));
+  document.getElementById("spendMonths").innerHTML = shown.map(m=>monthBlock(m, (SPEND.by_month||{})[m]||{})).join("");
+  const tog = document.getElementById("spendToggle");
+  if(months.length > (SPEND.default_months||[]).length){
+    tog.style.display = "";
+    tog.textContent = showAllMonths ? "Show last 3 months" : ("Show all "+months.length+" months");
+  } else { tog.style.display = "none"; }
+}
+function toggleAllMonths(){ showAllMonths = !showAllMonths; renderMonths(); }
 async function loadSpending(){
   try{
     const r = await (await fetch("/api/bills/spending"+Q,{cache:"no-store"})).json();
@@ -483,32 +503,8 @@ async function loadSpending(){
     document.getElementById("spendingEmpty").style.display="none";
     document.getElementById("spendingContent").style.display="";
     document.getElementById("spendNarr").textContent = r.narration || "(no narration generated)";
-    // S68: headline income/spend now EXCLUDE own-account transfers; transfers shown separately.
-    const t = r.totals || {};
-    document.getElementById("spInc").textContent = money(t.total_income||0);
-    document.getElementById("spSpent").textContent = money(t.total_spent||0);
-    const tr = r.transfers || {};
-    const box = document.getElementById("spTransferBox");
-    if(tr.count){
-      box.style.display = "";
-      document.getElementById("spTransfer").textContent = money(tr.volume||0);
-      document.getElementById("spTransfer").title = `${tr.count} transfer(s): ${money(tr.out||0)} out, ${money(tr.in||0)} back in`;
-    } else { box.style.display = "none"; }
-    document.getElementById("spendMonth").textContent = r.latest_month ? ("Category totals · "+r.latest_month) : "Category totals";
-    const cats = r.month_categories && Object.keys(r.month_categories).length ? r.month_categories : (r.by_category||{});
-    let total = 0; Object.values(cats).forEach(v=>total+=Number(v||0));
-    document.getElementById("spendTotal").textContent = money(total)+" spent";
-    document.getElementById("spendCats").innerHTML = Object.entries(cats).map(([k,v])=>{
-      const unc = k==="uncategorised";
-      return `<tr style="border-bottom:1px solid var(--gc-hairline);">
-        <td style="padding:5px 0;${unc?'color:#d97a8c;':'color:var(--gc-ink);'}">${esc(catLabel(k))}${unc?' ⚑':''}</td>
-        <td style="padding:5px 0;text-align:right;font-variant-numeric:tabular-nums;color:var(--gc-ink);">${money(v)}</td></tr>`;
-    }).join("") || `<tr><td style="color:var(--gc-ink-faint);padding:6px 0;">No spending in this month.</td></tr>`;
-    const dq = r.data_quality||{};
-    const unc = Number(dq.uncategorised_share_pct||0);
-    document.getElementById("spendUnc").textContent = unc>0 ? (unc+"% uncategorised") : "";
-    document.getElementById("spendUnc").style.display = unc>=15 ? "" : (unc>0?"":"none");
-    document.getElementById("spendMeta").textContent = "Generated "+(r.generated_at? new Date(r.generated_at).toLocaleString("en-AU") : "—")+" · numbers computed locally, narration by local Ollama (never Claude).";
+    SPEND = r; renderMonths();
+    document.getElementById("spendMeta").textContent = "Generated "+(r.generated_at? new Date(r.generated_at).toLocaleString("en-AU") : "—")+" · numbers computed live from your imports, narration by local Ollama (never Claude).";
   }catch(e){ console.error("spending load failed", e); }
 }
 async function importCsv(){
