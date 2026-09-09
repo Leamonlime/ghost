@@ -205,7 +205,7 @@
       <a class="nav-item" data-role="nav-item" href="ghost-habits.html"><span class="ic">✦</span>Habits<span class="count" id="navHabitCount">–</span></a>
       <a class="nav-item" data-role="nav-item" href="ghost-habits.html"><span class="ic">☑</span>ToDos<span class="count" id="navTodoCount">–</span></a>
       <div class="nav-item" data-role="nav-item"><span class="ic">◷</span>Timeline</div>
-      <div class="nav-item" data-role="nav-item"><span class="ic">◎</span>Budget</div>
+      <div class="nav-item" data-role="nav-item"><span class="ic">◎</span>Spending</div>
       <a class="nav-item" data-role="nav-item" href="ghost-bills.html"><span class="ic">▤</span>Bills</a>
       <div class="nav-item" data-role="nav-item"><span class="ic">◐</span>Nutrition</div>
       <div class="nav-item" data-role="nav-item"><span class="ic">♜</span>Vitals</div>
@@ -285,7 +285,7 @@
         </div>
 
         <div class="card panel">
-          <div class="card-title">Budget This Month</div>
+          <div class="card-title">Spending</div>
           <div class="scroll-list" id="budgetList" data-role="budget"></div>
         </div>
 
@@ -453,26 +453,21 @@ function ringStyle(pct, color){
 function renderMonitor(d){
   const habits = d.habits||[];
   const todayPct = habits.length ? Math.round(100*habits.filter(h=>h.doneToday).length/habits.length) : 0;
-  const budgetPct = d.budget && d.budget.limit ? Math.round(100*d.budget.spent/d.budget.limit) : 0;
   const cal = d.nutrition || {};
   const calTxt = cal.caloriesTarget ? Math.round(100*cal.caloriesLogged/cal.caloriesTarget)+"%" : (cal.caloriesLogged||0);
+  // S70: Budget gauge removed (conversational budget retired — spending is CSV-only on the Bills page).
   document.getElementById("monGauges").innerHTML = `
     <div class="mon-gauge"><div class="mon-ring" style="${ringStyle(todayPct,'#ff5fa8')}"><div class="mask">${todayPct}%</div></div><div class="lbl">Today</div></div>
-    <div class="mon-gauge"><div class="mon-ring" style="${ringStyle(Math.min(budgetPct,100), budgetPct>100?'#ff5f7a':'#e26fe0')}"><div class="mask">${budgetPct}%</div></div><div class="lbl">Budget</div></div>
     <div class="mon-gauge"><div class="mon-ring" style="${ringStyle(cal.caloriesTarget?Math.min(100,100*cal.caloriesLogged/cal.caloriesTarget):0,'#7ee6ab')}"><div class="mask" style="font-size:8.5px;">${calTxt}</div></div><div class="lbl">Calories</div></div>
   `;
 }
 
 function renderBudget(d){
-  const b = d.budget || {spent:0, limit:0, categories:[]};
-  const overallOver = b.limit && b.spent > b.limit;
-  let html = `<div style="font-family:var(--gc-serif); font-size:14px; font-weight:500; color:${overallOver?'#ff8fa0':'#ffe3f1'}; margin-bottom:5px;">$${b.spent.toFixed(2)} <span style="font-size:9px; color:#a97b95; font-weight:400;">/ $${b.limit.toFixed(2)}</span></div>`;
-  html += (b.categories||[]).map(c => {
-    const over = c.limit>0 && c.amount > c.limit;
-    const pct = c.limit>0 ? Math.min(100, 100*c.amount/c.limit) : 0;
-    return `<div class="bud-row"><span>${esc(c.name)}</span><span class="${over?'over':''}">$${c.amount.toFixed(2)}</span></div><div class="bud-bar"><span class="${over?'over':''}" style="width:${pct}%"></span></div>`;
-  }).join("");
-  document.getElementById("budgetList").innerHTML = html;
+  // S70: conversational expense/budget tracking retired — spending is now tracked from bank-CSV
+  // uploads on the Bills page. This slot just points there (the old d.budget key no longer exists).
+  document.getElementById("budgetList").innerHTML =
+    `<div style="font-size:11.5px;line-height:1.5;color:#c9a4bb;">Spending is now tracked from your bank-CSV imports.</div>
+     <a href="ghost-bills.html" style="display:inline-block;margin-top:8px;font-size:11px;color:#e26fe0;">Open the Bills dashboard →</a>`;
 }
 
 function renderIntegrations(d){
@@ -591,7 +586,7 @@ setInterval(fetchDashboard, POLL_MS);
   // S63: Habits/ToDos are now real <a> links to ghost-habits.html (its own add/edit/tick UI),
   // so their map entries were removed — <a> nav-items return early below before consulting this map.
   const map = {"Command Center":null,"Timeline":"cardTimeline",
-    "Budget":"budgetList","Nutrition":"cardOverview","Vitals":"monGauges","Escalation":"dockEscalation",
+    "Spending":"budgetList","Nutrition":"cardOverview","Vitals":"monGauges","Escalation":"dockEscalation",
     "Integrations":"intGrid","Chats":"__chat"};
   document.querySelectorAll('[data-role="nav-item"]').forEach(item=>{
     if (item.tagName === "A") return; // Horoscope/Tarot are real links to their own pages — leave them alone
