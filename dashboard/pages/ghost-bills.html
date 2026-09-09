@@ -200,6 +200,20 @@
     <div class="empty" id="spendingEmpty">No spending imported yet. Import a bank CSV export to see your monthly picture.</div>
     <div id="spendingContent" style="display:none;padding:4px 2px 2px;">
       <div id="spendNarr" style="font-size:12.5px;line-height:1.55;color:var(--gc-ink);border-left:2px solid var(--bills-title);padding:6px 0 6px 12px;margin:4px 0 12px;white-space:pre-wrap;"></div>
+      <div style="display:flex;gap:10px;margin:0 0 12px;flex-wrap:wrap;">
+        <div style="flex:1;min-width:120px;border:1px solid var(--gc-hairline);border-radius:5px;padding:8px 10px;">
+          <div style="font-size:9px;text-transform:uppercase;font-variant:small-caps;letter-spacing:.05em;color:var(--gc-ink-faint);">Income</div>
+          <div id="spInc" style="font-family:var(--gc-serif);font-size:15px;color:var(--ok,#8fc9a3);">—</div>
+        </div>
+        <div style="flex:1;min-width:120px;border:1px solid var(--gc-hairline);border-radius:5px;padding:8px 10px;">
+          <div style="font-size:9px;text-transform:uppercase;font-variant:small-caps;letter-spacing:.05em;color:var(--gc-ink-faint);">Spent</div>
+          <div id="spSpent" style="font-family:var(--gc-serif);font-size:15px;color:var(--gc-ink);">—</div>
+        </div>
+        <div id="spTransferBox" style="flex:1;min-width:120px;border:1px solid var(--gc-hairline);border-radius:5px;padding:8px 10px;display:none;">
+          <div style="font-size:9px;text-transform:uppercase;font-variant:small-caps;letter-spacing:.05em;color:var(--gc-ink-faint);">Transfers <span style="opacity:.7;">(own accounts, excluded)</span></div>
+          <div id="spTransfer" style="font-family:var(--gc-serif);font-size:15px;color:var(--gc-ink-dim);">—</div>
+        </div>
+      </div>
       <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:6px;">
         <span id="spendMonth" style="font-family:var(--gc-serif);font-variant:small-caps;letter-spacing:.06em;color:var(--gc-ink-dim);font-size:12px;"></span>
         <span id="spendUnc" style="font-size:10.5px;color:#d97a8c;"></span>
@@ -469,6 +483,17 @@ async function loadSpending(){
     document.getElementById("spendingEmpty").style.display="none";
     document.getElementById("spendingContent").style.display="";
     document.getElementById("spendNarr").textContent = r.narration || "(no narration generated)";
+    // S68: headline income/spend now EXCLUDE own-account transfers; transfers shown separately.
+    const t = r.totals || {};
+    document.getElementById("spInc").textContent = money(t.total_income||0);
+    document.getElementById("spSpent").textContent = money(t.total_spent||0);
+    const tr = r.transfers || {};
+    const box = document.getElementById("spTransferBox");
+    if(tr.count){
+      box.style.display = "";
+      document.getElementById("spTransfer").textContent = money(tr.volume||0);
+      document.getElementById("spTransfer").title = `${tr.count} transfer(s): ${money(tr.out||0)} out, ${money(tr.in||0)} back in`;
+    } else { box.style.display = "none"; }
     document.getElementById("spendMonth").textContent = r.latest_month ? ("Category totals · "+r.latest_month) : "Category totals";
     const cats = r.month_categories && Object.keys(r.month_categories).length ? r.month_categories : (r.by_category||{});
     let total = 0; Object.values(cats).forEach(v=>total+=Number(v||0));
