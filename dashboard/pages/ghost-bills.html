@@ -216,6 +216,25 @@
         <div id="reviewHint" style="font-size:10.5px;color:var(--gc-ink-faint);margin-bottom:8px;"></div>
         <div id="reviewList"></div>
       </div>
+
+      <!-- S73: manage the note's keyword RULES from the dashboard. Rename/add/remove keywords + whole
+           categories, with an impact preview before committing a keyword. Writes the note directly. -->
+      <div id="categoryManager" data-role="category-manager" style="margin-top:18px;border-top:1px solid var(--gc-hairline);padding-top:12px;">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px;">
+          <span style="font-family:var(--gc-serif);font-variant:small-caps;letter-spacing:.06em;color:var(--bills-title);font-size:13px;">Manage categories</span>
+          <span style="flex:1"></span>
+          <button id="mgrToggle" class="btn" style="font-size:11px;padding:4px 12px;" onclick="toggleManager()">Show</button>
+        </div>
+        <div id="mgrBody" style="display:none;">
+          <div style="font-size:10.5px;color:var(--gc-ink-faint);margin:4px 0 10px;">Edit the keyword rules that auto-categorise transactions. Changes write straight to <em>Ghost — Spending Categories.md</em> and re-derive all non-manual transactions live. Manually-fixed (sticky) transactions are unaffected.</div>
+          <div id="mgrList"></div>
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:10px;padding-top:10px;border-top:1px dashed var(--gc-hairline);">
+            <input id="newCatName" placeholder="new category name" style="font-size:12px;padding:4px 8px;border:1px solid var(--gc-hairline);border-radius:5px;background:transparent;color:var(--gc-ink);width:170px;">
+            <button class="btn" style="font-size:11px;padding:4px 12px;" onclick="addCategory()">Add category</button>
+            <span id="newCatStatus" style="font-size:10.5px;color:var(--gc-ink-faint);"></span>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -511,7 +530,7 @@ function renderMonths(){
 function toggleAllMonths(){ showAllMonths = !showAllMonths; renderMonths(); }
 
 // --- S71: review & fix categories inline ---
-var CATS = [], reviewFilter = "uncategorized";
+var CATS = [], CATDETAILS = [], reviewFilter = "uncategorized", mgrOpen = false;
 function guessKeyword(desc){
   // strip digits/punctuation, drop tiny tokens, take the first meaningful word as a merchant guess.
   const words = String(desc||"").toLowerCase().replace(/[^a-z\s]/g," ").split(/\s+/).filter(w=>w.length>2);
@@ -519,7 +538,7 @@ function guessKeyword(desc){
 }
 async function loadCategories(){
   try{ const r = await (await fetch("/api/bills/categories",{cache:"no-store"})).json();
-       if(r && r.ok) CATS = r.categories||[]; }
+       if(r && r.ok){ CATS = r.categories||[]; CATDETAILS = r.details||[]; renderManager(); } }
   catch(e){ console.error("categories load failed", e); }
 }
 function catOptions(sel){
@@ -597,6 +616,112 @@ async function saveRow(id){
     // refresh the month totals so the correction shows in the numbers
     await loadSpending();
   }catch(e){ st.style.color="#d97a8c"; st.textContent="error: "+e; }
+}
+
+// --- S73: Manage categories (edit the note's keyword rules) ---
+function toggleManager(){
+  mgrOpen = !mgrOpen;
+  document.getElementById("mgrBody").style.display = mgrOpen ? "" : "none";
+  document.getElementById("mgrToggle").textContent = mgrOpen ? "Hide" : "Show";
+  if(mgrOpen) renderManager();
+}
+function renderManager(){
+  if(!mgrOpen) return;
+  const host = document.getElementById("mgrList");
+  if(!host) return;
+  if(!CATDETAILS.length){ host.innerHTML = '<div style="color:var(--gc-ink-faint);font-size:11px;">No categories in the note yet.</div>'; return; }
+  host.innerHTML = CATDETAILS.map(c=>{
+    const chips = (c.keywords||[]).map(kw=>`<span style="display:inline-flex;align-items:center;gap:4px;border:1px solid var(--gc-hairline);border-radius:12px;padding:1px 4px 1px 8px;margin:2px;font-size:11px;font-variant-numeric:tabular-nums;">${esc(kw)}<button title="remove keyword" onclick="removeKeyword('${esc(c.key)}','${esc(kw)}')" style="border:none;background:transparent;color:#d97a8c;cursor:pointer;font-size:13px;line-height:1;padding:0 2px;">×</button></span>`).join("") || '<span style="color:var(--gc-ink-faint);font-size:10.5px;">(no keywords yet)</span>';
+    return `<div class="mgrcat" style="border:1px solid var(--gc-hairline);border-radius:6px;padding:8px 10px;margin-bottom:8px;">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px;">
+        <span style="font-family:var(--gc-serif);font-size:12.5px;color:var(--bills-title);flex:1;min-width:120px;">${esc(c.label)}</span>
+        <button class="btn" style="font-size:10.5px;padding:3px 9px;" onclick="renameCategory('${esc(c.key)}','${esc(c.label)}')">Rename</button>
+        <button class="btn" style="font-size:10.5px;padding:3px 9px;color:#d97a8c;" onclick="deleteCategory('${esc(c.key)}','${esc(c.label)}')">Delete</button>
+      </div>
+      <div style="margin-bottom:6px;">${chips}</div>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+        <input id="addkw_${esc(c.key)}" placeholder="add keyword" style="font-size:11px;padding:3px 7px;border:1px solid var(--gc-hairline);border-radius:5px;background:transparent;color:var(--gc-ink);width:130px;">
+        <button class="btn" style="font-size:10.5px;padding:3px 9px;" onclick="previewThenAdd('${esc(c.key)}','${esc(c.label)}')">Preview + add</button>
+        <span id="imp_${esc(c.key)}" style="font-size:10.5px;color:var(--gc-ink-dim);"></span>
+      </div>
+    </div>`;
+  }).join("");
+}
+async function previewThenAdd(key, label){
+  const inp = document.getElementById("addkw_"+key), out = document.getElementById("imp_"+key);
+  const kw = (inp.value||"").trim().toLowerCase();
+  if(!kw){ out.style.color="#d97a8c"; out.textContent="type a keyword"; return; }
+  // Stage 1: show the blast-radius preview and turn the button into a confirm.
+  if(inp.dataset.pending !== kw){
+    out.style.color="var(--gc-ink-dim)"; out.textContent="checking…";
+    try{
+      const r = await (await fetch("/api/bills/keyword-impact?keyword="+encodeURIComponent(kw),{cache:"no-store"})).json();
+      if(!r.ok){ out.style.color="#d97a8c"; out.textContent=r.error||"preview failed"; return; }
+      const split = Object.entries(r.by_current_category||{}).map(([k,n])=>n+" "+catLabel(k)).join(", ") || "none";
+      const manualNote = r.manual_excluded ? ` · ${r.manual_excluded} manually-set row${r.manual_excluded===1?"":"s"} unaffected (excluded)` : "";
+      out.style.color="var(--gc-ink)";
+      out.textContent = `${r.matches} match${r.matches===1?"":"es"} — currently ${split}${manualNote}. Click again to confirm.`;
+      inp.dataset.pending = kw;
+      return;
+    }catch(e){ out.style.color="#d97a8c"; out.textContent="preview error: "+e; return; }
+  }
+  // Stage 2: same keyword clicked again -> commit.
+  out.style.color="var(--gc-ink-dim)"; out.textContent="adding…";
+  try{
+    const r = await (await fetch("/api/bills/category/keyword/add",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({category:key, category_label:label, keyword:kw})})).json();
+    if(!r.ok){ out.style.color="#d97a8c"; out.textContent=r.error||"failed"; return; }
+    inp.value=""; delete inp.dataset.pending;
+    await afterRuleChange();
+  }catch(e){ out.style.color="#d97a8c"; out.textContent="error: "+e; }
+}
+async function removeKeyword(key, kw){
+  if(!confirm(`Remove keyword “${kw}” from ${catLabel(key)}? Non-manual transactions that only matched via it will re-derive to their next matching rule (or Uncategorised).`)) return;
+  try{
+    const r = await (await fetch("/api/bills/category/keyword/remove",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({category:key, keyword:kw})})).json();
+    if(!r.ok){ alert(r.error||"failed"); return; }
+    await afterRuleChange();
+  }catch(e){ alert("error: "+e); }
+}
+async function renameCategory(key, label){
+  const name = prompt("Rename category — new name:", label);
+  if(name===null) return;
+  if(!name.trim()){ return; }
+  try{
+    const r = await (await fetch("/api/bills/category/rename",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({category:key, new_name:name.trim()})})).json();
+    if(!r.ok){ alert(r.error||"failed"); return; }
+    await afterRuleChange();
+  }catch(e){ alert("error: "+e); }
+}
+async function deleteCategory(key, label){
+  if(!confirm(`Delete category “${label}” and all its keywords? Any transactions you'd manually pinned to it will be un-stuck and re-derive against the remaining rules.`)) return;
+  try{
+    const r = await (await fetch("/api/bills/category/delete",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({category:key})})).json();
+    if(!r.ok){ alert(r.error||"failed"); return; }
+    await afterRuleChange();
+  }catch(e){ alert("error: "+e); }
+}
+async function addCategory(){
+  const inp = document.getElementById("newCatName"), out = document.getElementById("newCatStatus");
+  const name = (inp.value||"").trim();
+  if(!name){ out.style.color="#d97a8c"; out.textContent="type a name"; return; }
+  out.style.color="var(--gc-ink-dim)"; out.textContent="adding…";
+  try{
+    const r = await (await fetch("/api/bills/category/add",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({name})})).json();
+    if(!r.ok){ out.style.color="#d97a8c"; out.textContent=r.error||"failed"; return; }
+    inp.value=""; out.style.color="var(--ok,#8fc9a3)"; out.textContent="added";
+    await afterRuleChange();
+  }catch(e){ out.style.color="#d97a8c"; out.textContent="error: "+e; }
+}
+// after any rule edit: reload categories (re-render manager) + review list + month totals (live re-derive)
+async function afterRuleChange(){
+  await loadCategories();
+  await loadReview();
+  await loadSpending();
 }
 
 async function loadSpending(){
