@@ -12,7 +12,7 @@ PAGE_HOOKS = {
         "nav-item", "habits", "todos", "budget",
         "momentum", "momentum-ratio", "momentum-sparkline", "momentum-counts",
     ],
-    "ghost-bills.html":     ["bills-table", "spending-summary", "spending-review", "category-manager"],
+    "ghost-bills.html":     ["bills-table", "spending-summary", "spending-review", "category-manager", "bill-candidates"],
     "ghost-quest-log.html": ["quest-list"],
     "ghost-horoscope.html": ["profile-select"],
     "ghost-tarot.html":     ["tarot-board"],
@@ -38,6 +38,7 @@ API_ENDPOINTS = [
     "/api/bills/spending",
     "/api/bills/categories",
     "/api/bills/keyword-impact",
+    "/api/bills/candidates",
 ]
 
 PAGES = list(PAGE_HOOKS.keys())
