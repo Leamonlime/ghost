@@ -158,6 +158,17 @@
     <div class="note" style="padding-bottom:12px;">Drives “due before next payday” and the set-aside-per-cycle figure. Bills data lives only in Ghost’s local Postgres — never sent to any cloud service.</div>
   </details>
 
+  <!-- S74: recurring-bill candidates detected from imported spending transactions -->
+  <div class="table-card panel" id="candidatesCard" data-role="bill-candidates" style="display:none;">
+    <div class="table-head">
+      <span class="title">Detected recurring bills</span>
+      <span class="spacer"></span>
+      <span id="candCount" style="font-size:10.5px;color:var(--gc-ink-faint);"></span>
+    </div>
+    <div style="font-size:10.5px;color:var(--gc-ink-faint);margin:2px 2px 8px;">Patterns that recur roughly monthly in your imported spending. Add the ones that are real bills — each is prefilled and fully editable first. Fixed vs usage-based is a suggestion; you decide.</div>
+    <div id="candidatesList"></div>
+  </div>
+
   <!-- table -->
   <div class="table-card panel">
     <div class="table-head">
@@ -251,6 +262,8 @@
       <label class="f">…or day of month<input type="number" id="fDom" min="1" max="31" placeholder="1–31" onchange="if(this.value)document.getElementById('fDueDate').value=''"></label>
       <div class="anchor-note" id="anchorNote">Give a due date (best for weekly/quarterly/annual) or a day-of-month (best for monthly).</div>
       <label class="f">Category<select id="fCategory"></select></label>
+      <label class="f">Bill type<select id="fBillType" onchange="syncBillTypeHint()"><option value="fixed">Fixed (same each time)</option><option value="usage">Usage-based (varies)</option></select></label>
+      <div class="anchor-note" id="billTypeNote">Fixed = a firm expected charge (rent, a subscription). Usage-based = the amount varies (electricity, gas, water); its figure is treated as a last-known estimate.</div>
       <label class="f">Payer (optional)<input type="text" id="fPayer" placeholder="e.g. shared"></label>
       <label class="f">Last paid (optional)<input type="date" id="fLastPaid"></label>
       <div class="chk-row"><input type="checkbox" id="fAutopay"><label for="fAutopay">On autopay</label></div>
@@ -271,6 +284,8 @@ let META = {frequencies:[], categories:[], currency:"AUD"};
 let BILLS = [];
 let sortKey = "days_until", sortDir = 1;
 let editId = null;
+let formSourcePattern = null;   // S74: carries a bill's link to its detected transaction pattern
+let CANDIDATES = [];
 
 const fmt = new Intl.NumberFormat("en-AU", {style:"currency", currency:"AUD"});
 function money(v){ return fmt.format(Number(v||0)); }
@@ -302,8 +317,10 @@ async function loadSummary(){
   try{
     const r = await (await fetch("/api/bills/summary"+Q,{cache:"no-store"})).json();
     const s = r.summary; if(!s) return;
+    const estMonthly = s.estimated_monthly||0;
     document.getElementById("cMonthly").textContent = money(s.monthly_total);
-    document.getElementById("cMonthlyNote").textContent = s.bill_count+" bill"+(s.bill_count===1?"":"s")+" tracked";
+    document.getElementById("cMonthlyNote").textContent = s.bill_count+" bill"+(s.bill_count===1?"":"s")+" tracked"
+      + (s.has_estimates ? " · incl. "+money(estMonthly)+" est. (usage-based)" : "");
     document.getElementById("cAnnual").textContent = money(s.annual_total);
 
     const dbp = s.due_before_payday;
@@ -312,7 +329,8 @@ async function loadSummary(){
       pEl.textContent = money(dbp.total);
       pEl.className = "big" + (dbp.total>0 ? " alert" : "");
       const pd = new Date(dbp.next_payday+"T00:00:00").toLocaleDateString("en-AU",{day:"numeric",month:"short"});
-      pN.textContent = dbp.count+" bill"+(dbp.count===1?"":"s")+" before payday ("+pd+", "+dbp.days_until_payday+"d)";
+      pN.textContent = dbp.count+" bill"+(dbp.count===1?"":"s")+" before payday ("+pd+", "+dbp.days_until_payday+"d)"
+        + (dbp.has_estimates ? " · incl. "+money(dbp.estimated_total)+" est." : "");
     } else {
       pEl.textContent = "—"; pEl.className="big";
       pN.innerHTML = 'set a next pay date in <a onclick="document.getElementById(\'settingsBox\').open=true">settings</a>';
@@ -321,7 +339,8 @@ async function loadSummary(){
     const sa = s.set_aside;
     document.getElementById("cSetAside").textContent = money(sa.per_cycle);
     document.getElementById("cSetAsideNote").textContent =
-      "per "+sa.pay_frequency+" pay · incl. "+money(sa.sinking_fund_per_cycle)+" sinking fund (quarterly/annual)";
+      "per "+sa.pay_frequency+" pay · incl. "+money(sa.sinking_fund_per_cycle)+" sinking fund (quarterly/annual)"
+      + (sa.has_estimates ? " · "+money(sa.estimated_per_cycle)+" of this is usage estimate" : "");
 
     const ov = s.overdue;
     const oEl = document.getElementById("cOverdue"), oN = document.getElementById("cOverdueNote");
@@ -361,10 +380,14 @@ function renderTable(){
     const dl = dueLabel(b);
     const payBtn = b.overdue || (b.days_until!=null && b.days_until<=7)
       ? `<button class="mini-btn" onclick="markPaid(${b.id})">Paid</button>` : "";
+    const typeTag = b.bill_type==="usage"
+      ? ` <span class="pill" title="usage-based — amount varies; shown figure is a last-known estimate" style="font-size:9px;">usage · est.</span>` : "";
+    const flagTag = b.price_flag
+      ? `<div style="font-size:9.5px;color:#d9a441;margin-top:2px;" title="${esc(b.price_flag)}">⚠ ${esc(b.price_flag)}</div>` : "";
     return `<tr class="${b.overdue?'overdue':''}">
-      <td>${esc(b.name)}</td>
+      <td>${esc(b.name)}${flagTag}</td>
       <td><span class="pill cat">${esc(b.category_label)}</span></td>
-      <td class="num">${money(b.amount)}</td>
+      <td class="num">${money(b.amount)}${typeTag}</td>
       <td>${esc(cap(b.frequency))}</td>
       <td><span class="pill ${dl.cls}">${esc(dl.txt)}</span></td>
       <td class="num">${money(b.monthly_equiv)}</td>
@@ -418,22 +441,31 @@ function syncAnchorHint(){
   if(f==="monthly"){ note.textContent="Monthly bills: a day-of-month (1–31) is easiest. A due date also works."; }
   else { note.textContent="For "+f+" bills, set a due date (its anchor). Day-of-month is treated as this month’s anchor."; }
 }
-function openForm(id){
+function syncBillTypeHint(){
+  const t = document.getElementById("fBillType").value;
+  document.getElementById("billTypeNote").textContent = t==="usage"
+    ? "Usage-based: the amount varies (electricity, gas, water). Its figure is a last-known estimate, refreshed from each new matching import, and labelled ‘est.’ in the totals."
+    : "Fixed: a firm expected charge (rent, a subscription). If a new matching import differs, you’ll get a gentle ‘did the price change?’ flag.";
+}
+// openForm(id) to edit; openForm(null, prefill) to add prefilled from a candidate; openForm() blank add.
+function openForm(id, prefill){
   editId = (typeof id==="number") ? id : null;
   document.getElementById("formErr").textContent = "";
   document.getElementById("modalTitle").textContent = editId ? "Edit bill" : "Add bill";
-  const b = editId ? BILLS.find(x=>x.id===editId) : null;
-  document.getElementById("fName").value = b ? b.name : "";
+  const b = editId ? BILLS.find(x=>x.id===editId) : (prefill || null);
+  formSourcePattern = b ? (b.source_pattern || null) : null;
+  document.getElementById("fName").value = b ? (b.name||"") : "";
   document.getElementById("fAmount").value = b ? b.amount : "";
   document.getElementById("fFreq").value = b ? b.frequency : "monthly";
   document.getElementById("fDueDate").value = b && b.due_date ? b.due_date : "";
   document.getElementById("fDom").value = b && b.day_of_month ? b.day_of_month : "";
-  document.getElementById("fCategory").value = b ? b.category : "bills_utilities";
-  document.getElementById("fPayer").value = b ? b.payer : "";
+  document.getElementById("fCategory").value = b && b.category ? b.category : "bills_utilities";
+  document.getElementById("fBillType").value = b && b.bill_type ? b.bill_type : "fixed";
+  document.getElementById("fPayer").value = b && b.payer ? b.payer : "";
   document.getElementById("fLastPaid").value = b && b.last_paid_date ? b.last_paid_date : "";
-  document.getElementById("fAutopay").checked = b ? b.autopay : false;
-  document.getElementById("fNotes").value = b ? b.notes : "";
-  syncAnchorHint();
+  document.getElementById("fAutopay").checked = b ? !!b.autopay : false;
+  document.getElementById("fNotes").value = b && b.notes ? b.notes : "";
+  syncAnchorHint(); syncBillTypeHint();
   document.getElementById("modalBg").style.display = "flex";
   document.getElementById("fName").focus();
 }
@@ -449,6 +481,8 @@ async function saveBill(){
     due_date: document.getElementById("fDueDate").value || null,
     day_of_month: document.getElementById("fDom").value || null,
     category: document.getElementById("fCategory").value,
+    bill_type: document.getElementById("fBillType").value,
+    source_pattern: formSourcePattern,
     payer: document.getElementById("fPayer").value.trim(),
     last_paid_date: document.getElementById("fLastPaid").value || null,
     autopay: document.getElementById("fAutopay").checked,
@@ -485,7 +519,53 @@ async function markPaid(id){
   }catch(e){ alert("failed: "+e); }
 }
 
-async function loadAll(){ await Promise.all([loadBills(), loadSummary()]); }
+async function loadAll(){ await Promise.all([loadBills(), loadSummary(), loadCandidates()]); }
+
+// --- S74: detected recurring-bill candidates ---
+function candMonthsLabel(months){
+  return months.map(m=>{
+    const d=new Date(m.month+"-01T00:00:00").toLocaleDateString("en-AU",{month:"short",year:"2-digit"});
+    return `${d}: ${money(m.amount)}`;
+  }).join("  ·  ");
+}
+async function loadCandidates(){
+  const card=document.getElementById("candidatesCard");
+  if(DEMO){ card.style.display="none"; return; }
+  try{
+    const r = await (await fetch("/api/bills/candidates",{cache:"no-store"})).json();
+    CANDIDATES = (r && r.ok && r.candidates) ? r.candidates : [];
+    if(!CANDIDATES.length){ card.style.display="none"; return; }
+    card.style.display="";
+    document.getElementById("candCount").textContent = CANDIDATES.length+" found";
+    document.getElementById("candidatesList").innerHTML = CANDIDATES.map((c,i)=>{
+      const typeTag = c.suggested_bill_type==="usage"
+        ? `<span class="pill" title="amounts vary by ${c.amount_spread_pct}% — suggested usage-based" style="font-size:9px;">usage · varies</span>`
+        : `<span class="pill" style="font-size:9px;">fixed</span>`;
+      const amtRange = c.suggested_bill_type==="usage"
+        ? `${money(c.amount_min)}–${money(c.amount_max)} (avg ${money(c.amount_avg)})`
+        : money(c.amount_avg);
+      return `<div class="candrow" style="border:1px solid var(--gc-hairline);border-radius:6px;padding:8px 10px;margin-bottom:8px;">
+        <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;">
+          <span style="flex:1;min-width:140px;color:var(--gc-ink);font-size:12.5px;">${esc(c.suggested_name)} ${typeTag}
+            <span style="font-size:9px;color:var(--gc-ink-faint);">${esc(catLabel(c.suggested_category))}</span></span>
+          <span style="font-variant-numeric:tabular-nums;font-family:var(--gc-serif);font-size:13px;">${amtRange}</span>
+          <button class="btn primary" style="font-size:11px;padding:4px 12px;" onclick="addCandidate(${i})">Add as bill…</button>
+        </div>
+        <div style="font-size:10px;color:var(--gc-ink-faint);margin-top:4px;">${c.active_months} months, ~${c.median_gap_days}d apart&nbsp; &nbsp;${esc(candMonthsLabel(c.months))}</div>
+      </div>`;
+    }).join("");
+  }catch(e){ console.error("candidates load failed", e); card.style.display="none"; }
+}
+function addCandidate(i){
+  const c = CANDIDATES[i]; if(!c) return;
+  // open the normal add form, prefilled + linked; Lea edits anything before saving.
+  openForm(null, {
+    name: c.suggested_name.replace(/\b\w/g,ch=>ch.toUpperCase()),
+    amount: c.suggested_amount, frequency: c.suggested_frequency,
+    day_of_month: c.suggested_day_of_month, category: c.suggested_category,
+    bill_type: c.suggested_bill_type, source_pattern: c.source_pattern,
+  });
+}
 
 // --- Spending — Current picture (CSV import + Ollama narration) ---
 function catLabel(k){ return cap(String(k||"").replace(/_/g," ")); }
@@ -751,10 +831,14 @@ async function importCsv(){
       msg.textContent = "Couldn't import: " + (r.error || "unknown error") + (r.columns_found ? " (columns found: "+r.columns_found.join(", ")+")" : "");
     } else {
       msg.style.color = "var(--ok, #8fc9a3)";
-      msg.textContent = `Imported ${f.name}: ${r.inserted} new, ${r.updated_deduped} already there (skipped). ${r.total_in_db} transactions total.`;
+      const br = r.bill_refresh || {};
+      const brNote = (br.usage_refreshed||br.fixed_flagged)
+        ? ` Bills: ${br.usage_refreshed||0} usage refreshed, ${br.fixed_flagged||0} price-change flag${br.fixed_flagged===1?"":"s"}.` : "";
+      msg.textContent = `Imported ${f.name}: ${r.inserted} new, ${r.updated_deduped} already there (skipped). ${r.total_in_db} transactions total.` + brNote;
       await loadSpending();
       await loadCategories();
       await loadReview();
+      await loadAll();   // refreshed usage amounts / new candidates / price flags
     }
   }catch(e){
     msg.style.color = "#d97a8c"; msg.textContent = "Import failed — " + e;
