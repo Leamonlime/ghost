@@ -39,6 +39,9 @@ API_ENDPOINTS = [
     "/api/bills/categories",
     "/api/bills/keyword-impact",
     "/api/bills/candidates",
+    "/api/currency",
+    "/api/arc",
+    "/api/badguys",
 ]
 
 PAGES = list(PAGE_HOOKS.keys())
