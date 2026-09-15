@@ -225,6 +225,37 @@
       <div class="headline-title" id="levelHeadline">Your level</div>
       <div class="headline-sub" id="levelSubline"></div>
     </div>
+
+    <!-- S76: moth companion — a direct read of GET /api/momentum's overall ratio (no new tracking).
+         Distinct from Level: Level is lifetime progress; the moth is your CURRENT momentum mood. -->
+    <div class="panel section lvlpanel" id="mothCard" style="display:flex;align-items:center;gap:12px;">
+      <div id="mothGlyph" style="font-size:30px;line-height:1;">🕯️</div>
+      <div style="flex:1;">
+        <div class="card-title" style="margin:0;">Moth companion</div>
+        <div id="mothState" style="font-size:12px;color:var(--gc-ink-dim,#b8adb4);">—</div>
+      </div>
+      <div id="mothDot" style="width:12px;height:12px;border-radius:50%;background:#6b6b6b;"></div>
+    </div>
+
+    <!-- S76: bad-guy notices (threshold triggers off existing data) -->
+    <div id="badguyRow" style="display:none;margin:0 0 4px;"></div>
+
+    <!-- S76: the one currency economy -->
+    <div class="panel section lvlpanel" id="currencyCard">
+      <div class="card-title">Motes <span id="critBadge" style="font-size:10px;color:#eab8c0;"></span></div>
+      <div style="display:flex;align-items:baseline;gap:8px;">
+        <div id="currencyBalance" style="font-size:26px;font-family:var(--gc-serif,serif);">–</div>
+        <div style="font-size:11px;color:var(--gc-ink-dim,#b8adb4);">earned</div>
+      </div>
+      <div id="currencyRecent" style="font-size:11px;color:var(--gc-ink-dim,#b8adb4);margin-top:6px;"></div>
+    </div>
+
+    <!-- S76: story arc (a named date window; progress is a live query) -->
+    <div class="panel section lvlpanel" id="arcCard">
+      <div class="card-title">Story arc</div>
+      <div id="arcBody"></div>
+    </div>
+
     <div class="panel section lvlpanel">
       <div class="card-title">Bucket Stats</div>
       <div class="bucket-grid" id="bucketGrid"></div>
@@ -388,6 +419,83 @@
         + '<div class="streak-stat"><div class="streak-stat-val">'+(s.days_active||0)+'</div><div class="streak-stat-label">Days active</div></div>'
         + '<div class="streak-stat"><div class="streak-stat-val">'+(s.todos_done||0)+'</div><div class="streak-stat-label">Todos done</div></div>';
       document.getElementById("stubNote").textContent = d._placeholder || "";
+    }).catch(function(){});
+    loadMoth(); loadCurrency(); loadArc(); loadBadguys();
+  };
+
+  // S76 moth: 4 bands off the existing momentum overall ratio. Cutoffs (my call): thriving >=0.75,
+  // steady >=0.5, strained >=0.25, dormant < 0.25 or no data. Colour+glyph+label now; art later.
+  var MOTH = {
+    thriving:{g:"🦋",c:"#8fc9a3",t:"Thriving — momentum's strong"},
+    steady:  {g:"🦋",c:"#c9c06a",t:"Steady — holding a good rhythm"},
+    strained:{g:"🌙",c:"#d9a441",t:"Strained — momentum's slipping"},
+    dormant: {g:"🕯️",c:"#8a7f86",t:"Dormant — quiet lately; a small win wakes it"}
+  };
+  window.loadMoth = function(){
+    fetch("/api/momentum?window=14").then(function(r){return r.json();}).then(function(d){
+      var ratio = d && d.overall ? d.overall.ratio : null;
+      var band = "dormant";
+      if(ratio!=null){ band = ratio>=0.75?"thriving":ratio>=0.5?"steady":ratio>=0.25?"strained":"dormant"; }
+      var m = MOTH[band];
+      document.getElementById("mothGlyph").textContent = m.g;
+      document.getElementById("mothDot").style.background = m.c;
+      document.getElementById("mothState").textContent = m.t + (ratio!=null? "  ("+Math.round(ratio*100)+"% closed)" : "");
+    }).catch(function(){});
+  };
+  window.loadCurrency = function(){
+    fetch("/api/currency").then(function(r){return r.json();}).then(function(d){
+      document.getElementById("currencyBalance").textContent = (d.balance||0).toLocaleString();
+      document.getElementById("critBadge").textContent = d.critical_hits ? ("⚡ "+d.critical_hits+" critical hit"+(d.critical_hits===1?"":"s")) : "";
+      var rec = (d.recent||[]).slice(0,6).map(function(e){
+        var crit = e.event_type==="critical";
+        return '<span style="margin-right:10px;'+(crit?'color:#eab8c0;':'')+'">'+(crit?'⚡':'+')+e.amount+' '+esc(e.source)+'</span>';
+      }).join("");
+      document.getElementById("currencyRecent").innerHTML = rec || "No motes earned yet — a habit tap is +1, a quest is +10.";
+    }).catch(function(){});
+  };
+  window.loadArc = function(){
+    fetch("/api/arc").then(function(r){return r.json();}).then(function(d){
+      var a = d.arc, el = document.getElementById("arcBody");
+      if(a){
+        el.innerHTML = '<div style="font-size:15px;font-family:var(--gc-serif,serif);">'+esc(a.name)+
+          (a.active?'':' <span style="font-size:10px;color:#8a7f86;">(ended)</span>')+'</div>'+
+          '<div style="font-size:11px;color:var(--gc-ink-dim,#b8adb4);margin:3px 0 6px;">Day '+a.day_index+' of '+a.days_total+
+          ' · '+esc(a.start_date)+' → '+esc(a.end_date)+'</div>'+
+          '<div style="font-size:13px;">🪙 '+a.currency_earned+' motes · ✅ '+a.completions+' completions this arc</div>'+
+          '<div style="margin-top:8px;"><button class="mini-btn" onclick="newArcPrompt()">New arc</button></div>';
+      } else {
+        el.innerHTML = '<div style="font-size:11px;color:var(--gc-ink-dim,#b8adb4);margin-bottom:6px;">No arc running. An arc is a named window (default 14 days); progress is just what you earn inside it.</div>'+
+          '<div style="display:flex;gap:6px;flex-wrap:wrap;"><input id="arcName" placeholder="arc name, e.g. Brisbane sprint" style="flex:1;min-width:150px;font-size:12px;padding:5px 8px;border:1px solid var(--gc-hairline,#3a343a);border-radius:5px;background:transparent;color:inherit;">'+
+          '<button class="mini-btn" onclick="startArc()">Start</button></div><div id="arcErr" style="font-size:10.5px;color:#d97a8c;margin-top:4px;"></div>';
+      }
+    }).catch(function(){});
+  };
+  window.newArcPrompt = function(){
+    var n = prompt("Start a new story arc — name:"); if(n===null) return;
+    _startArc(n.trim(), null);
+  };
+  window.startArc = function(){
+    var n = (document.getElementById("arcName").value||"").trim();
+    if(!n){ document.getElementById("arcErr").textContent="give it a name"; return; }
+    _startArc(n, "arcErr");
+  };
+  function _startArc(name, errId){
+    if(!name) return;
+    fetch("/api/arc",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:name})})
+      .then(function(r){return r.json();}).then(function(d){
+        if(!d.ok){ if(errId) document.getElementById(errId).textContent=d.error||"failed"; return; }
+        loadArc();
+      }).catch(function(e){ if(errId) document.getElementById(errId).textContent="error: "+e; });
+  }
+  window.loadBadguys = function(){
+    fetch("/api/badguys").then(function(r){return r.json();}).then(function(d){
+      var row = document.getElementById("badguyRow");
+      var a = (d && d.active) || [];
+      if(!a.length){ row.style.display="none"; row.innerHTML=""; return; }
+      row.style.display="";
+      row.innerHTML = a.map(function(b){
+        return '<span style="display:inline-block;border:1px solid #d97a8c;color:#d97a8c;border-radius:12px;padding:2px 10px;margin:2px;font-size:11px;">⚔ '+esc(b.label)+'</span>';
+      }).join(" ");
     }).catch(function(){});
   };
 
