@@ -201,6 +201,7 @@
         <input type="text" id="tText" placeholder="Todo text">
         <select id="tPriority"><option value="med">Med</option><option value="high">High</option><option value="low">Low</option></select>
         <input type="date" id="tDue">
+        <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--ink-dim);white-space:nowrap;"><input type="checkbox" id="tQuest"> ⚔ This is a quest</label>
         <button class="go" onclick="createTodo()">Add</button>
       </div>
     </div>
@@ -375,11 +376,15 @@
       ? ('<div class="row-meta">checklist · '+cl.filter(function(c){return c.done;}).length+' of '+cl.length+'</div>')
       : "";
     var del = '<div class="row-del" title="Archive this todo" onclick="delTodo('+t.id+',\''+esc(t.text).replace(/'/g,"\\'")+'\')">✕</div>';
+    // S78: per-row quest toggle (the todo "edit" — there's no edit modal). A quest awards 10 on
+    // completion vs 1 for a routine todo. ⚔ = quest, dim outline = tap to make it a quest.
+    var q = '<div class="row-del" title="'+(t.is_quest?"Quest (awards 10) — tap to unflag":"Mark as a quest (awards 10 on completion)")+'" onclick="toggleTodoQuest('+t.id+','+(!t.is_quest)+')" style="'+(t.is_quest?"color:#e0bd85;border-color:rgba(224,189,133,0.45);":"")+'">⚔</div>';
+    var nameQ = t.is_quest ? '<span style="color:#e0bd85;" title="quest">⚔ </span>' : "";
     var row = '<div class="todo-row">'
       + '<div class="todo-check '+(t.done?"done":"")+'" onclick="completeTodo('+t.id+','+(!t.done)+')"></div>'
-      + '<div class="row-main"><div class="row-name '+(t.done?"done":"")+'">'+esc(t.text)+'</div>'+meta+'</div>'
+      + '<div class="row-main"><div class="row-name '+(t.done?"done":"")+'">'+nameQ+esc(t.text)+'</div>'+meta+'</div>'
       + (t.priority?'<div class="todo-p '+t.priority+'">'+t.priority.charAt(0).toUpperCase()+t.priority.slice(1)+'</div>':"")
-      + due + del + '</div>';
+      + due + q + del + '</div>';
     // S77: mirror the S64 habit-checklist UI onto checklist todos — render the mini-list for EVERY
     // checklist todo (even 0-item) so the "+ add item" control is always reachable; tick wires to
     // the existing /api/todos/checklist endpoint (all-ticked completes the todo).
@@ -393,6 +398,7 @@
     }
     return row;
   }
+  window.toggleTodoQuest = function(id, val){ post("/api/todos/quest",{id:id,is_quest:val}).then(function(){ loadTodos(); }); };
   window.checkTodoItem = function(id, done){ post("/api/todos/checklist",{id:id,done:done}).then(function(){ loadTodos(); if(document.getElementById("levelView").classList.contains("on")) loadLevel(); }); };
   window.addTodoChecklistItem = function(todoId){
     var text = prompt("New checklist item:"); if(!text || !text.trim()) return;
@@ -415,9 +421,9 @@
   };
   window.createTodo = function(){
     var text=document.getElementById("tText").value.trim(); if(!text) return;
-    var body={text:text,priority:document.getElementById("tPriority").value};
+    var body={text:text,priority:document.getElementById("tPriority").value,is_quest:document.getElementById("tQuest").checked};
     var due=document.getElementById("tDue").value; if(due) body.due_date=due;
-    post("/api/todos/create",body).then(function(){ document.getElementById("tText").value=""; document.getElementById("tDue").value=""; toggleForm("todoForm"); loadTodos(); });
+    post("/api/todos/create",body).then(function(){ document.getElementById("tText").value=""; document.getElementById("tDue").value=""; document.getElementById("tQuest").checked=false; toggleForm("todoForm"); loadTodos(); });
   };
 
   // ---- Level ----
