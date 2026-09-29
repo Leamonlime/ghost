@@ -215,22 +215,25 @@
       <button id="spendToggle" onclick="toggleAllMonths()" style="display:none;margin-top:6px;font-family:var(--gc-serif);font-variant:small-caps;letter-spacing:.05em;font-size:10.5px;color:var(--gc-ink-dim);background:transparent;border:1px solid var(--gc-hairline);border-radius:5px;padding:4px 12px;cursor:pointer;"></button>
       <div id="spendMeta" style="font-size:9.5px;color:var(--gc-ink-faint);margin-top:8px;"></div>
 
-      <!-- S71: review & fix categories inline (no CSV edit, no re-upload). Fixing one merchant can
-           optionally teach the note so every future transaction from it auto-categorises. -->
+      <!-- S85: manual categorise screen. Every transaction (full backfill) gets a fixed-list category;
+           "always categorise this merchant" stores a merchant rule that auto-applies to past & future.
+           Default view = uncategorised only (the queue to clear); toggle to All to correct anything. -->
       <div id="reviewSection" data-role="spending-review" style="margin-top:18px;border-top:1px solid var(--gc-hairline);padding-top:12px;">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
-          <span style="font-family:var(--gc-serif);font-variant:small-caps;letter-spacing:.06em;color:var(--bills-title);font-size:13px;">Review &amp; fix categories</span>
+          <span style="font-family:var(--gc-serif);font-variant:small-caps;letter-spacing:.06em;color:var(--bills-title);font-size:13px;">Categorise transactions</span>
           <span style="flex:1"></span>
           <button id="revFilterUncategorized" class="revfilter" onclick="setReviewFilter('uncategorized')">Uncategorised</button>
           <button id="revFilterAll" class="revfilter" onclick="setReviewFilter('all')">All transactions</button>
         </div>
         <div id="reviewHint" style="font-size:10.5px;color:var(--gc-ink-faint);margin-bottom:8px;"></div>
+        <div id="merchantRules" style="margin-bottom:10px;"></div>
         <div id="reviewList"></div>
       </div>
 
-      <!-- S73: manage the note's keyword RULES from the dashboard. Rename/add/remove keywords + whole
-           categories, with an impact preview before committing a keyword. Writes the note directly. -->
-      <div id="categoryManager" data-role="category-manager" style="margin-top:18px;border-top:1px solid var(--gc-hairline);padding-top:12px;">
+      <!-- S73 keyword "Manage categories" — SUPERSEDED by S85's manual + merchant-rule model, which no
+           longer uses the keyword note to drive the summary. Hidden so it isn't a control that does
+           nothing; the note code remains in the backend but is unwired from categorisation. -->
+      <div id="categoryManager" data-role="category-manager" style="display:none;margin-top:18px;border-top:1px solid var(--gc-hairline);padding-top:12px;">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px;">
           <span style="font-family:var(--gc-serif);font-variant:small-caps;letter-spacing:.06em;color:var(--bills-title);font-size:13px;">Manage categories</span>
           <span style="flex:1"></span>
@@ -568,7 +571,8 @@ function addCandidate(i){
 }
 
 // --- Spending — Current picture (CSV import + Ollama narration) ---
-function catLabel(k){ return cap(String(k||"").replace(/_/g," ")); }
+var CATLABELS = {};   // S85: fixed key -> exact label ("Dining & Takeaway", "Rent/Mortgage", …)
+function catLabel(k){ if(k && CATLABELS[k]) return CATLABELS[k]; return cap(String(k||"").replace(/_/g," ")); }
 var SPEND = null, showAllMonths = false;
 function monthLabel(m){ const [y,mo]=m.split("-"); return new Date(y,mo-1,1).toLocaleDateString("en-AU",{month:"long",year:"numeric"}); }
 function statBox(label,val,color,extra){
@@ -609,51 +613,45 @@ function renderMonths(){
 }
 function toggleAllMonths(){ showAllMonths = !showAllMonths; renderMonths(); }
 
-// --- S71: review & fix categories inline ---
+// --- S85: manual categorise screen (fixed categories + merchant rules) ---
 var CATS = [], CATDETAILS = [], reviewFilter = "uncategorized", mgrOpen = false;
-function guessKeyword(desc){
-  // strip digits/punctuation, drop tiny tokens, take the first meaningful word as a merchant guess.
-  const words = String(desc||"").toLowerCase().replace(/[^a-z\s]/g," ").split(/\s+/).filter(w=>w.length>2);
-  return words[0] || String(desc||"").toLowerCase().trim();
-}
 async function loadCategories(){
   try{ const r = await (await fetch("/api/bills/categories",{cache:"no-store"})).json();
-       if(r && r.ok){ CATS = r.categories||[]; CATDETAILS = r.details||[]; renderManager(); } }
+       if(r && r.ok){ CATS = r.categories||[]; CATDETAILS = r.details||[];
+         CATLABELS = {}; CATDETAILS.forEach(d=>{ CATLABELS[d.key]=d.label; }); } }
   catch(e){ console.error("categories load failed", e); }
 }
 function catOptions(sel){
-  const opts = CATS.map(k=>`<option value="${esc(k)}"${k===sel?" selected":""}>${esc(catLabel(k))}</option>`).join("");
-  return opts + `<option value="__new__">+ type a new category…</option>`;
+  // Fixed categories only — Uncategorised is the fallback state, never a pickable option.
+  return CATS.map(k=>`<option value="${esc(k)}"${k===sel?" selected":""}>${esc(catLabel(k))}</option>`).join("");
 }
 function reviewRow(t){
   const isUnc = t.category==="uncategorised";
-  const kw = esc(guessKeyword(t.description));
+  const merchant = t.merchant || "";
   return `<div class="revrow" data-id="${t.id}" style="border:1px solid var(--gc-hairline);border-radius:6px;padding:8px 10px;margin-bottom:8px;">
     <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;">
       <span style="font-variant-numeric:tabular-nums;color:var(--gc-ink-faint);font-size:11px;">${esc(t.date)}</span>
-      <span style="flex:1;min-width:140px;color:var(--gc-ink);font-size:12.5px;">${esc(t.description)}</span>
+      <span style="flex:1;min-width:140px;color:var(--gc-ink);font-size:12.5px;">
+        <strong style="font-weight:600;">${esc(merchant ? cap(merchant) : t.description)}</strong>
+        ${merchant ? `<span style="display:block;color:var(--gc-ink-faint);font-size:10px;">${esc(t.description)}</span>` : ""}
+      </span>
       <span style="font-variant-numeric:tabular-nums;font-family:var(--gc-serif);font-size:13px;color:${t.amount<0?'var(--gc-ink)':'var(--ok,#8fc9a3)'};">${money(t.amount)}</span>
       ${t.manual?'<span title="manually set" style="font-size:9px;color:var(--gc-ink-faint);">✎ manual</span>':''}
+      ${t.rule?'<span title="auto via merchant rule" style="font-size:9px;color:var(--gc-ink-faint);">↻ rule</span>':''}
       ${isUnc?'<span style="font-size:9px;color:#d97a8c;">⚑ uncategorised</span>':`<span style="font-size:9px;color:var(--gc-ink-faint);">${esc(catLabel(t.category))}</span>`}
     </div>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:7px;">
-      <select id="cat_${t.id}" onchange="onCatChange(${t.id})" style="font-size:12px;padding:4px 6px;border:1px solid var(--gc-hairline);border-radius:5px;background:transparent;color:var(--gc-ink);">
+      <select id="cat_${t.id}" style="font-size:12px;padding:4px 6px;border:1px solid var(--gc-hairline);border-radius:5px;background:transparent;color:var(--gc-ink);">
         <option value="" selected disabled>Pick a category…</option>${catOptions("")}
       </select>
-      <input id="newcat_${t.id}" placeholder="new category name" style="display:none;font-size:12px;padding:4px 6px;border:1px solid var(--gc-hairline);border-radius:5px;background:transparent;color:var(--gc-ink);width:140px;">
       <button onclick="saveRow(${t.id})" class="btn" style="font-size:11px;padding:4px 12px;">Save</button>
       <span id="st_${t.id}" style="font-size:10.5px;color:var(--gc-ink-faint);"></span>
     </div>
-    <label style="display:flex;gap:6px;align-items:center;margin-top:6px;font-size:10.5px;color:var(--gc-ink-dim);">
-      <input type="checkbox" id="teach_${t.id}" onchange="document.getElementById('kw_${t.id}').disabled=!this.checked;">
-      always categorise transactions like this as the above, matching
-      <input id="kw_${t.id}" value="${kw}" disabled style="font-size:11px;padding:2px 6px;border:1px solid var(--gc-hairline);border-radius:5px;background:transparent;color:var(--gc-ink);width:120px;">
-    </label>
+    ${merchant ? `<label style="display:flex;gap:6px;align-items:center;margin-top:6px;font-size:10.5px;color:var(--gc-ink-dim);">
+      <input type="checkbox" id="rep_${t.id}">
+      always categorise <strong style="color:var(--gc-ink);">${esc(cap(merchant))}</strong> this way (applies to all past &amp; future)
+    </label>` : ""}
   </div>`;
-}
-function onCatChange(id){
-  const sel = document.getElementById("cat_"+id), nc = document.getElementById("newcat_"+id);
-  nc.style.display = (sel.value==="__new__") ? "" : "none";
 }
 function setReviewFilter(f){ reviewFilter = f; loadReview(); }
 async function loadReview(){
@@ -679,23 +677,44 @@ async function loadReview(){
 }
 async function saveRow(id){
   const sel = document.getElementById("cat_"+id), st = document.getElementById("st_"+id);
-  let category = sel.value;
-  if(category==="__new__") category = (document.getElementById("newcat_"+id).value||"").trim();
+  const category = sel.value;
   if(!category){ st.style.color="#d97a8c"; st.textContent="pick a category first"; return; }
-  const teach = document.getElementById("teach_"+id).checked;
-  const keyword = (document.getElementById("kw_"+id).value||"").trim();
+  const repEl = document.getElementById("rep_"+id);
+  const repeat_merchant = !!(repEl && repEl.checked);
   st.style.color="var(--gc-ink-dim)"; st.textContent="saving…";
   try{
     const r = await (await fetch("/api/bills/categorize",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({id, category, category_label:category, teach, keyword})})).json();
+      body:JSON.stringify({id, category, repeat_merchant})})).json();
     if(!r.ok){ st.style.color="#d97a8c"; st.textContent=r.error||"failed"; return; }
     st.style.color="var(--ok,#8fc9a3)";
-    st.textContent = "saved" + (teach ? (r.taught==="already present" ? " (rule already there)" : r.taught==="created"||r.taught==="appended" ? " + taught" : "") : "");
+    st.textContent = "saved" + (r.rule_created ? " + rule for "+r.merchant : "");
     const row = document.querySelector('.revrow[data-id="'+id+'"]');
-    if(reviewFilter==="uncategorized" && row){ setTimeout(()=>{ row.remove(); if(!document.querySelectorAll('.revrow').length) loadReview(); }, 700); }
-    // refresh the month totals so the correction shows in the numbers
-    await loadSpending();
+    // A merchant rule may clear several rows at once — reload the queue to reflect it.
+    if(repeat_merchant){ await loadReview(); }
+    else if(reviewFilter==="uncategorized" && row){ setTimeout(()=>{ row.remove(); if(!document.querySelectorAll('.revrow').length) loadReview(); }, 700); }
+    await loadMerchantRules();
+    await loadSpending();   // refresh the top spending summary so the change shows in the numbers
   }catch(e){ st.style.color="#d97a8c"; st.textContent="error: "+e; }
+}
+async function loadMerchantRules(){
+  const box = document.getElementById("merchantRules");
+  if(!box) return;
+  try{
+    const r = await (await fetch("/api/bills/merchant-rules",{cache:"no-store"})).json();
+    if(!r || !r.ok || !r.rules.length){ box.innerHTML=""; return; }
+    box.innerHTML = `<div style="font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--gc-ink-faint);margin:2px 0 6px;">Merchant rules (${r.count})</div>`
+      + r.rules.map(x=>`<div style="display:flex;gap:8px;align-items:center;font-size:11px;color:var(--gc-ink-dim);padding:2px 0;">
+          <span style="flex:1;">${esc(cap(x.merchant))} → ${esc(x.label)} <span style="color:var(--gc-ink-faint);">(${x.matches})</span></span>
+          <button onclick="removeMerchantRule('${esc(x.merchant)}')" style="font-size:10px;color:#d97a8c;background:transparent;border:1px solid var(--gc-hairline);border-radius:4px;padding:1px 7px;cursor:pointer;">remove</button>
+        </div>`).join("");
+  }catch(e){ box.innerHTML=""; }
+}
+async function removeMerchantRule(merchant){
+  if(!confirm(`Remove the rule for “${cap(merchant)}”? Its transactions revert to uncategorised (manual picks are kept).`)) return;
+  try{
+    await fetch("/api/bills/merchant-rules/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({merchant})});
+    await loadMerchantRules(); await loadReview(); await loadSpending();
+  }catch(e){ console.error("rule remove failed", e); }
 }
 
 // --- S73: Manage categories (edit the note's keyword rules) ---
@@ -838,6 +857,7 @@ async function importCsv(){
       await loadSpending();
       await loadCategories();
       await loadReview();
+      await loadMerchantRules();
       await loadAll();   // refreshed usage amounts / new candidates / price flags
     }
   }catch(e){
@@ -857,6 +877,7 @@ document.addEventListener("keydown", e=>{ if(e.key==="Escape") closeForm(); });
   await loadSpending();
   await loadCategories();
   await loadReview();
+  await loadMerchantRules();
 })();
 </script>
 </body>
