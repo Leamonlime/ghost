@@ -64,7 +64,7 @@ async def _gather_outstanding() -> str:
     """Outstanding sections + file inventory from the host filesystem (runner-side)."""
     chunks = []
     for path, label in (
-        ("/home/USER/CentralVault/Projects/Ghost/Ghost-Index.md", "Ghost-Index"),
+        ("/home/USER/CentralVault/Projects/Tech/Ghost/Ghost-Index.md", "Ghost-Index"),
         ("/home/USER/ghost/CLAUDE.md", "CLAUDE.md"),
     ):
         try:

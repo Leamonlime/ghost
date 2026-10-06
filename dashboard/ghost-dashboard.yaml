@@ -16,7 +16,7 @@ spec:
       containers:
       - name: ghost-dashboard
         image: python:3.12-slim
-        command: ["sh", "-c", "pip install --quiet --no-cache-dir fastapi uvicorn python-telegram-bot redis asyncpg && exec python /app/dashboard.py"]
+        command: ["sh", "-c", "pip install --quiet --no-cache-dir fastapi uvicorn python-telegram-bot redis asyncpg pandas python-multipart httpx && exec python /app/dashboard.py"]
         ports:
         - containerPort: 8080
         env:
@@ -82,6 +82,8 @@ spec:
               key: ghost-tz
         - name: VAULT_PATH
           value: "/vault"
+        - name: GHOST_CALORIE_TARGET
+          value: "2600"
         - name: FATSECRET_CONSUMER_KEY
           valueFrom:
             secretKeyRef:
@@ -105,6 +107,48 @@ spec:
             secretKeyRef:
               name: ghost-app-secrets
               key: fatsecret-access-secret
+              optional: true
+        - name: GOOGLE_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: google-client-id
+              optional: true
+        - name: GOOGLE_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: google-client-secret
+              optional: true
+        - name: GOOGLE_REFRESH_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: google-refresh-token
+              optional: true
+        - name: GOOGLE_CALENDAR_ID
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: google-calendar-id
+              optional: true
+        - name: GHOST_APP_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: app-api-token
+              optional: true
+        - name: GHOST_USDA_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: usda-api-key
+              optional: true
+        - name: GHOST_PROTEIN_TARGET
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: protein-target
               optional: true
         - name: POSTGRES_PASSWORD
           valueFrom:
@@ -143,10 +187,13 @@ metadata:
   name: ghost-dashboard
   namespace: ghost
 spec:
-  type: NodePort
+  # ClusterIP, not NodePort (Session 36): the dashboard is exposed to the tailnet ONLY,
+  # via `tailscale serve --bg http://<clusterIP>:8080` on the host. No host-interface
+  # port = no LAN reachability. If this Service is ever deleted+recreated the clusterIP
+  # may change, which would break the serve target — re-point serve to the new IP then.
+  type: ClusterIP
   selector:
     app: ghost-dashboard
   ports:
   - port: 8080
     targetPort: 8080
-    nodePort: 30880

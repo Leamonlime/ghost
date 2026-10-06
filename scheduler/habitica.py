@@ -102,6 +102,43 @@ async def complete_daily_exact(task_name: str) -> bool:
                 return score.json().get("success", False)
         return False
 
+async def complete_checklist_item(daily_name: str, item_name: str) -> bool:
+    """Check off a single checklist item nested inside a daily, WITHOUT completing
+    the parent daily. Exact (case-insensitive) match on both the daily title and the
+    item text — matched by TEXT every call, not a cached id, so a re-created/edited
+    checklist item (its id changes) still resolves. The dailies list endpoint already
+    carries each task's full `checklist` array (session-16 finding), so this is one
+    GET plus one POST — no per-task fetches.
+
+    Returns True only when an item was actually scored. Returns False if the daily or
+    item isn't found, or if the item is ALREADY completed (Habitica's checklist score
+    endpoint TOGGLES, so scoring a done item would uncheck it — never do that)."""
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"{BASE_URL}/tasks/user?type=dailys",
+            headers=HEADERS,
+            timeout=30.0
+        )
+        data = response.json()
+        if not data.get("success"):
+            return False
+        for task in data["data"]:
+            if task["text"].strip().lower() != daily_name.strip().lower():
+                continue
+            for item in task.get("checklist") or []:
+                if item.get("text", "").strip().lower() != item_name.strip().lower():
+                    continue
+                if item.get("completed", False):
+                    return False  # already ticked — don't toggle it off
+                score = await client.post(
+                    f"{BASE_URL}/tasks/{task['id']}/checklist/{item['id']}/score",
+                    headers=HEADERS,
+                    timeout=30.0
+                )
+                return score.json().get("success", False)
+            return False  # daily found, item not in its checklist
+        return False  # daily not found
+
 async def get_completed_todos_today(tz) -> list:
     """Texts of todos completed today (tz-local). Habitica returns recent completed todos only."""
     from datetime import datetime

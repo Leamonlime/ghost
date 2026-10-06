@@ -3,6 +3,7 @@ import contextvars
 import logging
 import os
 import json
+import re
 import time
 import asyncpg
 from redis.asyncio import Redis
@@ -11,6 +12,8 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 import httpx
 import zoneinfo
 from datetime import datetime, timedelta
+
+import native  # Ghost 2.0 native Habits & Todos (Phase 1) — shared by bot + dashboard
 
 # Source of the message currently being handled (telegram | dashboard). Set once at
 # the top of process_message; read by call_claude when it writes the routing_log row,
@@ -37,13 +40,27 @@ BRAND_VAULT_DIR = os.environ.get("GHOST_BRAND_VAULT_DIR", "Blog")
 TZ_NAME = os.environ.get("GHOST_TZ", "UTC")
 LOCAL_TZ = zoneinfo.ZoneInfo(TZ_NAME)
 VAULT_PATH = os.environ.get("VAULT_PATH", "/vault")
+# Ollama generate endpoint (money path). Was hardcoded here AND in scheduler.py (S27 diagnosed the
+# 10.42.0.1 node-gateway IP as load-bearing); moved to env S56 so a CNI/node change is one config
+# edit, not a silent break in two files. Same var name as scheduler.py = single source of truth.
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://10.42.0.1:11434/api/generate")
+
+# Shared Postgres connection helper (Session-55 dedupe item, folded in with the 2.0 build):
+# new query paths use this one helper instead of re-inlining asyncpg.connect(...). native.py
+# owns the canonical implementation; bot + dashboard delegate to it. (The many pre-existing
+# inline asyncpg.connect call sites are deliberately left alone — they belong to code 2.0 is
+# replacing, and churning them would be the wasted effort the 2.0 scoping note warns against.)
+pg_conn = native.pg_conn
 
 SYSTEM_PROMPT = f"""You are Ghost. An AI accountability system running on a private server called hivequeen. You watch habits, money, and behaviour for one person: {USER_NAME}.
 
 WHAT YOU CAN DO:
+- Native Habits & Todos (Ghost 2.0, Phase 1 — the go-forward system, being validated ALONGSIDE Habitica, not yet replacing it): create a native habit or to-do from ordinary conversation ("add a habit for stretching", "track reading as a habit", "add a to-do to call the dentist", "add X to my to-dos" — you can create several at once, e.g. "add my exercise habit and a to-do for groceries"); tick a native habit or complete a native to-do by saying you did it ("did my X", "finished X", "X +/-"). These writes are deterministic — they happen directly, no guessing. The live NATIVE HABITS & TODOS block below is the source of truth for what native habits/todos exist and their streak/done state — answer "what habits do I have" / "did that to-do get created" DIRECTLY from that block, never "I can't confirm". If a create request's name is unclear you ASK for it; if a completion could mean more than one item you ASK which; you never guess, and if a write fails you say so — never claim a save that did not happen.
 - Habitica: read dailies, habits and to-dos; mark tasks complete; create to-dos ("add task ..."), dailies ("create daily ...") and habits ("new habit ..."); score habits ("scored ...", "habit up/down ...")
-- Money: log expenses and income from plain messages, track monthly category limits, give a budget summary on request
-- Obsidian: search {USER_NAME}'s vault when she asks ("check my notes about ..."), write to her daily note ("note that ...") or a named note ("add to note X: ...")
+- Money: tracked from bank-CSV uploads on the Bills dashboard ONLY, not from chat. You do NOT log expenses, income, debts or budgets from messages — that pipeline was removed. If she tells you about a transaction in chat, don't claim to have logged it; point her to the Bills dashboard CSV import instead.
+- Obsidian: on request you can SEARCH her whole vault ("check my notes about ..."), READ a specific note to summarise/quote ("read my X note", "the recipe for Y"), and WRITE — append to a note ("add to note X: ...") or create one ("create note X: ..."), plus a quick daily capture ("note that ..."). Every write is confirm-first: you read back the exact content and target note and only write after she says yes that same turn; you NEVER write on an assumption, and if the target note is unclear you ask which rather than guessing or duplicating. On an ambiguous search/read match, ask which note she means.
+- Google Calendar: on request you READ her calendar ("what's on today/tomorrow", "when's my next dentist", "am I free Friday") and WRITE it — create, move or delete events ("schedule X on Friday at 3pm", "move my dentist appointment to Tuesday", "cancel my 2pm meeting"). Every write is confirm-first, exactly like Obsidian: you read back precisely what will change (title, date, time) and only touch the calendar after she says yes that same turn; you NEVER create/move/delete on an assumption, and if which event she means is unclear you ask rather than guessing. Use the title/detail she actually gives — don't add vagueness or specificity she didn't ask for. If the calendar isn't connected yet, say so plainly; never claim an event was added/moved/deleted unless your context confirms it happened.
+- Long-term memory: when {USER_NAME} says "remember ..." (or "don't forget ..."), you save it durably — it is shown back to you as LONG-TERM MEMORY in every later chat, so rely on it and never claim you can't recall something listed there. She can ask "what do you remember" or say "forget ...". If she shares something clearly worth keeping and doesn't say "remember", you can offer to.
 - Track water, meals, movement and exercise day to day, and notice multi-day patterns
 - Proactive check-ins arrive via a scheduler; scrolling interrupts arrive from her phone
 - Remember today's conversation (Redis) and store everything permanently (Postgres)
@@ -61,6 +78,7 @@ PERSONALITY:
 - Dry. Blunt. Minimal. No fluff.
 - Dark humour when it fits. A running joke can come back after a week or two — never twice in one day, never on consecutive days.
 - You are a watcher, not an assistant. Speak like a friend who gives a damn but has zero patience for excuses.
+- NAME: do NOT open with her name, and do not use it by default. You talk to one person and she knows who she is — a name-opener every time reads as a mechanical tic, not warmth. Use her name ONLY when it does real work: re-getting her attention after a long silence, or a moment that genuinely calls for it (something serious, a real celebration). Rare, not routine.
 - Never say: "I understand", "That's great", "Of course", "certainly", "absolutely", "definitely"
 - Exclamation marks: almost never — only when the moment genuinely earns one
 - Got something wrong? One line of apology, then move on. No grovelling.
@@ -68,22 +86,25 @@ PERSONALITY:
 - NEVER use "qualify as furniture" or "long enough to fossilize", or any variation of either
 
 UNCERTAINTY — NON-NEGOTIABLE (both directions):
-- NEVER INVENT FORWARD. Never state a specific event, place, trip, plan, purchase, person, date or fact that was not explicitly in {USER_NAME}'s message or in verified data given to you (Habitica, Obsidian, FatSecret, budget records, the context blocks below). You have no knowledge of her life beyond those. A plausible-sounding detail you made up is a lie, not a guess.
+- GROUNDING RULE — governs everything below, no exceptions: the ONLY things you actually know are (1) what {USER_NAME} said in this conversation and (2) what is explicitly present in your context blocks THIS turn — SYSTEM TRUTH (live integration health, self-code proposal state, the Cephalopod-reach boundary), TODAY SO FAR, the HABITICA BOARD, PATTERNS, LONG-TERM MEMORY, and any vault excerpts. Any claim about system state, an integration, your own code, a past action, a handoff, or the world that is NOT backed by one of those is something you DO NOT KNOW. Say "I'd have to check" (or ask), and offer to look — do not answer from what merely sounds like it should be true, do not infer it, do not fill the gap. "Sounds plausible" is not "known", and something not appearing in a block is not evidence either way. This holds even when a confident-sounding answer is right there to give — and it holds for a premise buried INSIDE her message (a stated cause, a "that's why...", a past-tense "it did X earlier"): if you have no evidence for that premise, don't adopt it and don't start acting on it, name that you have no record of it.
+- NEVER INVENT FORWARD. Never state a specific event, place, trip, plan, purchase, person, date or fact that was not explicitly in {USER_NAME}'s message or in verified data given to you (Habitica, Obsidian, FatSecret, the context blocks below). You have no knowledge of her life beyond those. A plausible-sounding detail you made up is a lie, not a guess.
 - If her message is unclear, garbled, incomplete or ambiguous, ASK A CLARIFYING QUESTION. Never fill the gap with something that sounds right.
 - NEVER INVENT BACKWARD. A missing log is not a fact about the world. Never claim {USER_NAME} didn't eat, drink, move or do anything based on the absence of a log — say "nothing logged", and ask if it matters.
 - Her routine (office Mon–Wed, WFH Thu–Fri, meal times, bedtime) is a typical pattern, not live knowledge. Say "usually" — never assert where she is or what she's doing right now.
 - If you're inferring, sound like it. "Looks like", "if the log's right", "assuming you're home by now" — not flat statements.
 - If you get something wrong and she calls it out, correct it in one line without inventing a new explanation for why it happened.
-- NEVER CLAIM AN ACTION YOU DID NOT TAKE. Every real write (expense, note, Habitica, FatSecret, handoff) happens in code before you reply, and the context tells you when it did. If no confirmation is in your context, the action did not happen — say you can't do it or ask, never reply as if it's done. "Sent", "logged", "deleted", "told Cephalopod" are claims about reality, not conversational filler.
+- NEVER CLAIM AN ACTION YOU DID NOT TAKE. Every real write (note, Habitica, FatSecret, handoff) happens in code before you reply, and the context tells you when it did. If no confirmation is in your context, the action did not happen — say you can't do it or ask, never reply as if it's done. "Sent", "logged", "deleted", "told Cephalopod" are claims about reality, not conversational filler.
+- NEVER PROMISE A LATER FOLLOW-UP. You act only within the single turn you're replying in — there is no background job that checks something and messages her afterwards. So never say "I'll have a look and get back to you", "let me check and circle back", "I'll keep an eye on it", or anything that defers a result to a future message: that follow-up will never come, and the thread just goes silent. Either do the lookup NOW (you can read her calendar, search/read the vault, and read the live Habitica/board context this turn) and answer in this reply, or say plainly you can't and ask her to prompt you again. Answer in the present, never in the future.
+- NEVER CLAIM — OR AGREE — THAT A SYSTEM FAILED, PRESENT OR PAST, without an actual error in your context: a real exception, a non-200 response, or a live status result IN THIS TURN. This covers present tense ("Habitica's out", "the writes aren't going through"), PAST tense ("Redis dumped my data last night", "the DB crashed earlier", "it went down this morning"), and DATA-LOSS claims — all are factual claims needing evidence. If SHE volunteers one and the SYSTEM TRUTH block shows that system healthy, the block wins: it shows OK/connected NOW and you have NO record of any failure — say exactly that and offer a live check, do NOT agree, do NOT accept the premise, and do NOT start acting on it (planning a rebuild, "that explains it", etc.). "OK now" is not agreement that it broke earlier, but absence of evidence means you don't confirm a failure either — you have no record of one. (On 20/08 you told her "Habitica's out" while it returned 200 the whole time — do not do that, in any tense.)
 - CEPHALOPOD is a separate system. The ONLY path to it is the dashboard chat command "send to cephalopod: <text>" (or "send <note name> to cephalopod"). From Telegram you cannot send anything to Cephalopod, instruct it, or delete from it — if she asks via Telegram, say it has to be done from the dashboard chat, in those words.
-- SELF-CODE: you have a code-proposal system. It sends {USER_NAME} diffs of proposed changes to your own code; NOTHING is applied until she replies "apply this change" (exactly), and she can reject with "no". If she asks about a diff or proposal message she received, that IS from your proposal system — explain it plainly, never deny it came from you, and never claim a proposal was or wasn't applied unless the context tells you.
+- SELF-CODE: you have a code-proposal system. It sends {USER_NAME} diffs of proposed changes to your own code; NOTHING is applied until she replies "apply this change" (exactly), and she can reject with "no". If she asks about a diff or proposal message she received, that IS from your proposal system — explain it plainly, never deny it came from you. The SYSTEM TRUTH block carries the CURRENT proposal state (open / applied / rejected / undone / none) — read it and answer from it; never claim a proposal was or wasn't applied from memory or a guess. You cannot and do not delete her code: applies are approved diffs with a backup taken first.
 
 WHEN CONFIRMING A HABIT: one line, no praise — "noted." / "good." / "about time." / "logged."
 WHEN HANDLING EXCUSES: weak excuse — call it out in one line. Legitimate — acknowledge briefly, move on. Never lecture.
 WHEN ASKED WHAT YOU CAN DO: tell her plainly what's listed above. Don't pretend you can't do things you can.
 
 CURRENT TIMEZONE: {TZ_NAME}
-CURRENT INTEGRATIONS: Telegram (text + voice notes), Habitica (read/write), Postgres, Redis, Obsidian vault (read/write), budget tracking, desk dashboard with chat, Tasker scrolling interrupts, FatSecret food diary (READ AND WRITE — voice food notes log to it automatically, and a typed message containing "fatsecret" plus the food logs it too, e.g. "log to fatsecret: crackers and pate". If TODAY SO FAR shows no food logged, that means the diary is empty so far today — NOT that FatSecret is disconnected or read-only; never claim either)."""
+CURRENT INTEGRATIONS: Telegram (text + voice notes), Habitica (read/write), Postgres, Redis, Obsidian vault (read/write), desk dashboard with chat, Tasker scrolling interrupts, FatSecret food diary (READ AND WRITE — voice food notes log to it automatically, and a typed message containing "fatsecret" plus the food logs it too, e.g. "log to fatsecret: crackers and pate". If TODAY SO FAR shows no food logged, that means the diary is empty so far today — NOT that FatSecret is disconnected or read-only; never claim either)."""
 
 async def get_history(user_id: int) -> list:
     try:
@@ -100,14 +121,14 @@ async def get_history(user_id: int) -> list:
 async def save_history(user_id: int, history: list):
     try:
         r = Redis(host=REDIS_HOST, port=6379, password=REDIS_PASSWORD, decode_responses=True)
-        await r.set(f"conversation:{user_id}", json.dumps(history), ex=86400)
+        await r.set(f"conversation:{user_id}", json.dumps(history), ex=259200)
         await r.aclose()
     except Exception as e:
         logger.error(f"Redis save error: {e}")
 
 RECENT_PHRASES_KEY = "recent_ghost_phrases"
 
-# Locked cascade stages from the vault Goals specs (Finance.md, Creative.md).
+# Locked cascade stages from the vault Area specs (Money Moves.md, Creative.md).
 # Stage 1 items were created directly in Habitica (2026-07-15); these unlock via
 # an explicit "finance stage N complete" message — completion is a real-world
 # milestone Ghost cannot infer. Dailies repeated across stages appear once.
@@ -228,9 +249,296 @@ async def get_fatsecret_summary() -> dict | None:
         logger.error(f"FatSecret cache write error: {e}")
     return summary
 
+async def get_board_context() -> str:
+    """Real Habitica board state (dailies done/pending, open to-dos, habits), so
+    'what have I done today' / 'what's left' is answered from the ACTUAL board, not
+    LLM recall (Session 33). Cached in Redis 'board_context' (5 min) to avoid the
+    30-req/min limit on every chat turn; busted by any Habitica write (see
+    _bust_board_cache). Returns '' if Habitica is unreachable — never a guess."""
+    try:
+        r = Redis(host=REDIS_HOST, port=6379, password=REDIS_PASSWORD, decode_responses=True)
+        cached = await r.get("board_context")
+        if cached is not None:
+            await r.aclose()
+            return cached
+        await r.aclose()
+    except Exception:
+        pass
+    try:
+        from habitica import get_dailies, get_habits_detailed, get_todos
+        dailies = await get_dailies()
+        todos = await get_todos()
+        try:
+            habits = await get_habits_detailed()
+        except Exception:
+            habits = []
+        done = dailies.get("done", [])
+        pending = dailies.get("pending", [])
+        parts = ["HABITICA BOARD (live, as of now — this is the source of truth for "
+                 "what's done, not your memory):"]
+        parts.append(f"Dailies done today: {', '.join(done) if done else '(none yet)'}.")
+        parts.append(f"Dailies still pending today: {', '.join(pending) if pending else '(none — all done)'}.")
+        if todos:
+            parts.append(f"Open to-dos: {', '.join(todos[:12])}.")
+        if habits:
+            # Session 52: fold each habit's derived streak/tapped/at-risk state into the
+            # board line so "what's my streak on X" is answered from real data, not a guess.
+            hbits = []
+            for h in habits:
+                extra = []
+                if h.get("streak", 0) >= 2:
+                    extra.append(f"{h['streak']}-day streak")
+                if h.get("doneToday"):
+                    extra.append("tapped today")
+                if h.get("atRisk"):
+                    extra.append("in the red")
+                hbits.append(h["name"] + (f" ({', '.join(extra)})" if extra else ""))
+            parts.append("Habits on the board: " + ", ".join(hbits)
+                         + ". (Habit streak / tapped-today / at-risk are DERIVED best-effort values, "
+                           "not exact Habitica fields — habits have no native streak.)")
+        text = "\n".join(parts)
+        try:
+            r = Redis(host=REDIS_HOST, port=6379, password=REDIS_PASSWORD, decode_responses=True)
+            await r.set("board_context", text, ex=300)
+            await r.aclose()
+        except Exception:
+            pass
+        return text
+    except Exception as e:
+        logger.error(f"get_board_context error: {e}")
+        return ""
+
+async def _bust_board_cache():
+    """Drop the cached board so the next turn re-reads the real state after a write."""
+    try:
+        r = Redis(host=REDIS_HOST, port=6379, password=REDIS_PASSWORD, decode_responses=True)
+        await r.delete("board_context")
+        await r.aclose()
+    except Exception:
+        pass
+
+
+async def get_native_context(user_id: int = None) -> str:
+    """Ghost 2.0 (Phase 1) native Habits & Todos state, injected into every Claude turn the same
+    way get_board_context (Habitica) is — so 'what habits do I have' / 'did that to-do get created'
+    is answered from the REAL native tables, not LLM recall or 'I can't confirm' (S66: added after
+    Lea's native adds went nowhere and Ghost had no native read to fall back on). A real query each
+    time the cache expires; Redis-cached 'native_context' 5 min, busted by any native write via
+    _bust_native_cache. Returns '' on a DB error — never a guess."""
+    try:
+        r = Redis(host=REDIS_HOST, port=6379, password=REDIS_PASSWORD, decode_responses=True)
+        cached = await r.get("native_context")
+        await r.aclose()
+        if cached is not None:
+            return cached
+    except Exception:
+        pass
+    try:
+        uid = user_id if user_id is not None else native.DEFAULT_USER_ID
+        habits = await native.list_habits(uid)
+        todos = await native.list_todos(uid, include_done=True)
+        parts = ["NATIVE HABITS & TODOS (Ghost 2.0, live — the source of truth for the native "
+                 "system that is replacing Habitica; NOT your memory):"]
+        if habits:
+            hb = []
+            for h in habits[:20]:
+                bits = []
+                if h.get("streak", 0) >= 1:
+                    bits.append(f"{h['streak']}d streak")
+                bits.append("done today" if h.get("done_today") else "not done today")
+                hb.append(f"{h['name']} ({', '.join(bits)})")
+            parts.append("Habits: " + "; ".join(hb) + ".")
+        else:
+            parts.append("Habits: (none created yet).")
+        if todos:
+            open_t, done_t = [], []
+            for t in todos:
+                if t.get("done"):
+                    done_t.append(t["text"])
+                else:
+                    due = f" due {t['due_date']}" if t.get("due_date") else ""
+                    open_t.append(f"{t['text']}{due}{' [OVERDUE]' if t.get('overdue') else ''}")
+            if open_t:
+                parts.append("Open to-dos: " + "; ".join(open_t[:20]) + ".")
+            if done_t:
+                parts.append(f"Done to-dos: {', '.join(done_t[:10])}.")
+        else:
+            parts.append("To-dos: (none created yet).")
+        text = "\n".join(parts)
+        try:
+            r = Redis(host=REDIS_HOST, port=6379, password=REDIS_PASSWORD, decode_responses=True)
+            await r.set("native_context", text, ex=300)
+            await r.aclose()
+        except Exception:
+            pass
+        return text
+    except Exception as e:
+        logger.error(f"get_native_context error: {e}")
+        return ""
+
+
+async def _bust_native_cache():
+    """Drop the cached native state so the next turn re-reads real rows after a native write."""
+    try:
+        r = Redis(host=REDIS_HOST, port=6379, password=REDIS_PASSWORD, decode_responses=True)
+        await r.delete("native_context")
+        await r.aclose()
+    except Exception:
+        pass
+
+# ---------------------------------------------------------------------------
+# Live system-status line (Session 52, Task 1). The single highest-value item from
+# Session 50's grounding-block spec: a cached, always-on line telling the model which
+# integrations are actually up right now, so a VOLUNTEERED "Habitica's out" (a statement,
+# not a status question — the S42/S43 class handle_integration_status could not catch)
+# is answered from a real check instead of agreed with. Six probes run in parallel,
+# lazily, and the result is cached in Redis `system_status` (~45s TTL, the dashboard's
+# 25s command-center pattern) so at most one chat turn per ~45s pays the probe cost;
+# an idle bot pays nothing. Cephalopod is deliberately reported as unreachable-from-here
+# rather than probed (the dashboard-only boundary; avoids a network dep bot.py lacks).
+# ---------------------------------------------------------------------------
+SYSTEM_STATUS_TTL = 45
+
+async def _probe_habitica_status() -> str:
+    try:
+        from habitica import health_check
+        ok, detail = await health_check()
+        return "OK" if ok else f"DOWN ({detail})"
+    except Exception as e:
+        return f"DOWN (unreachable: {type(e).__name__})"
+
+async def _probe_fatsecret_status() -> str:
+    try:
+        import fatsecret
+        if not fatsecret.is_configured():
+            return "not configured"
+        summ = await get_fatsecret_summary()   # 15-min cached; None here = a real fetch failure
+        return "connected" if summ is not None else "configured but the fetch is failing"
+    except Exception:
+        return "configured but the fetch is failing"
+
+async def _probe_anthropic_status() -> str:
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01",
+                         "content-type": "application/json"},
+                json={"model": "claude-haiku-4-5-20251001", "max_tokens": 1,
+                      "messages": [{"role": "user", "content": "hi"}]},
+                timeout=12)
+        return "OK" if r.status_code == 200 else f"DOWN (HTTP {r.status_code})"
+    except Exception:
+        return "DOWN (unreachable)"
+
+async def _probe_postgres_status() -> str:
+    try:
+        conn = await asyncpg.connect(host=POSTGRES_HOST, port=5432, user="postgres",
+                                     password=POSTGRES_PASSWORD, database="ghost_db", timeout=8)
+        await conn.fetchval("SELECT 1")
+        await conn.close()
+        return "OK"
+    except Exception:
+        return "DOWN (unreachable)"
+
+async def _probe_redis_status() -> str:
+    try:
+        rr = Redis(host=REDIS_HOST, port=6379, password=REDIS_PASSWORD, decode_responses=True)
+        await rr.ping()
+        await rr.aclose()
+        return "OK"
+    except Exception:
+        return "DOWN (unreachable)"
+
+async def _selfcode_state_line() -> str:
+    """Compact self-code grounding line for the SYSTEM TRUTH block: the latest code_proposals
+    row's state (open? applied/rejected/undone/expired/failed?). The full-detail answer to a
+    direct question lives in handle_selfcode_status_query; this is the always-on ambient fact so
+    the model never has to GUESS whether a proposal is open or was applied."""
+    try:
+        conn = await asyncpg.connect(host=POSTGRES_HOST, port=5432, user="postgres",
+                                     password=POSTGRES_PASSWORD, database="ghost_db")
+        try:
+            row = await conn.fetchrow(
+                "SELECT id, service, file_path, status FROM code_proposals ORDER BY id DESC LIMIT 1")
+        finally:
+            await conn.close()
+    except Exception:
+        return "Self-code: can't read the proposals store this turn — don't assert any proposal state; say you'd check."
+    if not row:
+        return "Self-code: NO proposals on record — none ever proposed, applied, or reverted. Nothing is pending or changed."
+    pid, svc, fp, st = row["id"], row["service"], os.path.basename(row["file_path"] or ""), row["status"]
+    if st in ("proposed", "approved", "apply_queued"):
+        return f"Self-code: proposal #{pid} ({svc}/{fp}) is OPEN ({st}) — nothing applied until she replies 'apply this change'."
+    if st in ("applied", "applied_no_rebuild"):
+        return f"Self-code: latest proposal #{pid} ({svc}/{fp}) was APPLIED (with a backup); nothing pending."
+    if st == "rejected":
+        return f"Self-code: latest proposal #{pid} ({svc}/{fp}) was REJECTED — nothing changed; nothing pending."
+    if st == "expired":
+        return f"Self-code: latest proposal #{pid} ({svc}/{fp}) EXPIRED unapplied — nothing changed; nothing pending."
+    if st == "undone":
+        return f"Self-code: latest proposal #{pid} ({svc}/{fp}) was applied then UNDONE (rolled back); nothing pending."
+    if st == "apply_failed":
+        return f"Self-code: latest proposal #{pid} ({svc}/{fp}) apply FAILED — code unchanged; nothing pending."
+    return f"Self-code: latest proposal #{pid} ({svc}/{fp}) status '{st}'."
+
+async def get_system_truth_context() -> str:
+    """The consolidated always-on SYSTEM TRUTH block (Session 58), cached ~45s: live integration
+    health + self-code state + the Cephalopod-reach boundary, as ONE grounded block rather than
+    separate bolt-ons. This is THE source of truth for system state; the hardened SYSTEM_PROMPT
+    rule ties every system/world claim to it ("not in the block => I'd have to check").
+
+    MONEY BOUNDARY: deliberately carries NO expense/debt/budget data. Money stays on the
+    Ollama/deterministic side (30/08/2026 decision) — never in this Claude-side block."""
+    try:
+        r = Redis(host=REDIS_HOST, port=6379, password=REDIS_PASSWORD, decode_responses=True)
+        cached = await r.get("system_truth")
+        await r.aclose()
+        if cached is not None:
+            return cached
+    except Exception:
+        pass
+    try:
+        hab, fs, anth, pg, rds, selfcode = await asyncio.gather(
+            _probe_habitica_status(), _probe_fatsecret_status(), _probe_anthropic_status(),
+            _probe_postgres_status(), _probe_redis_status(), _selfcode_state_line())
+    except Exception as e:
+        logger.error(f"get_system_truth_context build error: {e}")
+        return ""
+    integ = "\n".join([
+        f"- Habitica: {hab}",
+        f"- FatSecret: {fs}",
+        f"- Anthropic (your own model API): {anth}",
+        f"- Postgres (her data store): {pg}",
+        f"- Redis: {rds}",
+    ])
+    text = (
+        "SYSTEM TRUTH (live, cached ~45s — the source of truth for system state right now. Anything "
+        "NOT in this block you do NOT know: say you'd have to check, never infer it):\n"
+        "Integrations:\n" + integ + "\n"
+        + selfcode + "\n"
+        "- Cephalopod: a separate system. From here (Telegram) there is NO path to it and no live "
+        "status — it's reachable only from the dashboard chat. Never say you sent/told it anything from here.\n"
+        "If she says something here is down/broken/applied/sent and this block says otherwise, trust THIS "
+        "block: tell her what it actually shows and offer to re-check. Only call something down if it shows "
+        "DOWN/UNREACHABLE here or you hit a real error THIS turn."
+    )
+    try:
+        r = Redis(host=REDIS_HOST, port=6379, password=REDIS_PASSWORD, decode_responses=True)
+        await r.set("system_truth", text, ex=SYSTEM_STATUS_TTL)
+        await r.aclose()
+    except Exception:
+        pass
+    return text
+
 async def get_today_context() -> str:
     now = datetime.now(LOCAL_TZ)
-    lines = [f"Current time: {now.strftime('%A %I:%M%p').lower()}."]
+    # Full local date, not just weekday+time: without the calendar date the model
+    # knew "wednesday 11am" but had to GUESS the date/month/year (Session 33 — the
+    # "doesn't know what day it is" symptom was missing data, not a tz bug).
+    date_str = now.strftime('%A %d %B %Y').replace(' 0', ' ')
+    time_str = now.strftime('%I:%M%p').lstrip('0').lower()
+    lines = [f"Today is {date_str}. Current time: {time_str}."]
     ts = now.timestamp()
     try:
         r = Redis(host=REDIS_HOST, port=6379, password=REDIS_PASSWORD, decode_responses=True)
@@ -275,13 +583,12 @@ async def get_today_context() -> str:
         msg_row = await conn.fetchrow(
             "SELECT COUNT(*) AS n FROM messages WHERE role = 'user' AND timestamp >= $1", midnight
         )
-        spend_row = await conn.fetchrow(
-            "SELECT COALESCE(SUM(amount), 0) AS total, COUNT(*) AS n FROM expenses WHERE logged_at >= NOW() - INTERVAL '7 days'"
-        )
         await conn.close()
         lines.append(f"Messages from {USER_NAME} today: {msg_row['n']}.")
-        if spend_row['n']:
-            lines.append(f"Spending last 7 days: ${float(spend_row['total']):.2f} across {spend_row['n']} expenses.")
+        # MONEY BOUNDARY (S58): the "Spending last 7 days: $X" expense aggregate that used to sit
+        # here was removed — expense/debt/budget data stays Ollama/deterministic-side (30/08/2026
+        # decision), never in the Claude grounding stack. Money questions route to the deterministic
+        # money-lookup / Ollama path, not this block.
     except Exception as e:
         logger.error(f"Today context postgres error: {e}")
     return (
@@ -322,8 +629,12 @@ async def get_pattern_context() -> str:
             host=POSTGRES_HOST, port=5432, user="postgres",
             password=POSTGRES_PASSWORD, database="ghost_db"
         )
+        # Local-date bound, not SQL CURRENT_DATE: the DB session runs in GMT, so
+        # CURRENT_DATE is the UTC day and shifts the 14-day window by one at the
+        # Melbourne 00:00-10:00 boundary (same root cause as Session 30's fix).
+        since = datetime.now(LOCAL_TZ).date() - timedelta(days=14)
         rows = await conn.fetch(
-            "SELECT date, event_type FROM daily_events WHERE date >= CURRENT_DATE - 14 ORDER BY date"
+            "SELECT date, event_type FROM daily_events WHERE date >= $1 ORDER BY date", since
         )
         await conn.close()
     except Exception as e:
@@ -374,299 +685,7 @@ async def get_pattern_context() -> str:
         "Bring these up when relevant — a streak worth calling out, a slide worth naming. Don't recite the list."
     )
 
-async def get_category_total(category: str) -> float:
-    try:
-        conn = await asyncpg.connect(
-            host=POSTGRES_HOST, port=5432, user="postgres",
-            password=POSTGRES_PASSWORD, database="ghost_db"
-        )
-        row = await conn.fetchrow("""
-            SELECT COALESCE(SUM(amount), 0) as total
-            FROM expenses
-            WHERE category = $1
-            AND DATE_TRUNC('month', logged_at) = DATE_TRUNC('month', NOW())
-        """, category)
-        await conn.close()
-        return float(row['total'])
-    except Exception as e:
-        logger.error(f"Category total error: {e}")
-        return 0.0
 
-def parse_money(message: str):
-    """Return a float amount ONLY when the message carries a real money signal.
-
-    A bare number is never money: "you sent a message at 905" once became a $905
-    expense because the old regex grabbed any digits. Requires an explicit
-    currency marker ($ / dollars / bucks) or a spend verb attached to the number,
-    and refuses clock times (9:05, "at 905") and dates.
-    """
-    import re
-    text = message.replace(",", "")
-    patterns = [
-        r'\$\s?(\d+(?:\.\d{1,2})?)',                                             # $15, $15.50
-        r'(\d+(?:\.\d{1,2})?)\s?(?:dollars|dollar|bucks|aud)\b',                 # 15 dollars
-        r'\b(?:spent|spend|paid|pay|cost|costs|bought|charged|billed)\b[^.\d]{0,20}(\d+(?:\.\d{1,2})?)',
-        r'(\d+(?:\.\d{1,2})?)\s?(?:on|for)\s+\w',                                # 15 on coffee
-    ]
-    for pat in patterns:
-        for m in re.finditer(pat, text, re.IGNORECASE):
-            start, end = m.span(1)
-            # reject clock times: 9:05, 9.05am, "at 905"
-            before = text[max(0, start - 4):start].lower()
-            after = text[end:end + 3].lower()
-            if ":" in before[-1:] or re.search(r'\bat\s$', before) or re.match(r'\s?(?:am|pm)\b', after):
-                continue
-            try:
-                return float(m.group(1))
-            except ValueError:
-                continue
-    return None
-
-async def get_recent_expense_records(limit: int = 10) -> str:
-    """Real recent expense/income rows as context for money QUESTIONS.
-
-    Without this, a finance-triggered question with no parseable amount reached
-    Ollama with zero data and it fabricated an answer (the 'trip to France').
-    Stays on the local model — money data never leaves hivequeen.
-    """
-    try:
-        conn = await asyncpg.connect(
-            host=POSTGRES_HOST, port=5432, user="postgres",
-            password=POSTGRES_PASSWORD, database="ghost_db"
-        )
-        exp = await conn.fetch(
-            "SELECT amount, category, logged_at FROM expenses "
-            "ORDER BY logged_at DESC LIMIT $1", limit)
-        inc = await conn.fetch(
-            "SELECT amount, source, logged_at FROM income ORDER BY logged_at DESC LIMIT 3")
-        await conn.close()
-    except Exception as e:
-        logger.error(f"Recent expense records error: {e}")
-        return "[No expense records available right now — say so, do not guess]"
-    if not exp and not inc:
-        return "[Expense records: NONE on file. There are no recorded expenses. Say exactly that.]"
-    lines = []
-    for r in exp:
-        lines.append(f"${float(r['amount']):.2f} {r['category']} on "
-                     f"{r['logged_at'].astimezone(LOCAL_TZ).strftime('%d %b')}")
-    for r in inc:
-        lines.append(f"income ${float(r['amount']):.2f} from {r['source']} on "
-                     f"{r['logged_at'].astimezone(LOCAL_TZ).strftime('%d %b')}")
-    return ("[These are the ONLY expense records on file — every expense Ghost knows about:\n"
-            + "\n".join(lines)
-            + "\nAnswer only from this list. If the answer isn't here, say you have no record of it.]")
-
-# Known debt accounts mapped to Finance.md's five stages. Stage 1 (MPN loan) was
-# cleared 14/07; the live ones are the credit card (2) and overdraft (3).
-DEBT_ACCOUNTS = [
-    (("mpn",), "MPN loan", 1),
-    (("credit card", "creditcard", "credit-card", "cc balance"), "credit card", 2),
-    (("overdraft",), "overdraft", 3),
-]
-
-async def log_debt(message: str):
-    """If `message` is a debt-balance update (not a spend), upsert debt_accounts and
-    return an Ollama context string. Returns None when it's not a debt update, so the
-    caller falls through to normal expense logging."""
-    import re
-    low = message.lower()
-    # a spend verb means this is an expense that happens to mention a card, not a debt update
-    if any(v in low for v in ("spent", "bought", "purchase", "purchased")):
-        return None
-    matched = None
-    for keys, name, stage in DEBT_ACCOUNTS:
-        if any(k in low for k in keys):
-            matched = (name, stage)
-            break
-    if not matched:
-        return None
-    # require a balance-declaration word so "paid the credit card bill" isn't a balance set
-    if not any(w in low for w in ("balance", "owe", "owing", "debt", "down to",
-                                  "is now", "paid off", "is at", "currently", "left on", "remaining")):
-        return None
-    balance = parse_money(message)
-    if balance is None:
-        return None
-    name, stage = matched
-    interest = None
-    im = re.search(r'(\d+(?:\.\d+)?)\s*%', message)
-    if im:
-        interest = float(im.group(1))
-    minrep = None
-    mm = re.search(r'min(?:imum)?(?:\s+repayment)?(?:\s+of)?\s*\$?\s*(\d+(?:\.\d{1,2})?)', low)
-    if mm:
-        minrep = float(mm.group(1))
-    try:
-        conn = await asyncpg.connect(
-            host=POSTGRES_HOST, port=5432, user="postgres",
-            password=POSTGRES_PASSWORD, database="ghost_db")
-        await conn.execute("""
-            INSERT INTO debt_accounts (account_name, balance, interest_rate, min_repayment, stage_number, last_updated)
-            VALUES ($1, $2, $3, $4, $5, NOW())
-            ON CONFLICT (account_name) DO UPDATE SET
-                balance = EXCLUDED.balance,
-                interest_rate = COALESCE(EXCLUDED.interest_rate, debt_accounts.interest_rate),
-                min_repayment = COALESCE(EXCLUDED.min_repayment, debt_accounts.min_repayment),
-                stage_number = EXCLUDED.stage_number,
-                last_updated = NOW()
-        """, name, balance, interest, minrep, stage)
-        await conn.close()
-        logger.info(f"Debt updated: {name} (stage {stage}) balance ${balance:.2f}")
-    except Exception as e:
-        logger.error(f"log_debt error: {e}")
-        return ""
-    ctx = f"[Debt balance updated (NOT an expense): {name}, stage {stage}, now ${balance:.2f} owing"
-    if interest is not None:
-        ctx += f" at {interest:.2f}% interest"
-    if minrep is not None:
-        ctx += f", minimum ${minrep:.2f}/mo"
-    ctx += ". Acknowledge the update in one dry line; do not treat it as money spent.]"
-    return ctx
-
-async def get_debt_status() -> str:
-    """One line per active (balance>0) debt stage, for the budget summary. '' if none."""
-    try:
-        conn = await asyncpg.connect(
-            host=POSTGRES_HOST, port=5432, user="postgres",
-            password=POSTGRES_PASSWORD, database="ghost_db")
-        rows = await conn.fetch(
-            "SELECT account_name, balance, interest_rate, min_repayment, stage_number "
-            "FROM debt_accounts WHERE balance > 0 ORDER BY stage_number")
-        await conn.close()
-    except Exception as e:
-        logger.error(f"get_debt_status error: {e}")
-        return ""
-    if not rows:
-        return ""
-    lines = ["Debt:"]
-    for r in rows:
-        line = f"  Stage {r['stage_number']} {r['account_name']}: ${float(r['balance']):.2f} owing"
-        if r['interest_rate'] is not None:
-            line += f" @ {float(r['interest_rate']):.2f}%"
-        if r['min_repayment'] is not None:
-            line += f" (min ${float(r['min_repayment']):.2f}/mo)"
-        lines.append(line)
-    return "\n".join(lines)
-
-async def log_expense(message: str) -> str:
-    """Parse expense from message and log to Postgres. Returns context string for Ollama."""
-    amount = parse_money(message)
-    if amount is None:
-        return ""
-    message_lower = message.lower()
-
-    category_map = {
-        'groceries': ['groceries', 'grocery', 'supermarket', 'coles', 'woolworths', 'aldi'],
-        'eating out': ['cafe', 'coffee', 'restaurant', 'takeaway', 'takeout', 'lunch', 'dinner', 'breakfast', 'uber eats', 'doordash'],
-        'transport': ['uber', 'taxi', 'train', 'tram', 'bus', 'petrol', 'fuel', 'parking', 'myki'],
-        'subscriptions': ['netflix', 'spotify', 'subscription', 'membership'],
-        'health': ['pharmacy', 'chemist', 'doctor', 'gym', 'physio', 'medical'],
-        'shopping': ['clothes', 'clothing', 'shoes', 'amazon', 'online', 'shopping'],
-    }
-
-    category = 'other'
-    for cat, keywords in category_map.items():
-        if any(k in message_lower for k in keywords):
-            category = cat
-            break
-
-    try:
-        conn = await asyncpg.connect(
-            host=POSTGRES_HOST, port=5432, user="postgres",
-            password=POSTGRES_PASSWORD, database="ghost_db"
-        )
-        await conn.execute(
-            "INSERT INTO expenses (amount, category, description) VALUES ($1, $2, $3)",
-            amount, category, message
-        )
-        await conn.close()
-        logger.info(f"Expense logged: ${amount} to {category}")
-
-        monthly_total = await get_category_total(category)
-        limit_row = None
-        conn = await asyncpg.connect(
-            host=POSTGRES_HOST, port=5432, user="postgres",
-            password=POSTGRES_PASSWORD, database="ghost_db"
-        )
-        limit_row = await conn.fetchrow(
-            "SELECT monthly_limit FROM budget_categories WHERE name = $1", category
-        )
-        await conn.close()
-        limit = float(limit_row['monthly_limit']) if limit_row else None
-        context = f"[Expense logged: ${amount:.2f} to '{category}'. Monthly total for {category}: ${monthly_total:.2f}"
-        if limit:
-            if monthly_total > limit:
-                context += f" — OVER the ${limit:.2f} limit by ${monthly_total - limit:.2f}"
-            elif monthly_total > 0.8 * limit:
-                context += f" — close to the ${limit:.2f} limit, only ${limit - monthly_total:.2f} left"
-            else:
-                context += f" of ${limit:.2f} limit — comfortably under"
-        context += "]"
-        return context
-    except Exception as e:
-        logger.error(f"Log expense error: {e}")
-        return ""
-
-async def log_income(message: str) -> str:
-    """Parse income from message and log to Postgres. Returns context string for Ollama."""
-    import re
-    amount = parse_money(message)
-    if amount is None:
-        return ""
-    source_match = re.search(r'\bfrom\s+([a-zA-Z][a-zA-Z ]{1,40})', message, re.IGNORECASE)
-    source = source_match.group(1).strip() if source_match else "unspecified"
-
-    try:
-        conn = await asyncpg.connect(
-            host=POSTGRES_HOST, port=5432, user="postgres",
-            password=POSTGRES_PASSWORD, database="ghost_db"
-        )
-        await conn.execute(
-            "INSERT INTO income (amount, source) VALUES ($1, $2)",
-            amount, source
-        )
-        row = await conn.fetchrow("""
-            SELECT COALESCE(SUM(amount), 0) AS total
-            FROM income
-            WHERE DATE_TRUNC('month', logged_at) = DATE_TRUNC('month', NOW())
-        """)
-        await conn.close()
-        logger.info(f"Income logged: ${amount} from {source}")
-        return f"[Income logged: ${amount:.2f} from '{source}'. Total income this month: ${float(row['total']):.2f}]"
-    except Exception as e:
-        logger.error(f"Log income error: {e}")
-        return ""
-
-async def build_budget_summary() -> str:
-    """Category / spent this month / limit / status, one line each."""
-    try:
-        conn = await asyncpg.connect(
-            host=POSTGRES_HOST, port=5432, user="postgres",
-            password=POSTGRES_PASSWORD, database="ghost_db"
-        )
-        rows = await conn.fetch("""
-            SELECT bc.name, bc.monthly_limit, COALESCE(SUM(e.amount), 0) AS spent
-            FROM budget_categories bc
-            LEFT JOIN expenses e ON e.category = bc.name
-                AND DATE_TRUNC('month', e.logged_at) = DATE_TRUNC('month', NOW())
-            GROUP BY bc.name, bc.monthly_limit
-            ORDER BY bc.name
-        """)
-        await conn.close()
-        lines = []
-        for row in rows:
-            spent = float(row['spent'])
-            limit = float(row['monthly_limit'])
-            status = "OVER" if spent > limit else "under"
-            lines.append(f"{row['name']}: ${spent:.2f} / ${limit:.2f} ({status})")
-        summary = "\n".join(lines)
-        debt = await get_debt_status()
-        if debt:
-            summary += "\n\n" + debt
-        return summary
-    except Exception as e:
-        logger.error(f"Budget summary error: {e}")
-        return ""
 
 def strip_obsidian(text: str) -> str:
     """Remove frontmatter, wikilink brackets, and tags from Obsidian markdown."""
@@ -720,6 +739,25 @@ def search_vault(query: str) -> str:
         excerpts.append(f"--- {fname} ---\n{excerpt}")
     return "\n\n".join(excerpts)
 
+def _preserve_vault_owner(path: str, orig_st) -> None:
+    """Keep a vault note owned by the human, not root. The bot pod runs as root, so a
+    NEWLY CREATED note is root-owned and locks the user out of her own file in Obsidian
+    (the same class of bug fixed on the scheduler's sync writer in session 26). Truncate-
+    in-place (open 'w') and append (open 'a') keep an existing file's owner untouched, so
+    this only has to act on newly created files — but it also restores a captured owner
+    for belt-and-braces if a caller ever switches to a replace-style write.
+    orig_st = os.stat() taken before the write if the file existed, else None (new file →
+    inherit the vault root's owner). Failure is logged, never fatal."""
+    try:
+        if orig_st is not None:
+            os.chown(path, orig_st.st_uid, orig_st.st_gid)
+            os.chmod(path, orig_st.st_mode)
+        else:
+            vst = os.stat(VAULT_PATH)
+            os.chown(path, vst.st_uid, vst.st_gid)
+    except OSError as e:
+        logger.error(f"could not restore vault-note owner on {path}: {e}")
+
 def append_to_daily_note(content: str) -> str:
     """Append a timestamped line under '## Ghost' in today's daily note
     (Daily/YYYY-MM-DD.md, created if missing). Returns the note's relative path, or '' on failure."""
@@ -730,7 +768,8 @@ def append_to_daily_note(content: str) -> str:
         daily_dir = os.path.join(VAULT_PATH, "Daily")
         os.makedirs(daily_dir, exist_ok=True)
         path = os.path.join(daily_dir, f"{day}.md")
-        if os.path.exists(path):
+        orig_st = os.stat(path) if os.path.exists(path) else None
+        if orig_st is not None:
             with open(path, encoding="utf-8", errors="ignore") as f:
                 text = f.read()
             if "## Ghost" in text:
@@ -746,6 +785,7 @@ def append_to_daily_note(content: str) -> str:
             text = f"# {day}\n\n## Ghost\n{line}"
         with open(path, "w", encoding="utf-8") as f:
             f.write(text)
+        _preserve_vault_owner(path, orig_st)
         return f"Daily/{day}.md"
     except OSError as e:
         logger.error(f"append_to_daily_note error: {e}")
@@ -769,6 +809,58 @@ def read_vault_note(name_query: str):
                     logger.error(f"read_vault_note error: {e}")
                     return None
     return None
+
+async def handle_cephalopod_query(user_message: str, source: str):
+    """Session 52 (Task 4): a QUESTION about whether something was handed to Cephalopod
+    ("did you send/tell Cephalopod …?", "is that in Cephalopod yet?"). From TELEGRAM the
+    answer is a hard-coded boundary statement — the handoff path is dashboard-only, so from
+    here Ghost has sent nothing and cannot (the S16 class: Claude once fabricated 'Sent to
+    Cephalopod' over Telegram). From the DASHBOARD it answers from a real ghost_handoffs read.
+    Runs BEFORE handle_cephalopod_handoff so a question never trips the send path — which also
+    closes a latent bug where 'did you send the note to cephalopod?' on the dashboard matched
+    the send regex and handed off a note off the back of a mere question.
+    Returns a reply, or None to let the message route normally (incl. real imperative sends)."""
+    low = user_message.lower()
+    if "cephalopod" not in low:
+        return None
+    # Never intercept an actual imperative send — that belongs to handle_cephalopod_handoff.
+    if re.search(r'(?:send|hand ?off|pass|give)\b[^?]*cephalopod\s*:', low) or \
+       low.strip().startswith(("send ", "hand off", "handoff", "pass ", "give ")):
+        return None
+    is_q = low.rstrip().endswith("?") or low.lstrip().startswith(
+        ("did ", "have you", "has ", "was ", "were ", "is ", "are you", "you ", "already"))
+    retro = any(c in low for c in ("did you send", "did you tell", "have you sent", "have you told",
+                                   "already sent", "already told", "did cephalopod", "get sent to cephalopod",
+                                   "sent to cephalopod", "told cephalopod", "pass to cephalopod",
+                                   "handed to cephalopod", "did you pass", "did you hand", "did you give",
+                                   "in cephalopod", "reach cephalopod", "make it to cephalopod"))
+    if not (is_q or retro):
+        return None
+    if source != "dashboard":
+        return ("I can't send anything to Cephalopod from here — that only works from the dashboard "
+                "chat ('send to cephalopod: ...'). So from this Telegram conversation I haven't sent it "
+                "anything, and I can't. If you want it handed over, do it from the dashboard.")
+    # Dashboard: answer from the real handoff table (Cephalopod's own database).
+    try:
+        conn = await asyncpg.connect(host=POSTGRES_HOST, port=5432, user="postgres",
+                                     password=POSTGRES_PASSWORD, database=CEPHALOPOD_DB)
+        try:
+            rows = await conn.fetch(
+                "SELECT id, kind, created_at, left(payload, 50) AS snippet "
+                "FROM ghost_handoffs ORDER BY id DESC LIMIT 3")
+            total = await conn.fetchval("SELECT COUNT(*) FROM ghost_handoffs")
+        finally:
+            await conn.close()
+    except Exception as e:
+        logger.error(f"cephalopod query read error: {e}")
+        return "I can't reach Cephalopod's handoff table right now, so I can't tell you for certain what's been sent. Try again in a moment."
+    if not rows:
+        return "Nothing has been handed to Cephalopod — the handoff table is empty."
+    bits = []
+    for r in rows:
+        when = r["created_at"].astimezone(LOCAL_TZ).strftime("%d %b %H:%M") if r["created_at"] else "?"
+        bits.append(f"#{r['id']} {r['kind']} ({when}): {r['snippet'].strip()}…")
+    return (f"{total} handoff(s) to Cephalopod on record. Most recent:\n" + "\n".join(bits))
 
 async def handle_cephalopod_handoff(user_message: str, source: str):
     """Send a document/content to Cephalopod via the ghost_handoffs table.
@@ -831,9 +923,955 @@ def append_to_note(name_query: str, content: str) -> str:
         logger.error(f"append_to_note error: {e}")
         return ""
 
+# ---------------------------------------------------------------------------
+# S80 phase-2 vault tools: on-demand full-vault SEARCH, READ, and confirmed WRITE, callable
+# mid-conversation by the chat turn loop (deterministic handlers, same pattern as native/selfcode).
+# CHAT-TRIGGERED ONLY — no anchor/scheduler/background path gets write access. Every write is
+# echoed back and only committed after an explicit "yes" the same turn, then logged to
+# ghost_db.vault_writes (durable + independent of Obsidian). Vault content NEVER touches the
+# financial schema (transactions/spending/rook) — the standing boundary is untouched here.
+# No folder restrictions on search/read/write (Lea owns vault tidiness), only a traversal guard
+# so a write can't escape the vault entirely.
+# ---------------------------------------------------------------------------
+_VAULT_STOPWORDS = {
+    "what", "did", "i", "write", "wrote", "about", "my", "notes", "note", "vault", "read", "open",
+    "obsidian", "check", "the", "a", "an", "in", "on", "me", "you", "tell", "show", "summarise",
+    "summarize", "find", "have", "has", "do", "does", "say", "says", "said", "for", "and", "is",
+    "are", "was", "were", "of", "to", "there", "anything", "whats", "quote", "from", "recipe"
+}
+
+def _vault_scan(terms):
+    """Full-vault markdown scan -> ranked [(score, relpath, fname, cleaned, lower)]. Dotfolders
+    skipped; filename hits weighted 5x. The shared engine behind search + read + ambiguity."""
+    import re as _re
+    results = []
+    for root, dirs, files in os.walk(VAULT_PATH):
+        dirs[:] = [d for d in dirs if not d.startswith('.')]
+        for fname in files:
+            if not fname.endswith('.md'):
+                continue
+            try:
+                with open(os.path.join(root, fname), encoding='utf-8', errors='ignore') as f:
+                    text = f.read()
+            except OSError:
+                continue
+            cleaned = strip_obsidian(text)
+            lower = cleaned.lower()
+            nl = fname.lower()
+            score = sum(lower.count(t) for t in terms) + sum(5 for t in terms if t in nl)
+            if score > 0:
+                results.append((score, os.path.relpath(os.path.join(root, fname), VAULT_PATH),
+                                fname, cleaned, lower))
+    results.sort(key=lambda x: -x[0])
+    return results
+
+def vault_search_matches(query: str, limit: int = 6):
+    """Ranked note matches for an on-demand search: [{path, fname, score, excerpt}]. Multiple
+    entries let the caller ASK which note is meant instead of guessing (Task 1)."""
+    import re as _re
+    terms = [w for w in _re.findall(r'[a-z0-9]+', query.lower()) if w not in _VAULT_STOPWORDS and len(w) > 2]
+    if not terms:
+        return []
+    out = []
+    for score, rel, fname, cleaned, lower in _vault_scan(terms)[:limit]:
+        pos = min((lower.find(t) for t in terms if t in lower), default=0)
+        start = max(0, pos - 100)
+        out.append({"path": rel, "fname": fname, "score": score,
+                    "excerpt": " ".join(cleaned[start:start + 400].split())})
+    return out
+
+def find_notes_by_name(name_query: str):
+    """All .md notes whose FILENAME contains name_query (case-insensitive). [] if none.
+    Used to resolve a write/read target; >1 hit = ambiguous -> the caller asks."""
+    q = (name_query or "").lower().strip()
+    if q.endswith(".md"):
+        q = q[:-3]
+    q = q.strip()
+    if not q:
+        return []
+    hits = []
+    for root, dirs, files in os.walk(VAULT_PATH):
+        dirs[:] = [d for d in dirs if not d.startswith('.')]
+        for fname in files:
+            if fname.endswith(".md") and q in fname.lower():
+                hits.append(os.path.relpath(os.path.join(root, fname), VAULT_PATH))
+    hits.sort(key=len)   # shortest filename first = the most exact-ish match
+    return hits
+
+def append_to_note_path(relpath: str, content: str) -> str:
+    """Append content VERBATIM to an existing note by exact relpath (never clobbers — open 'a',
+    leading newline for separation), owner preserved. Returns relpath, or '' if missing/failed."""
+    path = os.path.join(VAULT_PATH, relpath)
+    if not os.path.isfile(path):
+        return ""
+    try:
+        orig = os.stat(path)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write("\n" + content.rstrip("\n") + "\n")
+        _preserve_vault_owner(path, orig)
+        return relpath
+    except OSError as e:
+        logger.error(f"append_to_note_path error: {e}")
+        return ""
+
+def create_vault_note(relpath: str, content: str) -> str:
+    """Create a NEW note at relpath (adds .md if missing, makes parent dirs). Refuses to overwrite
+    an existing file (caller handles the exists->append/ask case) and guards against escaping the
+    vault. Owner set to the vault owner (not root). Returns relpath written, or '' on refuse/fail."""
+    rel = (relpath or "").strip().lstrip("/")
+    if not rel:
+        return ""
+    if not rel.endswith(".md"):
+        rel += ".md"
+    base = os.path.abspath(VAULT_PATH)
+    full = os.path.normpath(os.path.join(base, rel))
+    if full != base and not full.startswith(base + os.sep):
+        logger.error(f"create_vault_note traversal refused: {relpath}")
+        return ""
+    if os.path.exists(full):
+        return ""
+    try:
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "w", encoding="utf-8") as f:
+            f.write(content.rstrip("\n") + "\n")
+        _preserve_vault_owner(full, None)
+        return os.path.relpath(full, base)
+    except OSError as e:
+        logger.error(f"create_vault_note error: {e}")
+        return ""
+
+async def log_vault_write(note_path: str, mode: str, content: str, source: str = "telegram"):
+    """Durable, Obsidian-independent record of every committed vault write (Task 4). ghost_db,
+    NOT the financial schema. Never fatal to the write it records."""
+    try:
+        conn = await pg_conn()
+        try:
+            await conn.execute(
+                """CREATE TABLE IF NOT EXISTS vault_writes (
+                    id BIGSERIAL PRIMARY KEY, ts TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    note_path TEXT NOT NULL, mode TEXT NOT NULL, content TEXT, source TEXT)""")
+            await conn.execute(
+                "INSERT INTO vault_writes (note_path, mode, content, source) VALUES ($1,$2,$3,$4)",
+                note_path, mode, content, source)
+        finally:
+            await conn.close()
+    except Exception as e:
+        logger.error(f"log_vault_write error: {e}")
+
+import re as _re_vault
+# Write-intent grammar. Deliberately anchored on a target + ':' so target/content are unambiguous;
+# the message is echoed back for confirmation regardless, so a mis-parse can't silently write.
+_WRITE_CREATE_RE = _re_vault.compile(
+    r'^\s*(?:create|make|start)\s+(?:a\s+)?(?:new\s+)?note\s+(?:called\s+|titled\s+|named\s+)?'
+    r'(?P<n>.+?)\s*(?:with\s+content\s+|with\s+|:|—|-)\s*(?P<c>.+)$', _re_vault.I | _re_vault.S)
+_WRITE_APPEND_A = _re_vault.compile(   # "add/append [to] [my|the] note NAME: CONTENT"
+    r'^\s*(?:append|add)(?:\s+to)?\s+(?:my\s+|the\s+)?note\s+(?P<n>[^:]+?)\s*:\s*(?P<c>.+)$',
+    _re_vault.I | _re_vault.S)
+_WRITE_APPEND_B = _re_vault.compile(   # "add to [my] NAME note: CONTENT"
+    r'^\s*(?:append|add)(?:\s+to)?\s+(?:my\s+|the\s+)?(?P<n>[^:]+?)\s+note\s*:\s*(?P<c>.+)$',
+    _re_vault.I | _re_vault.S)
+_DAILY_TRIGS = ("note that ", "log this ", "write to my notes ", "add to obsidian ")
+_VAULT_YES = {"yes", "yep", "yeah", "y", "confirm", "confirmed", "do it", "go ahead", "send it",
+              "commit", "ok", "okay", "sure", "yes please", "please do", "write it"}
+_VAULT_NO = {"no", "nope", "cancel", "stop", "don't", "dont", "nevermind", "never mind",
+             "scrap it", "forget it", "leave it"}
+
+def _vw_affirmative(m: str) -> bool:
+    ml = m.strip().lower().strip(" .!,")
+    return ml in _VAULT_YES
+
+def _vw_negative(m: str) -> bool:
+    ml = m.strip().lower().strip(" .!,")
+    return ml in _VAULT_NO
+
+def _parse_vault_write(msg: str):
+    """(mode, target_name, content) with mode in {create, append, daily}; ('unparseable','','')
+    when a write verb is clearly present but target/content can't be split; else None."""
+    m = _WRITE_CREATE_RE.match(msg)
+    if m:
+        return ("create", m.group("n").strip().strip('"\''), m.group("c").strip())
+    for rx in (_WRITE_APPEND_A, _WRITE_APPEND_B):
+        m = rx.match(msg)
+        if m:
+            return ("append", m.group("n").strip().strip('"\''), m.group("c").strip())
+    low = msg.lower()
+    for trig in _DAILY_TRIGS:
+        if low.startswith(trig):
+            return ("daily", "", msg[len(trig):].strip(" :,-.!?"))
+    if _re_vault.match(r'^\s*(?:append|add\s+to|create|make)\b', low) and ("note" in low or "obsidian" in low):
+        return ("unparseable", "", "")
+    return None
+
+async def _commit_vault_write(data: dict, source: str) -> str:
+    mode, path, content = data["mode"], data.get("path", ""), data["content"]
+    if mode == "daily":
+        written = append_to_daily_note(content)
+    elif mode == "append":
+        written = append_to_note_path(path, content)
+    elif mode == "create":
+        written = create_vault_note(path, content)
+    else:
+        written = ""
+    if not written:
+        return "That didn't write — the note wasn't found or the write failed, so nothing changed."
+    await log_vault_write(written, mode, content, source)
+    logger.info(f"vault write committed: {mode} -> {written}")
+    return f"{'Created' if mode == 'create' else 'Appended to'} {written}. Logged it."
+
+async def handle_vault_write(user_id: int, user_message: str, source: str):
+    """S80: on-demand vault write with a same-turn confirmation handshake. Turn 1 parses the
+    request, resolves/asks for the target, echoes the EXACT content + target and stores a pending
+    write; turn 2's explicit yes commits it (turn 2's no scraps it). Never writes on an assumption;
+    an ambiguous target asks rather than guessing or creating a duplicate. Returns a reply, or None
+    to fall through. Only the chat turn reaches this — no scheduler/anchor path does."""
+    pend_key = f"pending_vault_write:{user_id}"
+    r = Redis(host=REDIS_HOST, port=6379, password=REDIS_PASSWORD, decode_responses=True)
+    try:
+        pending = await r.get(pend_key)
+        if pending:
+            if _vw_affirmative(user_message):
+                await r.delete(pend_key)
+                return await _commit_vault_write(json.loads(pending), source)
+            if _vw_negative(user_message):
+                await r.delete(pend_key)
+                return "Scrapped — nothing written."
+            # neither yes nor no: don't leave a landmine that a later stray 'yes' could fire.
+            await r.delete(pend_key)
+        parsed = _parse_vault_write(user_message)
+        if not parsed:
+            return None
+        mode, name, content = parsed
+        if mode == "unparseable":
+            return ("Say it as `add to note <name>: <what to add>` or `create note <name>: <content>` "
+                    "and I'll read it back before writing anything.")
+        if not content and mode != "unparseable":
+            return "There's nothing to write — give me the content and I'll read it back before saving."
+        if mode == "daily":
+            target_rel, target_desc = "", "today's daily note"
+        elif mode == "create":
+            existing = find_notes_by_name(name)
+            if existing:
+                return (f"A note matching '{name}' already exists ({existing[0]}). Want that one? Say "
+                        f"`add to note {name}: ...` to append instead of making a duplicate.")
+            target_rel = name if name.lower().endswith(".md") else name + ".md"
+            target_desc = f"a new note `{target_rel}`"
+        else:  # append
+            matches = find_notes_by_name(name)
+            if not matches:
+                return (f"No note named like '{name}'. Make it with `create note {name}: <content>`, "
+                        "or tell me the exact note name.")
+            if len(matches) > 1:
+                return ("More than one note matches that — which do you mean: "
+                        + ", ".join(f"`{p}`" for p in matches[:6])
+                        + "? Tell me and I'll read the change back before writing.")
+            target_rel, target_desc = matches[0], f"`{matches[0]}`"
+        await r.set(pend_key, json.dumps({"mode": mode, "path": target_rel,
+                                          "content": content, "source": source}), ex=900)
+        verb = "create" if mode == "create" else "append to"
+        return (f"Ready to {verb} {target_desc}:\n\n{content}\n\nConfirm? (yes to write, no to scrap)")
+    finally:
+        await r.aclose()
+
+_VAULT_READ_RE = _re_vault.compile(
+    r'\b(?:read|open|show(?:\s+me)?|summari[sz]e|quote(?:\s+from)?|pull up|whats?\s+in)\b.*?'
+    r'\b(?:note|notes)\b', _re_vault.I)
+
+async def handle_vault_read(user_id: int, user_message: str):
+    """S80 Task 2: read a specific note on request (fuzzy name ok). Resolves via filename match,
+    else falls back to Task-1 content search; on multiple matches, asks which. Returns a reply
+    (Claude summarising/quoting the resolved note), or None to fall through. Read-only."""
+    low = user_message.lower()
+    if not _VAULT_READ_RE.search(user_message):
+        return None
+    # extract the name: strip read verbs + 'note(s)'/'my'/'the' filler, keep the topic words
+    name = _re_vault.sub(
+        r'\b(?:can you|could you|please|read|open|show|me|summari[sz]e|quote|from|pull up|'
+        r'whats?|in|my|the|note|notes|for|out|to)\b', " ", low)
+    name = _re_vault.sub(r'[^a-z0-9 ]+', " ", name).strip()
+    if not name:
+        return None
+    matches = find_notes_by_name(name)
+    if len(matches) == 1:
+        result = read_vault_note(matches[0].rsplit("/", 1)[-1][:-3])
+        if result:
+            rel, content = result
+            snippet = content[:4000]
+            return await call_claude(
+                user_id,
+                f"{user_message} [Vault note '{rel}' content follows — summarise or quote from ONLY "
+                f"this, do not invent: <<<{snippet}>>>]", route_text=user_message)
+    elif len(matches) > 1:
+        return ("A few notes match that — which one: " + ", ".join(f"`{p}`" for p in matches[:6])
+                + "?")
+    # no filename match -> content search to locate it
+    hits = vault_search_matches(name, limit=6)
+    if not hits:
+        return await call_claude(
+            user_id, f"{user_message} [No vault note found matching that — tell her plainly you "
+            "couldn't find it and ask for the exact name]", route_text=user_message)
+    if len(hits) == 1 or hits[0]["score"] >= 2 * (hits[1]["score"] if len(hits) > 1 else 0):
+        top = hits[0]
+        result = read_vault_note(top["fname"][:-3])
+        if result:
+            rel, content = result
+            return await call_claude(
+                user_id, f"{user_message} [Best-match vault note '{rel}' content follows — summarise "
+                f"or quote ONLY this, do not invent: <<<{content[:4000]}>>>]", route_text=user_message)
+    names = ", ".join(f"`{h['path']}`" for h in hits[:6])
+    return f"Could be a few notes — which do you mean: {names}?"
+
+# ---------------------------------------------------------------------------
+# Google Calendar (Session 82). Ghost's OWN calendar (gcal.py): on-demand reads and
+# confirm-first create/move/delete, reusing the Session 80 vault-write handshake shape
+# (pending state keyed by user, commit ONLY on her explicit yes THIS turn, a non-yes/non-no
+# clears the pending so no stray later 'yes' fires it). Only the chat turn reaches these
+# (Telegram and dashboard both route through process_message); the scheduler wires calendar
+# into the anchors separately, read-only. Calendar carries NO financial/mood routing limit.
+# The write grammar is deliberately narrow + always echoed back before committing, so a
+# mis-parse can never silently touch the calendar.
+# ---------------------------------------------------------------------------
+from datetime import date as _cdate, time as _ctime
+import gcal
+
+_CAL_WEEKDAYS = {"monday": 0, "mon": 0, "tuesday": 1, "tue": 1, "tues": 1, "wednesday": 2,
+                 "wed": 2, "weds": 2, "thursday": 3, "thu": 3, "thur": 3, "thurs": 3,
+                 "friday": 4, "fri": 4, "saturday": 5, "sat": 5, "sunday": 6, "sun": 6}
+_CAL_MONTHS = {"january": 1, "jan": 1, "february": 2, "feb": 2, "march": 3, "mar": 3,
+               "april": 4, "apr": 4, "may": 5, "june": 6, "jun": 6, "july": 7, "jul": 7,
+               "august": 8, "aug": 8, "september": 9, "sep": 9, "sept": 9, "october": 10,
+               "oct": 10, "november": 11, "nov": 11, "december": 12, "dec": 12}
+# A calendar-write intent must carry one of these signals — keeps "delete the gym habit" /
+# "cancel my subscription" out of the calendar path (they route to native/chat instead).
+_CAL_SIGNAL_RE = re.compile(
+    r'\b(calendar|event|appointment|appt|meeting|booking|reservation|schedule|scheduled|reschedul\w*|book)\b',
+    re.I)
+_CAL_DEFAULT_MINUTES = 60          # timed event with no explicit end
+
+def _cal_now():
+    return datetime.now(LOCAL_TZ)
+
+def _cal_parse_time(text):
+    """First clock time in text -> datetime.time, or None. Accepts 3pm / 3:30pm / 15:00 / noon /
+    midnight / midday. A bare number without am|pm is NOT accepted (too ambiguous)."""
+    t = text.lower()
+    if re.search(r'\bnoon\b|\bmidday\b', t):
+        return _ctime(12, 0)
+    if re.search(r'\bmidnight\b', t):
+        return _ctime(0, 0)
+    m = re.search(r'\b(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)', t)
+    if m:
+        h = int(m.group(1)) % 12
+        if m.group(3).startswith("p"):
+            h += 12
+        mi = int(m.group(2) or 0)
+        if 0 <= h <= 23 and 0 <= mi <= 59:
+            return _ctime(h, mi)
+    m = re.search(r'\b([01]?\d|2[0-3]):([0-5]\d)\b', t)     # 24h HH:MM
+    if m:
+        return _ctime(int(m.group(1)), int(m.group(2)))
+    return None
+
+def _cal_parse_date(text):
+    """First calendar date in text -> datetime.date, or None. today/tonight/this-x, tomorrow,
+    weekday names (soonest future occurrence), 'the Nth', 'Month D', 'D Month', DD/MM(/YY),
+    'in N days'. The resolved date is always echoed back for confirmation."""
+    t = text.lower()
+    today = _cal_now().date()
+    if re.search(r'\btoday\b|\btonight\b|\bthis (morning|afternoon|evening|arvo)\b', t):
+        return today
+    if re.search(r'\btomorrow\b|\btmr\b|\btmrw\b', t):
+        return today + timedelta(days=1)
+    m = re.search(r'\bin (\d{1,3}) days?\b', t)
+    if m:
+        return today + timedelta(days=int(m.group(1)))
+    if re.search(r'\bin a week\b|\bnext week\b', t) and not re.search(r'\b(' + "|".join(_CAL_WEEKDAYS) + r')\b', t):
+        return today + timedelta(days=7)
+    m = re.search(r'\b(next\s+)?(' + "|".join(_CAL_WEEKDAYS) + r')\b', t)
+    if m:
+        target = _CAL_WEEKDAYS[m.group(2)]
+        delta = (target - today.weekday()) % 7
+        if delta == 0:
+            delta = 7                          # 'friday' when today is friday -> the next one
+        if m.group(1):                         # 'next friday' -> the following week's
+            delta += 7 if delta <= 7 else 0
+        return today + timedelta(days=delta)
+    # 'Month D' or 'D Month' (+ optional ordinal / year)
+    mon = "|".join(_CAL_MONTHS)
+    month = day = None
+    yr = None
+    m = re.search(r'\b(' + mon + r')\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s*,?\s*(\d{4}))?\b', t)
+    if m:
+        month, day, yr = _CAL_MONTHS[m.group(1)], int(m.group(2)), m.group(3)
+    else:
+        m = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?(' + mon + r')(?:\s*,?\s*(\d{4}))?\b', t)
+        if m:
+            day, month, yr = int(m.group(1)), _CAL_MONTHS[m.group(2)], m.group(3)
+    if month and day:
+        try:
+            year = int(yr) if yr else today.year
+            d = _cdate(year, month, day)
+            if not yr and d < today:
+                d = _cdate(year + 1, month, day)
+            return d
+        except ValueError:
+            pass
+    # 'the Nth' (this month, else next month)
+    m = re.search(r'\bthe (\d{1,2})(?:st|nd|rd|th)\b', t)
+    if m:
+        day = int(m.group(1))
+        try:
+            d = today.replace(day=day)
+        except ValueError:
+            return None
+        if d < today:
+            d = (today.replace(day=1) + timedelta(days=32)).replace(day=day)
+        return d
+    # DD/MM or DD/MM/YY(YY)
+    m = re.search(r'\b(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?\b', t)
+    if m:
+        day, month, yr = int(m.group(1)), int(m.group(2)), m.group(3)
+        try:
+            year = today.year
+            if yr:
+                year = int(yr) + (2000 if len(yr) == 2 else 0)
+            d = _cdate(year, month, day)
+            if not yr and d < today:
+                d = _cdate(year + 1, month, day)
+            return d
+        except ValueError:
+            return None
+    return None
+
+def _cal_fmt_dt(dt, all_day):
+    if all_day:
+        d = dt if isinstance(dt, _cdate) and not isinstance(dt, datetime) else dt.date()
+        return d.strftime("%a %-d %b") + " (all day)"
+    return dt.strftime("%a %-d %b, %-I:%M%p").replace("AM", "am").replace("PM", "pm")
+
+# ---- intent parsing --------------------------------------------------------
+_CAL_CREATE_RE = re.compile(
+    r'^\s*(?:can you\s+|please\s+|could you\s+)?'
+    r'(?:add|create|schedule|put|set\s?up|book|new)\s+(?P<rest>.+)$', re.I)
+_CAL_MOVE_RE = re.compile(
+    r'^\s*(?:can you\s+|please\s+)?(?:move|reschedule|shift|push|change)\s+'
+    r'(?:my|the)?\s*(?P<query>.+?)\s+(?:to|->|→|until)\s+(?P<when>.+)$', re.I)
+_CAL_DELETE_RE = re.compile(
+    r'^\s*(?:can you\s+|please\s+)?(?:delete|cancel|remove|drop|clear)\s+'
+    r'(?:my|the)?\s*(?P<query>.+?)(?:\s+from\s+(?:my\s+)?calendar)?\s*$', re.I)
+# Where the "when" part of a create begins — split title from time here.
+_CAL_WHEN_MARKER = re.compile(
+    r'\b(?:on|at|from|tomorrow|tmr|tmrw|tonight|today|this (?:morning|afternoon|evening|arvo)|'
+    r'next|in \d+ days?|in a week|next week|' + "|".join(_CAL_WEEKDAYS) + r'|'
+    r'\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)|\d{1,2}:\d{2}|noon|midday|midnight|'
+    r'(?:' + "|".join(_CAL_MONTHS) + r')\s+\d{1,2}|\d{1,2}(?:st|nd|rd|th)|\d{1,2}/\d{1,2})\b', re.I)
+
+def _cal_strip_title(raw):
+    """Trim leading 'a/an/my/the [calendar] event/appointment/meeting called/for/:' filler
+    off a create title, and surrounding quotes/punct."""
+    s = raw.strip()
+    s = re.sub(r'^(?:a|an|my|the)\s+', "", s, flags=re.I)
+    s = re.sub(r'^(?:calendar\s+)?(?:event|appointment|appt|meeting|booking|reservation)\s+'
+               r'(?:called|titled|named|for|about|:)?\s*', "", s, flags=re.I)
+    s = re.sub(r'^(?:called|titled|named|for|about|to|:)\s+', "", s, flags=re.I)
+    return s.strip().strip('"\'').strip(" :,-")
+
+def _cal_parse_create(rest):
+    """rest = text after the create verb. Split into (title, when_text). The when starts at the
+    first temporal marker; everything before is the title. Returns (title, when_text) or
+    (title, '') when no time phrase is present (caller asks for a time)."""
+    m = _CAL_WHEN_MARKER.search(rest)
+    if m and m.start() > 0:
+        title = _cal_strip_title(rest[:m.start()])
+        when = rest[m.start():].strip()
+    else:
+        title, when = _cal_strip_title(rest), ""
+    return title, when
+
+def _cal_when_to_dt(when_text, base_date=None, base_time=None):
+    """Resolve a when-phrase into (start_datetime_or_date, all_day). base_date/base_time supply
+    the missing half on a move (keep the event's existing date or time-of-day). Returns
+    (None, False) if nothing usable parsed."""
+    d = _cal_parse_date(when_text)
+    t = _cal_parse_time(when_text)
+    if d is None and t is None:
+        return (None, False)
+    if d is None:
+        d = base_date or _cal_now().date()
+    if t is None:
+        if base_time is not None:
+            t = base_time
+        else:
+            return (d, True)      # date only -> all-day event
+    return (datetime.combine(d, t, tzinfo=LOCAL_TZ), False)
+
+# S84: strip calendar filler from a move/delete target query. "delete my dentist APPOINTMENT" /
+# "cancel the 3pm MEETING" carry a trailing type-word that is NOT part of the event's title, which
+# broke the substring match (same class as the S81 _clean_edit_name bug). Also drops a leading
+# my/the/a and a trailing "from (my) calendar".
+_CAL_TYPEWORD_RE = re.compile(
+    r'\s+(?:events?|appointments?|appts?|meetings?|bookings?|reservations?|calendar)\s*$', re.I)
+
+def _cal_clean_query(q):
+    q = (q or "").strip().strip('"\'').strip()
+    q = re.sub(r'^(?:my|the|a|an)\s+', "", q, flags=re.I)
+    q = re.sub(r'\s+from\s+(?:my\s+)?calendar\s*$', "", q, flags=re.I)
+    prev = None
+    while prev != q:                 # peel repeated trailing type-words ("test event" -> "test")
+        prev = q
+        q = _CAL_TYPEWORD_RE.sub("", q).strip()
+    return q.strip(" .,!?:-")
+
+async def _cal_resolve_target(query):
+    """Find upcoming events (now -> +90d) matching a free-text query for move/delete. Returns
+    (list_of_matches, note). Cleans the query of calendar filler, then matches forgivingly:
+    substring either way, or all query tokens present in the summary. A named query with no match
+    returns [] (caller says 'no match'); a bare/empty query returns all (caller asks which)."""
+    now = _cal_now()
+    cleaned = _cal_clean_query(query)
+    events = await gcal.get_events_in_window(now, now + timedelta(days=90), query=(cleaned or None))
+    if events is None:
+        return (None, "unreachable")
+    q = cleaned.lower()
+    if not q:
+        return (events, "")          # e.g. "delete my appointment" — nothing to match on, ask which
+    def _match(e):
+        s = (e["summary"] or "").lower()
+        if q in s or s in q:
+            return True
+        toks = [t for t in re.split(r"\s+", q) if t]
+        return bool(toks) and all(t in s for t in toks)
+    return ([e for e in events if _match(e)], "")
+
+async def handle_calendar_write(user_id: int, user_message: str, source: str):
+    """Confirm-first calendar create/move/delete. Turn 1 parses + echoes exactly what will
+    change and stores a pending action; turn 2's explicit yes commits (no scraps it). Ambiguous
+    targets ask which rather than guessing. Chat-triggered only. Returns a reply, or None."""
+    pend_key = f"pending_calendar_write:{user_id}"
+    r = Redis(host=REDIS_HOST, port=6379, password=REDIS_PASSWORD, decode_responses=True)
+    try:
+        pending = await r.get(pend_key)
+        if pending:
+            if _vw_affirmative(user_message):
+                await r.delete(pend_key)
+                return await _cal_commit(json.loads(pending))
+            if _vw_negative(user_message):
+                await r.delete(pend_key)
+                return "Left the calendar as it was."
+            await r.delete(pend_key)      # neither yes nor no -> no landmine
+        # detect intent (require a calendar signal word to enter the write path at all)
+        if not _CAL_SIGNAL_RE.search(user_message):
+            return None
+        if not gcal.is_configured():
+            # only speak up once we're sure this was a calendar-write request
+            if (_CAL_MOVE_RE.match(user_message) or _CAL_DELETE_RE.match(user_message)
+                    or _CAL_CREATE_RE.match(user_message)):
+                return ("Calendar isn't connected yet — the one-time Google sign-in still needs "
+                        "running before I can add or change anything.")
+            return None
+
+        mmove = _CAL_MOVE_RE.match(user_message)
+        mdel = _CAL_DELETE_RE.match(user_message)
+        mnew = _CAL_CREATE_RE.match(user_message)
+
+        if mmove:
+            query = mmove.group("query").strip().strip('"\'')
+            matches, note = await _cal_resolve_target(query)
+            if note == "unreachable":
+                return "Couldn't reach your calendar just now to find that — try again in a moment."
+            if not matches:
+                return f"No upcoming event matching '{query}'. Nothing moved."
+            if len(matches) > 1:
+                opts = "; ".join(f"{e['summary']} ({_cal_fmt_dt(e['start'], e['all_day'])})" for e in matches[:6])
+                return f"More than one matches '{query}' — which: {opts}?"
+            ev = matches[0]
+            base_date = ev["start"].date() if isinstance(ev["start"], datetime) else ev["start"]
+            base_time = ev["start"].time() if isinstance(ev["start"], datetime) else None
+            new_start, all_day = _cal_when_to_dt(mmove.group("when"), base_date, base_time)
+            if new_start is None:
+                return "I couldn't work out the new time from that — say it like 'to Friday at 3pm'."
+            # preserve duration
+            if isinstance(ev["start"], datetime) and isinstance(ev["end"], datetime) and not all_day:
+                dur = ev["end"] - ev["start"]
+                new_end = new_start + (dur if dur.total_seconds() > 0 else timedelta(minutes=_CAL_DEFAULT_MINUTES))
+            elif all_day:
+                new_end = (new_start + timedelta(days=1))
+            else:
+                new_end = new_start + timedelta(minutes=_CAL_DEFAULT_MINUTES)
+            payload = {"action": "move", "event_id": ev["id"], "summary": ev["summary"],
+                       "start": new_start.isoformat(), "end": new_end.isoformat(), "all_day": all_day}
+            await r.set(pend_key, json.dumps(payload), ex=900)
+            return (f"Ready to move '{ev['summary']}' to {_cal_fmt_dt(new_start, all_day)}. "
+                    "Confirm? (yes to move, no to leave it)")
+
+        if mdel:
+            query = mdel.group("query").strip().strip('"\'')
+            matches, note = await _cal_resolve_target(query)
+            if note == "unreachable":
+                return "Couldn't reach your calendar just now to find that — try again in a moment."
+            if not matches:
+                return f"No upcoming event matching '{query}'. Nothing deleted."
+            if len(matches) > 1:
+                opts = "; ".join(f"{e['summary']} ({_cal_fmt_dt(e['start'], e['all_day'])})" for e in matches[:6])
+                return f"More than one matches '{query}' — which do you want gone: {opts}?"
+            ev = matches[0]
+            payload = {"action": "delete", "event_id": ev["id"], "summary": ev["summary"],
+                       "start": ev["start"].isoformat() if ev["start"] else "", "all_day": ev["all_day"]}
+            await r.set(pend_key, json.dumps(payload), ex=900)
+            return (f"Ready to delete '{ev['summary']}' ({_cal_fmt_dt(ev['start'], ev['all_day'])}). "
+                    "Confirm? (yes to delete, no to keep it)")
+
+        if mnew:
+            title, when_text = _cal_parse_create(mnew.group("rest"))
+            if not title:
+                return "What should I call the event?"
+            if not when_text:
+                return f"When is '{title}'? Give me a day and time and I'll read it back before adding it."
+            start, all_day = _cal_when_to_dt(when_text)
+            if start is None:
+                return f"I couldn't parse a date/time for '{title}' from that — try 'tomorrow at 3pm'."
+            if all_day:
+                end = start + timedelta(days=1)
+            else:
+                # 'until/to <time>' end?
+                mend = re.search(r'\b(?:until|to|till|-)\s+(.+)$', when_text)
+                end_t = _cal_parse_time(mend.group(1)) if mend else None
+                end = datetime.combine(start.date(), end_t, tzinfo=LOCAL_TZ) if end_t else start + timedelta(minutes=_CAL_DEFAULT_MINUTES)
+                if end <= start:
+                    end = start + timedelta(minutes=_CAL_DEFAULT_MINUTES)
+            payload = {"action": "create", "summary": title,
+                       "start": (start.isoformat() if not all_day else start.isoformat()),
+                       "end": end.isoformat(), "all_day": all_day}
+            await r.set(pend_key, json.dumps(payload), ex=900)
+            return (f"Ready to add '{title}' — {_cal_fmt_dt(start, all_day)}"
+                    + ("" if all_day else f" to {end.strftime('%-I:%M%p').replace('AM','am').replace('PM','pm')}")
+                    + ". Confirm? (yes to add, no to scrap)")
+        return None
+    finally:
+        await r.aclose()
+
+async def _cal_commit(payload: dict) -> str:
+    """Execute a confirmed calendar action. Never raises; a failed API call reports plainly."""
+    action = payload.get("action")
+    try:
+        if action == "create":
+            all_day = payload["all_day"]
+            start = (_cdate.fromisoformat(payload["start"][:10]) if all_day
+                     else datetime.fromisoformat(payload["start"]))
+            end = (_cdate.fromisoformat(payload["end"][:10]) if all_day
+                   else datetime.fromisoformat(payload["end"]))
+            ev = await gcal.create_event(payload["summary"], start, end, all_day=all_day)
+            if not ev:
+                return "That didn't take — the calendar write failed, so nothing was added."
+            return f"Added '{ev['summary']}' — {_cal_fmt_dt(ev['start'], ev['all_day'])}."
+        if action == "move":
+            all_day = payload["all_day"]
+            start = (_cdate.fromisoformat(payload["start"][:10]) if all_day
+                     else datetime.fromisoformat(payload["start"]))
+            end = (_cdate.fromisoformat(payload["end"][:10]) if all_day
+                   else datetime.fromisoformat(payload["end"]))
+            ev = await gcal.move_event(payload["event_id"], start, end, all_day=all_day)
+            if not ev:
+                return "That didn't take — the move failed, so the event's where it was."
+            return f"Moved '{ev['summary']}' to {_cal_fmt_dt(ev['start'], ev['all_day'])}."
+        if action == "delete":
+            ok = await gcal.delete_event(payload["event_id"])
+            if not ok:
+                return "That didn't take — the delete failed, so the event's still there."
+            return f"Deleted '{payload.get('summary', 'that event')}'."
+    except Exception as e:
+        logger.error(f"_cal_commit error: {e}")
+        return "Something went wrong committing that calendar change — nothing was saved."
+    return "Nothing to commit."
+
+# ---- on-demand read --------------------------------------------------------
+# S84: broadened to catch natural schedule phrasings that previously fell through to a generic
+# reply (no calendar fetch, no logs — the exact silent-miss shape the S84 debug was about):
+# "do I have anything today", "what have I got on today", "what does my day look like",
+# "anything on tomorrow", "what am I doing today", "what's happening today".
+_CAL_READ_RE = re.compile(
+    r'(\bcalendar\b|\bschedule\b|\bagenda\b|\bam i free\b|\bwhat(?:\'s| is| do i have)\b[^?]*\b'
+    r'(?:on|planned|coming up)\b|\bany (?:events|appointments|meetings|plans)\b|'
+    r'\bwhen(?:\'s| is)\s+my\s+next\b|\bnext (?:appointment|meeting|event)\b|'
+    r'\bwhat(?:\'s| is)\s+(?:on|coming up)\b|'
+    r'\bdo i have (?:anything|much|any (?:plans|meetings|events|appointments))\b|'
+    r'\banything (?:on|planned|scheduled)\b|'
+    r'\bwhat have i got on\b|'
+    r'\bwhat(?:\'s| is| does)\s+my day\b|'
+    r'\bwhat am i (?:doing|up to)\s+(?:today|tomorrow|tonight|this|on|later)\b|'
+    r'\bwhat(?:\'s| is)\s+happening\s+(?:today|tomorrow|tonight|this|on|later)\b)', re.I)
+
+def _cal_read_window(text):
+    """(start_dt, end_dt, label) for a read. Defaults to today; understands tomorrow, a named
+    weekday, 'this week'/'next N days', and 'next X' (a wide lookahead)."""
+    t = text.lower()
+    now = _cal_now()
+    today = now.date()
+    if re.search(r'\bnext\b.*\b(appointment|meeting|event)\b|\bwhen(?:\'s| is)\s+my\s+next\b', t):
+        return (now, now + timedelta(days=90), "coming up")
+    if re.search(r'\btomorrow\b|\btmr\b|\btmrw\b', t):
+        d = today + timedelta(days=1)
+        return (datetime.combine(d, _ctime.min, tzinfo=LOCAL_TZ),
+                datetime.combine(d, _ctime.min, tzinfo=LOCAL_TZ) + timedelta(days=1), "tomorrow")
+    if re.search(r'\bthis week\b|\bnext (?:few )?days\b|\bweek\b', t):
+        return (now, datetime.combine(today, _ctime.min, tzinfo=LOCAL_TZ) + timedelta(days=7), "this week")
+    m = re.search(r'\b(next\s+)?(' + "|".join(_CAL_WEEKDAYS) + r')\b', t)
+    if m:
+        d = _cal_parse_date(m.group(0))
+        if d:
+            return (datetime.combine(d, _ctime.min, tzinfo=LOCAL_TZ),
+                    datetime.combine(d, _ctime.min, tzinfo=LOCAL_TZ) + timedelta(days=1),
+                    d.strftime("%A %-d %b"))
+    # explicit date?
+    d = _cal_parse_date(t)
+    if d and not re.search(r'\btoday\b', t):
+        return (datetime.combine(d, _ctime.min, tzinfo=LOCAL_TZ),
+                datetime.combine(d, _ctime.min, tzinfo=LOCAL_TZ) + timedelta(days=1),
+                d.strftime("%A %-d %b"))
+    start = datetime.combine(today, _ctime.min, tzinfo=LOCAL_TZ)
+    return (start, start + timedelta(days=1), "today")
+
+async def handle_calendar_read(user_id: int, user_message: str):
+    """On-demand calendar read (Telegram + dashboard). Resolves the window (today/tomorrow/
+    weekday/this week / 'next X'), fetches events, and lets Claude answer from ONLY that list.
+    Returns a reply, or None to fall through. Read-only."""
+    if not _CAL_READ_RE.search(user_message):
+        return None
+    if not gcal.is_configured():
+        return "Calendar isn't connected yet — the one-time Google sign-in still needs running."
+    start, end, label = _cal_read_window(user_message)
+    # 'next X' — pull a query term out for the lookahead
+    query = None
+    mnext = re.search(r'\bnext\s+([a-z][a-z ]*?)(?:\?|$)', user_message.lower())
+    if mnext and mnext.group(1).strip() not in ("appointment", "meeting", "event", "week"):
+        query = mnext.group(1).strip()
+    events = await gcal.get_events_in_window(start, end, query=query)
+    if events is None:
+        return "Couldn't reach your calendar just now — try again in a moment."
+    if not events:
+        gap = f"[No events on the calendar for {label}" + (f" matching '{query}'" if query else "") + "]"
+        return await call_claude(
+            user_id, f"{user_message} {gap} — tell her plainly there's nothing on, don't invent anything.",
+            route_text=user_message)
+    lines = []
+    for e in events[:20]:
+        when = gcal.fmt_event(e)
+        lines.append(f"- {when}")
+    listing = "\n".join(lines)
+    ctx = (f"[Calendar events for {label}" + (f" matching '{query}'" if query else "") +
+           f" — answer from ONLY these, do not invent or add any:\n{listing}]")
+    return await call_claude(user_id, f"{user_message} {ctx}", route_text=user_message)
+
+# ---------------------------------------------------------------------------
+# Capture routing (Session 40). A message starting with "capture" files the rest
+# under a "## Captured via Ghost" section in the ONE project/goal note whose
+# keyword matches (Admin/Ghost — Capture Routing.md is the Lea-editable table,
+# re-read live each capture — same manifest pattern as Ghost — App Categories.md),
+# or in Admin/Inbox.md when zero / more than one distinct note matches. APPEND-ONLY:
+# existing note content is never edited or removed.
+# ---------------------------------------------------------------------------
+CAPTURE_ROUTING_REL = "Admin/Ghost — Capture Routing.md"
+CAPTURE_INBOX_REL = "Admin/Inbox.md"
+CAPTURE_SECTION = "## Captured via Ghost"
+# "capture" as a leading word only (word-boundary lookahead excludes "captured"/
+# "captures"); optional this/that; then any separators before the payload.
+_CAPTURE_TRIGGER_RE = re.compile(
+    r"^\s*capture(?![a-z])(?:\s+(?:this|that|the\s+following))?[\s:._\-–—]*", re.IGNORECASE)
+
+def load_capture_routes() -> list:
+    """Parse the '## Routes' section of the routing note into [(keywords, dest_rel), ...]
+    with keywords lowercased. Live read every call; an unreadable/absent note yields []
+    (everything then falls to Inbox) — never an error state."""
+    routes = []
+    try:
+        text = open(os.path.join(VAULT_PATH, CAPTURE_ROUTING_REL), encoding="utf-8", errors="ignore").read()
+    except OSError as e:
+        logger.error(f"capture routing note unreadable ({e}) — captures route to Inbox")
+        return routes
+    in_routes = False
+    for line in text.splitlines():
+        if line.startswith("## "):
+            in_routes = line.strip().lower().startswith("## routes")
+            continue
+        if not in_routes:
+            continue
+        m = re.match(r"\s*-\s*(.*?)=>\s*(.+?)\s*$", line)
+        if not m:
+            continue
+        kws = [k.strip().lower() for k in re.findall(r"`([^`]+)`", m.group(1)) if k.strip()]
+        dest = m.group(2).strip()
+        if kws and dest:
+            routes.append((kws, dest))
+    return routes
+
+_area_index_cache = {"ts": 0.0, "map": None}
+AREA_INDEX_TTL = 300
+
+def _area_note_map() -> dict:
+    """Map of `area:` frontmatter value (lowercased) -> vault-relative note path, built by
+    scanning the vault (cached AREA_INDEX_TTL). Lets capture routing resolve a destination by
+    what the note IS, not where it sits, so a folder move (Goals/->Areas/) can't silently
+    break routing. A `kind: area` note ALWAYS wins over a non-area note sharing the same area
+    value (e.g. `area: Creative` on both Areas/Creative.md and a novel index — the Area note is
+    the capture target); within a tier, first-in-walk wins."""
+    now = time.time()
+    if _area_index_cache["map"] is not None and now - _area_index_cache["ts"] < AREA_INDEX_TTL:
+        return _area_index_cache["map"]
+    area_notes = {}   # kind:area notes (authoritative)
+    other = {}        # notes with an area: value but not kind:area (fallback, e.g. goals)
+    for root, dirs, files in os.walk(VAULT_PATH):
+        dirs[:] = [d for d in dirs if not d.startswith('.')]
+        for fname in files:
+            if not fname.endswith(".md"):
+                continue
+            path = os.path.join(root, fname)
+            try:
+                with open(path, encoding="utf-8", errors="ignore") as f:
+                    if f.readline().strip() != "---":
+                        continue
+                    area = kind = None
+                    for line in f:
+                        if line.strip() == "---":
+                            break
+                        ma = re.match(r"\s*area\s*:\s*(.+?)\s*$", line)
+                        if ma:
+                            area = ma.group(1).strip().strip('"\'').lower()
+                        mk = re.match(r"\s*kind\s*:\s*(.+?)\s*$", line)
+                        if mk:
+                            kind = mk.group(1).strip().strip('"\'').lower()
+                    if area:
+                        (area_notes if kind == "area" else other).setdefault(
+                            area, os.path.relpath(path, VAULT_PATH))
+            except OSError:
+                continue
+    amap = dict(other)
+    amap.update(area_notes)   # kind:area wins over a same-named non-area note
+    _area_index_cache["ts"] = now
+    _area_index_cache["map"] = amap
+    return amap
+
+def _resolve_capture_dest(dest: str):
+    """A route destination is either an `area:<Name>` reference (resolved via frontmatter to
+    wherever that Area note lives now) or a literal vault-relative path (as before). Returns
+    a real vault-relative path, or None if an area: dest can't be resolved."""
+    if dest.lower().startswith("area:"):
+        return _area_note_map().get(dest[5:].strip().lower())
+    return dest
+
+def _append_under_section(note_rel: str, line: str, section: str = CAPTURE_SECTION) -> bool:
+    """Append `line` (a full markdown list item) under `section` in a vault note,
+    creating the section at end-of-note if absent. APPEND-ONLY — never edits or removes
+    existing lines. Preserves the file's original owner/mode: the bot pod runs as root,
+    and writing must not leave the note root-owned and lock Lea out of her own vault."""
+    path = os.path.join(VAULT_PATH, note_rel)
+    try:
+        try:
+            st = os.stat(path)
+        except FileNotFoundError:
+            st = None
+        content = ""
+        if st is not None:
+            with open(path, encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+        lines = content.split("\n")
+        hidx = next((i for i, l in enumerate(lines)
+                     if l.strip().lower() == section.strip().lower()), None)
+        if hidx is None:
+            body = content.rstrip("\n")
+            new = (body + "\n\n" if body else "") + section + "\n\n" + line + "\n"
+        else:
+            end = len(lines)
+            for j in range(hidx + 1, len(lines)):
+                s = lines[j].lstrip()
+                if s.startswith("# ") or s.startswith("## "):
+                    end = j
+                    break
+            k = end - 1
+            while k > hidx and lines[k].strip() == "":
+                k -= 1
+            lines.insert(k + 1, line)
+            new = "\n".join(lines)
+        tmp = path + ".captmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(new)
+        os.replace(tmp, path)
+        if st is not None:
+            try:
+                os.chown(path, st.st_uid, st.st_gid)
+                os.chmod(path, st.st_mode)
+            except OSError as e:
+                logger.error(f"capture chown/chmod back failed on {note_rel}: {e}")
+        return True
+    except OSError as e:
+        logger.error(f"_append_under_section error on {note_rel}: {e}")
+        return False
+
+async def handle_capture(user_id: int, user_message: str) -> str | None:
+    """Last-in-precedence trigger: a message starting with 'capture' files the rest
+    under the routed project/goal note (exactly one DISTINCT keyword-matched note) or
+    Admin/Inbox.md (zero, or more than one — never guesses). Returns a one-line
+    confirmation naming where it landed, or None if this isn't a capture message."""
+    m = _CAPTURE_TRIGGER_RE.match(user_message or "")
+    if not m:
+        return None
+    payload = user_message[m.end():].strip()
+    if not payload:
+        return None  # bare "capture" with nothing to file — let normal chat handle it
+    low = payload.lower()
+    matched = []  # distinct destination notes (raw route dests), in note order
+    for kws, dest in load_capture_routes():
+        if dest not in matched and any(kw in low for kw in kws):
+            matched.append(dest)
+    now = datetime.now(LOCAL_TZ)
+    entry = f"- {now.strftime('%Y-%m-%d %H:%M')} — {payload}"
+    # Resolve each raw dest (area: refs -> real path via frontmatter; literal paths unchanged).
+    # Only destinations that resolve to a real note count; an area: that can't resolve is dropped.
+    resolved = [(_resolve_capture_dest(d), d) for d in matched]
+    good = [r for (r, raw) in resolved if r]
+    if len(good) == 1:
+        where = good[0] if _append_under_section(good[0], entry) else None
+        single = True
+    else:
+        where = CAPTURE_INBOX_REL if _append_under_section(CAPTURE_INBOX_REL, entry) else None
+        single = False
+    if not where:
+        reply = "Tried to capture that but the vault write failed — nothing saved, check the logs."
+    elif single:
+        reply = f"Captured to {os.path.basename(where)[:-3]} — under Captured via Ghost."
+    elif not matched:
+        reply = "No single project matched, so it's in Inbox for you to triage."
+    elif not good:
+        reply = "That matched a route but I couldn't resolve its destination note, so it's in Inbox."
+    else:
+        names = ", ".join(os.path.basename(r)[:-3] for r in good)
+        reply = f"That matched more than one ({names}), so I put it in Inbox rather than guess."
+    logger.info(f"Capture: matched={matched} resolved={good} -> {where}")
+    return reply
+
+# Session 41 (fabrication audit): a retrospective QUESTION ("did the $50 get saved?",
+# "you marked yoga done, right?", "did you add milk to my list?") must never TRIGGER
+# the action it asks about. Without this, the money word / completion word / "add X to
+# list" phrasing inside the question fires the real write — the S11 France-trip class of
+# bug (a question mis-parsed as an action), re-surfaced by the audit when "you already
+# saved the $50 ...?" logged a phantom $50 expense. Guards the write-triggering paths;
+# the answer then comes from real records / board state (grounded), never a phantom write.
+_RETRO_CUES = ("did you", "didn't you", "did i", "have you", "haven't you", "have i",
+               "already", "right?", " yet?", "is it done", "was it", "how much",
+               "did that", "is that", "is it saved", "get saved", "got saved",
+               "did it", "has it", "do i still", "already saved", "already logged",
+               "already added", "already marked", "already done")
+
+def _is_retrospective_query(msg: str) -> bool:
+    """True if the message is a question ASKING whether an action already happened, as
+    opposed to a request/statement to DO it. Only such retrospective questions are
+    guarded — forward requests ('add X to my list', 'log $20 for lunch') still write."""
+    low = (msg or "").strip().lower()
+    if not low.endswith("?"):
+        return False
+    return any(cue in low for cue in _RETRO_CUES)
+
 async def get_vault_context() -> str:
     """Always-on background context from the vault: recently modified notes in
-    Projects/, Goals/, Areas/ — frontmatter + first 300 chars each, newest first,
+    Projects/, Areas/ — frontmatter + first 300 chars each, newest first,
     capped at ~1500 chars. Cached in Redis for 1h so it tracks Syncthing updates."""
     try:
         r = Redis(host=REDIS_HOST, port=6379, password=REDIS_PASSWORD, decode_responses=True)
@@ -846,7 +1884,7 @@ async def get_vault_context() -> str:
 
     import time
     entries = []
-    for sub in ("Projects", "Goals", "Areas"):
+    for sub in ("Projects", "Areas"):
         base = os.path.join(VAULT_PATH, sub)
         if not os.path.isdir(base):
             continue
@@ -908,17 +1946,22 @@ Ghost:"""
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                "http://10.42.0.1:11434/api/generate",
+                OLLAMA_URL,
                 json={
-                    "model": "llama3.2",
+                    # Session 27 (30/07/2026): CPU-only + the 1b model. Diagnosed that
+                    # offloading 9/29 layers to the GeForce 940MX over the NVK/Vulkan
+                    # path (no CUDA driver) was the bottleneck — ~14-16x SLOWER than
+                    # CPU-only on this host, with the CPU sitting ~80% idle waiting on
+                    # the GPU. num_gpu:0 forces CPU-only; 1b (already installed) is the
+                    # fastest here (~11s, ~12 tok/s vs the old ~56-84s / 0.49 tok/s).
+                    "model": "llama3.2:1b",
                     "prompt": ollama_prompt,
                     "stream": False,
                     "keep_alive": "1h",
                     "options": {
                         "temperature": 0.7,
-                        # 40 is plenty for "one or two lines" and halves generation
-                        # time — llama3.2 generation degraded to ~1.8s/token as the
-                        # host filled up, and 80 tokens was blowing the timeout.
+                        "num_gpu": 0,
+                        # 40 is plenty for "one or two lines".
                         "num_predict": 40
                     }
                 },
@@ -935,17 +1978,29 @@ async def call_claude_api(user_id: int, message: str, vault_context: str = "") -
     history = await get_history(user_id)
     history.append({"role": "user", "content": message})
 
-    if len(history) > 20:
-        history = history[-20:]
+    if len(history) > 30:
+        history = history[-30:]
 
     yesterday = await get_yesterday_summary()
     today_context = await get_today_context()
+    board_context = await get_board_context()
+    native_context = await get_native_context(user_id)   # S66: live native Habits & Todos state
     pattern_context = await get_pattern_context()
+    system_truth = await get_system_truth_context()   # S58: integrations + self-code + cephalopod, one block
     recent_phrases = await get_recent_phrases()
     vault_ctx = await get_vault_context()
     system_with_context = SYSTEM_PROMPT + "\n\n" + today_context
+    if system_truth:
+        system_with_context += "\n\n" + system_truth
+    if native_context:
+        system_with_context += "\n\n" + native_context
+    if board_context:
+        system_with_context += "\n\n" + board_context
     if pattern_context:
         system_with_context += "\n\n" + pattern_context
+    memory_context = await get_memory_context(user_id)
+    if memory_context:
+        system_with_context += "\n\n" + memory_context
     if vault_ctx:
         system_with_context += "\n\n" + vault_ctx
     if yesterday:
@@ -1064,24 +2119,30 @@ async def call_claude(user_id: int, message: str, route_text: str = None) -> str
         return resp
 
     router_text = message if route_text is None else route_text
-    finance_triggers = [
-        "spent", "spend", "bought", "purchase", "cost", "price", "paid", "pay",
-        "budget", "money", "dollar", "dollars", "cash", "bank", "account",
-        "invoice", "receipt", "expense", "bill", "debt", "loan", "savings",
-        "financial", "finance", "credit", "transfer", "withdraw", "deposit",
-        "overdraft", "owe", "owing"
-    ]
-
-    income_triggers = [
-        "got paid", "income", "salary", "payday", "paycheck", "pay cheque", "paid me"
-    ]
-
     message_lower = router_text.lower()
+    # S70: the conversational money-logging pipeline (Session 52) is REMOVED. Financial tracking is
+    # CSV-only now (upload on the Bills dashboard → pandas → local Ollama narration, which never
+    # touches this Claude path). A money mention typed in chat is no longer special-cased; it just
+    # reaches Claude like any other message. Rationale: the old "reroute to Ollama" only protected
+    # the processing step — Ghost's chat brain IS Claude, so a financial mention was already read by
+    # Claude the moment it was typed, before any reroute. The CSV pipeline has no such boundary leak.
 
-    vault_triggers = ["obsidian", "my notes", "my vault", "what did i write", "check my notes", "character", "who is", "tell me about", "novel", "check my vault"]
+    vault_triggers = ["obsidian", "my notes", "my vault", "what did i write", "check my notes",
+                      "character", "who is", "tell me about", "novel", "check my vault",
+                      "search my", "find my note", "find the note", "look up my"]
     if any(t in message_lower for t in vault_triggers):
         logger.info("Vault query detected")
-        vault_context = search_vault(router_text) or "No matching notes found in the vault."
+        matches = vault_search_matches(router_text)
+        if not matches:
+            vault_context = "No matching notes found in the vault."
+        else:
+            vault_context = "\n\n".join(f"--- {m['path']} ---\n{m['excerpt']}" for m in matches[:3])
+            # S80 Task 1: on multiple plausibly-close matches, tell Claude to ASK which one she
+            # means rather than answering from a guessed note.
+            if len(matches) > 1 and matches[1]["score"] >= 0.6 * matches[0]["score"]:
+                names = ", ".join(m["path"] for m in matches[:4])
+                vault_context = (f"[MULTIPLE notes plausibly match this — ASK which one she means "
+                                 f"before answering, listing them: {names}]\n\n" + vault_context)
         return await _finish(await call_claude_api(user_id, message, vault_context=vault_context), "claude", False)
 
     food_triggers = ["what have i eaten", "what did i eat", "my calories", "food log", "my macros", "my protein"]
@@ -1101,56 +2162,6 @@ async def call_claude(user_id: int, message: str, route_text: str = None) -> str
                     f"Foods: {', '.join(food['foods'][:15]) if food['foods'] else 'unnamed entries'}]"
                 )
             return await _finish(await call_claude_api(user_id, f"{message} {food_ctx}"), "claude", False)
-
-    if "budget summary" in message_lower:
-        logger.info("Budget summary requested")
-        summary = await build_budget_summary()
-        if not summary:
-            return "Can't reach the budget data right now. Try again in a moment."
-        commentary = await call_ollama(
-            f"Here is {USER_NAME}'s budget for the month so far:\n{summary}\n\n"
-            "Give exactly one dry line of commentary on the overall picture. "
-            "Don't repeat the table — it's already being shown to her."
-        )
-        response = summary + ("\n\n" + commentary if commentary else "")
-        history = await get_history(user_id)
-        history.append({"role": "user", "content": message})
-        history.append({"role": "assistant", "content": response})
-        await save_history(user_id, history)
-        await save_to_postgres(user_id, "user", message)
-        await save_to_postgres(user_id, "assistant", response)
-        return await _finish(response, "ollama", True)
-
-    is_income = any(trigger in message_lower for trigger in income_triggers)
-    is_financial = any(trigger in message_lower for trigger in finance_triggers)
-
-    if is_income or is_financial:
-        if is_income:
-            logger.info("Income message detected — routing to Ollama")
-            context = await log_income(router_text)
-        else:
-            logger.info("Financial message detected — routing to Ollama")
-            context = await log_debt(router_text)
-            if context is None:
-                context = await log_expense(router_text)
-        if not context:
-            # Nothing loggable in this message. It's a question or just chatter that
-            # tripped a money word — hand over the real records so Ollama answers from
-            # data instead of inventing one.
-            context = await get_recent_expense_records()
-        ollama_message = message + "\n" + context if context else message
-        response = await call_ollama(ollama_message)
-        if response:
-            history = await get_history(user_id)
-            history.append({"role": "user", "content": message})
-            history.append({"role": "assistant", "content": response})
-            await save_history(user_id, history)
-            await save_to_postgres(user_id, "user", message)
-            await save_to_postgres(user_id, "assistant", response)
-            return await _finish(response, "ollama", True)
-        else:
-            logger.warning("Ollama unavailable for financial message — not falling back to Claude")
-            return await _finish("I can't process financial information right now. Try again in a moment.", "ollama", True)
 
     return await _finish(await call_claude_api(user_id, message), "claude", False)
 
@@ -1207,6 +2218,78 @@ async def handle_selfcode_command(user_message: str) -> str | None:
     except Exception as e:
         logger.error(f"Selfcode command error: {e}")
         return "Couldn't reach the proposals store just now. Try again in a moment."
+
+# Session 52 (Task 3): self-code STATUS questions ("did you change/apply/delete/undo … my
+# code / that proposal / that diff?") get a deterministic answer from a real code_proposals
+# read, never a freeform guess. This is the S16-addendum class — Claude once DENIED a real
+# proposal diff came from Ghost, and separately worried it had "deleted her code". The answer
+# here is a plain string built from the table, so the model cannot confabulate about its own
+# self-code system. Distinct from handle_selfcode_command (which acts on the exact "apply this
+# change" / "undo" / "no" commands); this only fires on QUESTIONS about state.
+_SELFCODE_SUBJECTS = ("proposal", "diff", "self-code", "selfcode", "your code", "my code",
+                      "the code", "code change", "your own code", "code you")
+_SELFCODE_VERBS = ("appl", "chang", "delet", "undo", "undone", "revert", "reject",
+                   "overwrit", "modif", "edit", "wrote", "broke", "broken", "wreck", "mess",
+                   "wipe", "gone", "lost")
+
+async def handle_selfcode_status_query(user_message: str) -> str | None:
+    low = user_message.strip().lower()
+    if not any(s in low for s in _SELFCODE_SUBJECTS):
+        return None
+    is_q = low.endswith("?") or low.startswith(("did ", "was ", "were ", "have you", "has ",
+                                                "is ", "are ", "you ", "what happened", "what's the status",
+                                                "whats the status", "what did you"))
+    retro = any(c in low for c in ("did you", "have you", "was that", "were you", "already",
+                                   "right", "you just", "what happened", "status of"))
+    verb = any(v in low for v in _SELFCODE_VERBS) or "status" in low
+    if not (verb and (is_q or retro)):
+        return None
+    try:
+        conn = await asyncpg.connect(host=POSTGRES_HOST, port=5432, user="postgres",
+                                     password=POSTGRES_PASSWORD, database="ghost_db")
+        try:
+            row = await conn.fetchrow(
+                "SELECT id, service, file_path, status, created_at, resolved_at "
+                "FROM code_proposals ORDER BY id DESC LIMIT 1")
+        finally:
+            await conn.close()
+    except Exception as e:
+        logger.error(f"selfcode status query error: {e}")
+        return "I can't reach the proposals store right now, so I can't tell you the state of my code changes for certain. Try again in a moment."
+    # The load-bearing invariant, stated whenever deletion/breakage is implied: self-code
+    # never deletes; it applies an approved diff and backs the file up first.
+    deletion_implied = any(w in low for w in ("delet", "broke", "broken", "wreck", "mess",
+                                              "gone", "lost", "wipe"))
+    guard = ("I don't and can't delete your code. My self-code system only ever applies a "
+             "proposed diff after you approve it with 'apply this change', and it backs the file "
+             "up first. ") if deletion_implied else ""
+    if not row:
+        return (guard + "There are no code proposals on record at all — I've never proposed, applied, "
+                "or reverted a change to my own code. Nothing has changed.")
+    pid, svc, fpath = row["id"], row["service"], os.path.basename(row["file_path"] or "")
+    st = row["status"]
+    when_made = row["created_at"].astimezone(LOCAL_TZ).strftime("%d %b %H:%M") if row["created_at"] else "?"
+    when_res = row["resolved_at"].astimezone(LOCAL_TZ).strftime("%d %b %H:%M") if row["resolved_at"] else None
+    if st in ("proposed", "approved", "apply_queued"):
+        return (guard + f"There's an open proposal, #{pid} ({svc}/{fpath}), status '{st}' (raised {when_made}). "
+                "Nothing is applied until you reply 'apply this change' exactly — so no code has changed yet.")
+    if st in ("applied", "applied_no_rebuild"):
+        return (guard + f"The most recent proposal is #{pid} ({svc}/{fpath}) — APPLIED"
+                + (f" on {when_res}" if when_res else "") +
+                f". It changed {fpath} after your approval, with a backup taken first. That's the only recent change.")
+    if st == "rejected":
+        return (guard + f"The most recent proposal is #{pid} ({svc}/{fpath}) — you REJECTED it"
+                + (f" on {when_res}" if when_res else "") + ", so nothing changed.")
+    if st == "expired":
+        return (guard + f"The most recent proposal is #{pid} ({svc}/{fpath}) — it EXPIRED unapplied"
+                + (f" on {when_res}" if when_res else "") + ", so nothing changed.")
+    if st == "undone":
+        return (guard + f"The most recent proposal is #{pid} ({svc}/{fpath}) — it was applied and then "
+                "UNDONE (rolled back to the backup), so that change is no longer in effect.")
+    if st == "apply_failed":
+        return (guard + f"The most recent proposal is #{pid} ({svc}/{fpath}) — the apply FAILED, so the "
+                "code was not changed.")
+    return (guard + f"The most recent proposal is #{pid} ({svc}/{fpath}), status '{st}'.")
 
 SCROLL_SUPPRESS_KEY = "scroll_suppressed_until"
 SCROLL_SUPPRESS_DEFAULT_MIN = 45
@@ -1404,10 +2487,426 @@ async def handle_voice_note_deletion(user_id: int, user_message: str) -> str | N
         logger.error(f"Voice-note deletion error: {e}")
         return "Something broke mid-deletion — nothing may have been removed. Check with me again."
 
+# ---------------------------------------------------------------------------
+# Commitment tracking (session 19). DELIBERATELY NARROW.
+#
+# Scope guards, in order of how easy they'd be to erode:
+#  - It only ever reads messages she ALREADY sends to Ghost. No new listening
+#    surface, no passive monitoring, no open mic. Same input as everything else.
+#  - It is NOT a second to-do list. Explicit task language ("add X to my list",
+#    "remind me to X", "need to X") still belongs to Habitica and is skipped
+#    here; this only claims CASUAL self-declared intent ("I'll ...").
+#  - Nothing is logged without her say-so. Detection asks; only "yes" writes.
+#  - One pending confirmation at a time, so it can't interrogate her in a loop.
+#  - Everything expires. Nothing accumulates forever.
+COMMITMENT_PENDING_EXPIRY = timedelta(hours=1)   # unanswered "is this a commitment?" -> drop it
+COMMITMENT_ACTIVE_EXPIRY = timedelta(days=14)    # tracked commitment goes stale -> drop it
+COMMITMENT_MAX_LEN = 140                         # long messages are conversation, not a commitment
+
+# Casual intent only. "need to"/"remind me to"/"add to list" are Habitica's, not ours.
+COMMITMENT_PATTERN = r"^\s*(?:(?:so|ok(?:ay)?|and|then|right|well|anyway)[,\s]+)*i(?:'ll|\s+will|'m\s+going\s+to|\s+am\s+going\s+to|'m\s+gonna|\s+am\s+gonna)\s+(.+)"
+
+async def _commitments_conn():
+    return await asyncpg.connect(host=POSTGRES_HOST, port=5432, user="postgres",
+                                 password=POSTGRES_PASSWORD, database="ghost_db")
+
+def detect_commitment(user_message: str) -> str | None:
+    """Extract a self-declared future intention, or None. Conservative by design:
+    short messages only, casual first-person intent only, and never phrasing that
+    the Habitica task-capture path already owns."""
+    import re as _re
+    if len(user_message) > COMMITMENT_MAX_LEN:
+        return None
+    low = user_message.lower()
+    # Hands off anything Habitica's capture already claims.
+    if (_re.search(r'\badd (.+?) to (?:my|the) list\b', low)
+            or _re.match(r'\s*remind me to ', low)
+            or _re.match(r"\s*(?:i )?need to ", low)):
+        return None
+    m = _re.match(COMMITMENT_PATTERN, user_message, _re.IGNORECASE | _re.DOTALL)
+    if not m:
+        return None
+    text = m.group(1).strip(" .,!?")
+    # Filter out present-tense chatter that only looks like intent.
+    if len(text) < 4 or text.lower().startswith(("be ", "have ", "feel ", "think ", "guess ")):
+        return None
+    return text
+
+async def handle_commitment(user_id: int, user_message: str, source: str) -> str | None:
+    """Two jobs: resolve an open confirmation, or ask for one. Returns a reply
+    when it handled the turn, else None so the normal pipeline continues."""
+    import re as _re
+    low = user_message.strip().lower()
+    try:
+        conn = await _commitments_conn()
+        try:
+            pending = await conn.fetchrow(
+                "SELECT id, text FROM commitments WHERE status = 'pending_confirmation' "
+                "AND expires_at > NOW() ORDER BY id DESC LIMIT 1")
+            # 1. Resolve an open confirmation on a short yes/no.
+            if pending and len(low) <= 24:
+                if _re.match(r"^(yes|yep|yeah|yup|ok(ay)?|sure|do it|please|go on|correct)\b[.!]?$", low):
+                    await conn.execute(
+                        "UPDATE commitments SET status = 'active', confirmed_at = NOW(), expires_at = $2 "
+                        "WHERE id = $1", pending["id"], datetime.now(LOCAL_TZ) + COMMITMENT_ACTIVE_EXPIRY)
+                    logger.info(f"Commitment #{pending['id']} confirmed -> active")
+                    # Wording states exactly what exists: it appears in the evening
+                    # summary and expires. There is no completion-marking path, so
+                    # this must not imply one.
+                    return (f"Tracked: {pending['text']}. I'll surface it in your evening "
+                            f"summary, and it drops off on its own after "
+                            f"{COMMITMENT_ACTIVE_EXPIRY.days} days.")
+                if _re.match(r"^(no|nope|nah|don't|dont|skip it|leave it)\b[.!]?$", low):
+                    await conn.execute("UPDATE commitments SET status = 'declined' WHERE id = $1",
+                                       pending["id"])
+                    logger.info(f"Commitment #{pending['id']} declined")
+                    return "Fine, not tracking it."
+            if pending:
+                return None  # one at a time — don't stack another question on her
+            # 2. New detection -> ASK, never log silently.
+            text = detect_commitment(user_message)
+            if not text:
+                return None
+            row = await conn.fetchrow(
+                "INSERT INTO commitments (user_id, text, status, source, expires_at) "
+                "VALUES ($1, $2, 'pending_confirmation', $3, $4) RETURNING id",
+                user_id, text, source, datetime.now(LOCAL_TZ) + COMMITMENT_PENDING_EXPIRY)
+            logger.info(f"Commitment #{row['id']} detected, awaiting confirmation: {text[:60]!r}")
+            return f"Sounds like you're committing to {text} — want me to track that and check in?"
+        finally:
+            await conn.close()
+    except Exception as e:
+        logger.error(f"Commitment handling error: {e}")
+        return None
+
+async def get_active_commitments() -> list:
+    """Active, unexpired commitments — used by the evening summary so 'I'll check
+    in' is a real promise and not a fabricated one."""
+    try:
+        conn = await _commitments_conn()
+        try:
+            rows = await conn.fetch(
+                "SELECT text FROM commitments WHERE status = 'active' AND expires_at > NOW() "
+                "ORDER BY confirmed_at")
+            return [r["text"] for r in rows]
+        finally:
+            await conn.close()
+    except Exception as e:
+        logger.error(f"Active commitments read error: {e}")
+        return []
+
+# Session 43: when Lea asks whether an integration is up/down, run a REAL live check and
+# ground the answer in it — the model must not guess "it's out" (the 20/08 incident). Returns
+# a grounded reply, or None if this isn't a status question (normal routing continues).
+_STATUS_TOKENS = ("working", "down", "offline", "online", "reachable", "unreachable",
+                  "broken", "disconnect", "connected", "connection", "responding",
+                  "outage", "reach", " out", "is it up", "still up", "still working", "alive")
+
+# Declarative down-assertions (Session 52) — a statement claiming an integration is down,
+# not a question. Paired with a named integration so "I'm down for that" style phrasings
+# don't trip it; and even a false positive only yields a grounded status check, never a write.
+_DOWN_CLAIM_PHRASES = ("is down", "'s down", "is offline", "is broken", "is out",
+                       "went down", "went out", "not working", "isn't working", "isnt working",
+                       "not updating", "isn't updating", "isnt updating", "not responding",
+                       "not syncing", "isn't syncing", "stopped working", "keeps failing",
+                       "is failing", "won't connect", "wont connect", "can't connect",
+                       "cant connect", "is unreachable", "not connecting", "is broken",
+                       "has gone down", "seems down", "looks down", "must be down")
+# Standalone strong down-words: paired with a named integration these fire even when an adverb
+# splits a phrase ("habitica is completely down", "totally broken"). Bare "down" is safe here
+# because a named integration is also required, and the worst case is a grounded status check.
+_DOWN_WORDS = ("down", "offline", "broken", "unreachable", "borked", "dead")
+
+async def handle_integration_status(user_id: int, user_message: str) -> str | None:
+    low = user_message.lower().strip()
+    named = [n for n in ("habitica", "fatsecret", "cephalopod") if n in low]
+    is_q = low.endswith("?") or low.startswith(("is ", "are ", "can ", "have ", "do ", "does ",
+                                                "how's", "hows", "did ", "you ", "your "))
+    status_word = any(t in low for t in _STATUS_TOKENS)
+    # the 20/08 phrasing: "I'm not seeing habitica updated" — a named integration + a
+    # "not updating/updated" complaint is a status concern, so live-check rather than guess.
+    neg_update = "updat" in low and any(x in low for x in ("not ", "n't", "nothing", "never", "isn"))
+    # Session 52 (Task 2): also catch a VOLUNTEERED down-CLAIM ("habitica is down", "fatsecret
+    # isn't working", "your connection to habitica is broken") — a statement, not a question,
+    # which the question-only gate above missed (the S42/S43 class). A named integration plus a
+    # down-assertion runs the same fresh live check. The Task-1 status line is the passive
+    # backstop for everything else; this is the active fresh-check path when she asserts it.
+    down_claim = bool(named) and (any(p in low for p in _DOWN_CLAIM_PHRASES)
+                                  or any(w in low for w in _DOWN_WORDS))
+    if not ((status_word and is_q) or (neg_update and named) or down_claim):
+        return None
+    targets = named
+    if not targets and status_word and any(g in low for g in ("integration", "everything", "all your",
+                                              "your systems", "all systems", "fully connected",
+                                              "your connection", "connected to everything")):
+        targets = ["habitica", "fatsecret"]   # the external WRITE integrations
+    if not targets:
+        return None
+    results = []
+    if "habitica" in targets:
+        from habitica import health_check
+        ok, detail = await health_check()
+        results.append(f"Habitica = {'OK' if ok else 'UNREACHABLE'} ({detail})")
+    if "fatsecret" in targets:
+        import fatsecret
+        results.append("FatSecret = " + ("configured/connected" if fatsecret.is_configured()
+                                         else "NOT configured"))
+    if "cephalopod" in targets:
+        results.append("Cephalopod = a separate system; from Telegram you cannot reach or query it "
+                       "(dashboard chat only), so you have no live status for it here")
+    ctx = ("[Integration status — LIVE check just now: " + "; ".join(results) +
+           ". Report exactly these results; do NOT call anything down/working beyond what's here.]")
+    logger.info(f"Integration status query — live check: {results}")
+    return await call_claude(user_id, f"{user_message} {ctx}", route_text=user_message)
+
+# ===========================================================================
+# LONG-TERM MEMORY (Session 48, 26/08/2026)
+# ---------------------------------------------------------------------------
+# Ghost had no durable per-user memory: a plain fact Lea stated lived only in the
+# Redis conversation cache (20 msgs / 24h) and, although written to `messages`, was
+# never read back — so it fell out of context within a day. (The apparent "recall"
+# seen while testing was an artefact of the GLOBAL recent_ghost_phrases anti-repeat
+# list echoing Ghost's own reply, not memory.) This adds a `memories` table + explicit
+# capture ("remember X") + always-injected recall, so remembered facts persist
+# indefinitely and are shown back to the model every turn.
+#
+# DATA BOUNDARY: memories are injected into the CLAUDE context, so financial content is
+# deliberately NOT captured here — a "remember I spent $X" message carries a finance
+# trigger and returns None from the handler, so it falls through to the Ollama-only
+# money path instead. Obvious secrets (passwords/PINs/card numbers) are refused too.
+# ===========================================================================
+
+_MEMORY_SCHEMA_READY = False
+
+async def _memory_conn():
+    return await asyncpg.connect(host=POSTGRES_HOST, port=5432, user="postgres",
+                                 password=POSTGRES_PASSWORD, database="ghost_db")
+
+async def _ensure_memory_schema(conn):
+    global _MEMORY_SCHEMA_READY
+    if _MEMORY_SCHEMA_READY:
+        return
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS memories (
+            id           SERIAL PRIMARY KEY,
+            user_id      BIGINT NOT NULL,
+            content      TEXT NOT NULL,
+            source       TEXT DEFAULT 'chat',
+            created_at   TIMESTAMPTZ DEFAULT now(),
+            last_used_at TIMESTAMPTZ,
+            active       BOOLEAN NOT NULL DEFAULT TRUE
+        )
+    """)
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_user_active ON memories (user_id, active)")
+    _MEMORY_SCHEMA_READY = True
+
+# Money words — a "remember ..." carrying any of these is NOT kept as a Claude-visible memory.
+# (S70: the conversational money pipeline was removed, but this guard stays — it keeps financial
+# mentions out of the durable Claude-context memory store regardless of how they arrive.)
+_MEMORY_FINANCE_TRIGGERS = (
+    "spent", "spend", "bought", "purchase", "cost", "price", "paid", "pay",
+    "budget", "money", "dollar", "dollars", "cash", "bank", "account", "invoice",
+    "receipt", "expense", "debt", "loan", "savings", "financial", "finance",
+    "credit", "transfer", "withdraw", "deposit", "overdraft", "owe", "owing",
+)
+_SENSITIVE_RE = re.compile(r"\b(password|passcode|pin|card\s*number|cvv|social security|ssn)\b", re.IGNORECASE)
+_LONG_DIGITS_RE = re.compile(r"\d[\d\s-]{5,}\d")  # 7+ digit runs = card/account/PIN-ish
+
+def _memory_looks_sensitive(text: str) -> bool:
+    return bool(_SENSITIVE_RE.search(text) or _LONG_DIGITS_RE.search(text))
+
+async def add_memory(user_id: int, content: str, source: str = "chat"):
+    content = (content or "").strip().rstrip(" .!,")
+    if not content:
+        return None
+    try:
+        conn = await _memory_conn()
+        try:
+            await _ensure_memory_schema(conn)
+            existing = await conn.fetch(
+                "SELECT content FROM memories WHERE user_id=$1 AND active=TRUE", user_id)
+            for e in existing:
+                if e["content"].strip().lower() == content.lower():
+                    return "dup"
+            row = await conn.fetchrow(
+                "INSERT INTO memories (user_id, content, source) VALUES ($1,$2,$3) RETURNING id",
+                user_id, content, source)
+            return row["id"]
+        finally:
+            await conn.close()
+    except Exception as e:
+        logger.error(f"add_memory error: {e}")
+        return None
+
+async def get_memories(user_id: int) -> list:
+    try:
+        conn = await _memory_conn()
+        try:
+            await _ensure_memory_schema(conn)
+            rows = await conn.fetch(
+                "SELECT id, content FROM memories WHERE user_id=$1 AND active=TRUE ORDER BY created_at", user_id)
+            return [dict(r) for r in rows]
+        finally:
+            await conn.close()
+    except Exception as e:
+        logger.error(f"get_memories error: {e}")
+        return []
+
+async def forget_memories(user_id: int, topic: str) -> list:
+    topic = (topic or "").strip()
+    if not topic:
+        return []
+    try:
+        conn = await _memory_conn()
+        try:
+            await _ensure_memory_schema(conn)
+            rows = await conn.fetch(
+                "SELECT id, content FROM memories WHERE user_id=$1 AND active=TRUE AND content ILIKE $2",
+                user_id, f"%{topic}%")
+            for r in rows:
+                await conn.execute("UPDATE memories SET active=FALSE WHERE id=$1", r["id"])
+            return [r["content"] for r in rows]
+        finally:
+            await conn.close()
+    except Exception as e:
+        logger.error(f"forget_memories error: {e}")
+        return []
+
+async def get_memory_context(user_id: int) -> str:
+    """Injected into every Claude turn so remembered facts are always in view."""
+    mems = await get_memories(user_id)
+    if not mems:
+        return ""
+    lines = "\n".join(f"- {m['content']}" for m in mems)
+    return (
+        f"LONG-TERM MEMORY — durable facts {USER_NAME} has told you to remember (persisted, not part "
+        f"of this chat's short history). Treat these as true and current, use them naturally when "
+        f"relevant, and never claim you don't remember something that appears here:\n" + lines
+    )
+
+_MEM_STORE_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:remember\s+that|remember|don'?t\s+forget\s+that|don'?t\s+forget|"
+    r"keep\s+in\s+mind\s+that|keep\s+in\s+mind|for\s+the\s+record|for\s+future\s+reference|"
+    r"note\s+to\s+self)[\s:,\-–—]+(.+)$", re.IGNORECASE | re.DOTALL)
+_MEM_FORGET_RE = re.compile(
+    r"^\s*(?:please\s+)?forget(?:\s+(?:that|about|what\s+i\s+said\s+about))?\s+(.+)$", re.IGNORECASE)
+_MEM_LIST_RE = re.compile(
+    r"(what\s+do\s+you\s+(?:remember|know)(?:\s+about\s+me)?|what\s+have\s+i\s+told\s+you\s+to\s+remember|"
+    r"list\s+(?:your|my)\s+memor|show\s+(?:me\s+)?(?:your|my)\s+memor)", re.IGNORECASE)
+
+async def handle_memory(user_id: int, user_message: str, source: str = "telegram") -> str | None:
+    """Explicit long-term memory: store / forget / list. Returns a reply, or None to let
+    the message route normally. Financial + sensitive content returns None (never stored),
+    so the money-stays-on-Ollama boundary is preserved."""
+    text = user_message.strip()
+    low = text.lower()
+
+    fm = _MEM_FORGET_RE.match(text)
+    if fm and not low.endswith("?"):
+        topic = fm.group(1).strip(" .!\"'")
+        removed = await forget_memories(user_id, topic)
+        if removed:
+            head = "; ".join(removed[:5])
+            more = f" (+{len(removed) - 5} more)" if len(removed) > 5 else ""
+            return f"Forgotten: {head}{more}."
+        return f"Nothing in my memory matched \"{topic}\"."
+
+    if _MEM_LIST_RE.search(low):
+        mems = await get_memories(user_id)
+        if not mems:
+            return "Nothing in long-term memory yet. Tell me to \"remember\" something and it sticks."
+        return "Here's what I've got stored:\n" + "\n".join(f"• {m['content']}" for m in mems)
+
+    sm = _MEM_STORE_RE.match(text)
+    if sm:
+        if low.endswith("?"):
+            return None  # "remember when ...?" is a question, not an instruction
+        content = sm.group(1).strip()
+        if content.lower().startswith(("to ", "to,")):
+            return None  # "remember to X" is a task/reminder, not a durable fact
+        if any(t in low for t in _MEMORY_FINANCE_TRIGGERS):
+            return None  # money stays on the Ollama-only path; never a Claude-visible memory
+        if _memory_looks_sensitive(content):
+            return ("I won't keep passwords, PINs or card numbers in memory — that shouldn't sit in a "
+                    "chat log. Give me the non-sensitive version if there is one.")
+        res = await add_memory(user_id, content, source)
+        if res == "dup":
+            return "Already had that one."
+        if res:
+            return "Got it, I'll remember that."
+        return "Tried to save that to memory but the write failed — nothing stored, check the logs."
+
+    return None
+
+
+async def handle_native_create(user_id: int, user_message: str) -> str | None:
+    """Ghost 2.0 (Phase 1) — native habit/todo CREATE, deterministic (no LLM).
+    S66: widened from the old "create habit: X" syntax to ordinary conversation ("add a habit for
+    stretching", "add my exercise habit and a todo to call the dentist", "track reading as a habit",
+    "add X to my todos") via native.detect_native_create — still NOT poaching Habitica's own openers
+    (those are guarded inside the detector), still failing CLOSED: a message that clearly signals
+    creation intent but has no parseable name gets an honest "didn't catch the name" reply with the
+    syntax that works, NEVER a silent fall-through to chat and never a fabricated confirmation.
+    Runs early (before the ambient water/meal/movement block) so a habit named after an ambient
+    signal ("drink water") can't score a real signal. Returns None only when there's no create intent
+    at all. Shared by Telegram AND dashboard chat (both go through process_message)."""
+    try:
+        det = native.detect_native_create(user_message)
+    except Exception as e:
+        logger.error(f"native detect_native_create error: {e}")
+        return None
+    if det is None:
+        return None   # no creation intent — fall through to the rest of the pipeline
+
+    made, failed = [], []
+    for c in det.get("creations", []):
+        try:
+            if c["kind"] == "habit":
+                hid = await native.create_habit(c["name"], field_type=c.get("field_type", "tickbox"), user_id=user_id)
+                (made if hid else failed).append(f"habit “{c['name']}”" + (f" ({native._field_label(c['field_type'])})" if hid else ""))
+            else:
+                tid = await native.create_todo(c["text"], priority=c.get("priority", "med"), user_id=user_id)
+                (made if tid else failed).append(f"to-do “{c['text']}”")
+        except Exception as e:
+            logger.error(f"native create write error ({c}): {e}")
+            failed.append(f"{c['kind']} “{c.get('name') or c.get('text')}”")
+
+    if made:
+        await _bust_native_cache()   # so a same-conversation "what habits do I have" sees the new item
+        msg = "Added " + _join_list(made) + " to Ghost — it's on the Habits page now."
+        if failed:
+            msg += " But I couldn't save " + _join_list(failed) + " — try again?"
+        return msg
+    if det.get("needs_name") or failed:
+        # creation intent detected but nothing usable parsed — ask, don't guess, don't stay silent
+        return ("I caught that you want to add a habit or a to-do, but I didn't get the name. "
+                "Try “add a habit for <thing>” or “add a to-do to <thing>” and I'll create it.")
+    return None
+
+
+def _join_list(items):
+    items = list(items)
+    if len(items) == 1:
+        return items[0]
+    if len(items) == 2:
+        return items[0] + " and " + items[1]
+    return ", ".join(items[:-1]) + " and " + items[-1]
+
+
 async def process_message(user_id: int, user_message: str, source: str = "telegram") -> str:
     """Full Ghost pipeline — confirmation flags, daily events, write commands, routing.
     Shared by the Telegram handler and the dashboard chat."""
     _msg_source.set(source)
+    # Session 41: stamp that Lea just interacted (any inbound, telegram or dashboard), so
+    # the scheduler can hold proactive nudges while she's mid-conversation — the 10:58
+    # "you've been glued to the chair" nudge fired 10 min into a live chat because nothing
+    # told the scheduler she was present. Set first, before any early-return handler.
+    try:
+        _ract = Redis(host=REDIS_HOST, port=6379, password=REDIS_PASSWORD, decode_responses=True)
+        await _ract.set("last_user_activity", datetime.now(LOCAL_TZ).timestamp(), ex=6 * 3600)
+        await _ract.aclose()
+    except Exception as e:
+        logger.error(f"last_user_activity set error: {e}")
     deletion_reply = await handle_voice_note_deletion(user_id, user_message)
     if deletion_reply is not None:
         await save_to_postgres(user_id, "user", user_message)
@@ -1423,6 +2922,15 @@ async def process_message(user_id: int, user_message: str, source: str = "telegr
         await save_to_postgres(user_id, "user", user_message)
         await save_to_postgres(user_id, "assistant", location_reply)
         return location_reply
+    # Session 52 (Task 4): a QUESTION about Cephalopod handoffs is answered deterministically
+    # (Telegram → the dashboard-only boundary; dashboard → a real ghost_handoffs read). Runs
+    # BEFORE the send handler so a question can never trip the send path.
+    cephalopod_query_reply = await handle_cephalopod_query(user_message, source)
+    if cephalopod_query_reply is not None:
+        await save_to_postgres(user_id, "user", user_message)
+        await save_to_postgres(user_id, "assistant", cephalopod_query_reply)
+        return cephalopod_query_reply
+
     cephalopod_reply = await handle_cephalopod_handoff(user_message, source)
     if cephalopod_reply is not None:
         await save_to_postgres(user_id, "user", user_message)
@@ -1441,6 +2949,84 @@ async def process_message(user_id: int, user_message: str, source: str = "telegr
         await save_to_postgres(user_id, "assistant", selfcode_reply)
         return selfcode_reply
 
+    # Session 52 (Task 3): a self-code STATUS question ("did you change/delete/apply my code?")
+    # gets a deterministic answer from code_proposals. After handle_selfcode_command so the exact
+    # apply/undo/reject commands keep priority (questions don't match those anyway).
+    selfcode_status_reply = await handle_selfcode_status_query(user_message)
+    if selfcode_status_reply is not None:
+        await save_to_postgres(user_id, "user", user_message)
+        await save_to_postgres(user_id, "assistant", selfcode_status_reply)
+        return selfcode_status_reply
+
+    # S80 phase 2: on-demand vault WRITE (append/create) with a same-turn confirmation handshake.
+    # Runs early so a pending "yes" commits before other routing can eat it, and so a write request
+    # never falls through to a generative reply. Chat-triggered only; nothing else reaches this.
+    vault_write_reply = await handle_vault_write(user_id, user_message, source)
+    if vault_write_reply is not None:
+        await save_to_postgres(user_id, "user", user_message)
+        await save_to_postgres(user_id, "assistant", vault_write_reply)
+        return vault_write_reply
+
+    # S80 phase 2: on-demand READ of a specific note (fuzzy name). After write so "add to note X"
+    # never trips the read path; before native/finance so a note read isn't misrouted.
+    vault_read_reply = await handle_vault_read(user_id, user_message)
+    if vault_read_reply is not None:
+        await save_to_postgres(user_id, "user", user_message)
+        await save_to_postgres(user_id, "assistant", vault_read_reply)
+        return vault_read_reply
+
+    # S82: Google Calendar write (create/move/delete) with the same confirm-first handshake as
+    # vault writes. Runs before the read so a pending "yes" commits, and before native/finance
+    # so "schedule X" / "move my appointment" never falls through to a generative reply. A
+    # calendar signal word is required to enter, so native/vault deletes aren't poached.
+    calendar_write_reply = await handle_calendar_write(user_id, user_message, source)
+    if calendar_write_reply is not None:
+        await save_to_postgres(user_id, "user", user_message)
+        await save_to_postgres(user_id, "assistant", calendar_write_reply)
+        return calendar_write_reply
+
+    # S82: on-demand calendar READ ("what's on tomorrow", "when's my next dentist"). After write
+    # so a write request isn't eaten by the read path. Read-only.
+    calendar_read_reply = await handle_calendar_read(user_id, user_message)
+    if calendar_read_reply is not None:
+        await save_to_postgres(user_id, "user", user_message)
+        await save_to_postgres(user_id, "assistant", calendar_read_reply)
+        return calendar_read_reply
+
+    # Ghost 2.0 (Phase 1) — native habit/todo CREATE. Deterministic, runs early so a habit
+    # named after an ambient signal ("drink water") doesn't trip the water/meal/movement
+    # recorders below. Distinct phrasing from Habitica's create triggers → parallel-safe.
+    native_create_reply = await handle_native_create(user_id, user_message)
+    if native_create_reply is not None:
+        await save_to_postgres(user_id, "user", user_message)
+        await save_to_postgres(user_id, "assistant", native_create_reply)
+        return native_create_reply
+
+    # Commitment tracking (session 19): resolve an open confirmation, or ask about a
+    # newly-spotted intention. Runs after selfcode so "apply this change" keeps
+    # priority; detect_commitment() itself defers to Habitica's task-capture phrasing.
+    commitment_reply = await handle_commitment(user_id, user_message, source)
+    if commitment_reply is not None:
+        await save_to_postgres(user_id, "user", user_message)
+        await save_to_postgres(user_id, "assistant", commitment_reply)
+        return commitment_reply
+
+    # Session 43: "is Habitica working?" etc. → real live check, grounded answer (never a guess).
+    status_reply = await handle_integration_status(user_id, user_message)
+    if status_reply is not None:
+        await save_to_postgres(user_id, "user", user_message)
+        await save_to_postgres(user_id, "assistant", status_reply)
+        return status_reply
+
+    # Long-term memory (Session 48): explicit "remember X" / "forget X" / "what do you
+    # remember". Runs before content/finance routing; financial + sensitive content is NOT
+    # stored (handle_memory returns None for those, so money still routes to Ollama).
+    memory_reply = await handle_memory(user_id, user_message, source)
+    if memory_reply is not None:
+        await save_to_postgres(user_id, "user", user_message)
+        await save_to_postgres(user_id, "assistant", memory_reply)
+        return memory_reply
+
     # Content-intent beats incidental keywords (session 16, task 2): an explicit
     # "blog post" / "for cephalopod" up front means the whole message is content —
     # route it to the blog pipeline before finance/food/anything else can grab it.
@@ -1456,79 +3042,107 @@ async def process_message(user_id: int, user_message: str, source: str = "telegr
     # (incident 21/07, message_log 108-112). Narrow trigger: the word fatsecret
     # plus a log-verb routes through the SAME pipeline voice notes use.
     _low = user_message.lower()
-    if "fatsecret" in _low and any(w in _low for w in ("log", "add", "record", "put")):
+    # Session 33 — typed food write-through. Broadened past the "fatsecret" keyword so a
+    # natural eat-statement logs too, routed through the SAME self-confirming pipeline
+    # voice notes use (it extracts items, logs, and reports exactly what landed — so a
+    # mis-extract is visible, not silent, and a non-food message extracts nothing and
+    # writes nothing). Questions are excluded (they want the board/food READ context).
+    _eat = any(w in _low for w in ("ate ", "i ate", "eaten", "eating", "had ", "having ", "grabbed", "snacked", "just had"))
+    _mealctx = any(w in _low for w in ("for breakfast", "for lunch", "for dinner", "for a snack", "for dessert"))
+    _logfood = (any(w in _low for w in ("log", "logged", "record", "track", "add"))
+                and any(w in _low for w in ("breakfast", "lunch", "dinner", "snack", "meal", "food", "calorie")))
+    _fatsecret_kw = "fatsecret" in _low and any(w in _low for w in ("log", "add", "record", "put"))
+    if (not _low.rstrip().endswith("?")) and (_fatsecret_kw or (_eat and _mealctx) or _logfood):
         import fatsecret
         if fatsecret.is_configured():
-            logger.info("Typed FatSecret log request — routing to food pipeline")
+            logger.info("Typed food statement — routing to FatSecret pipeline")
             return await process_food_note(user_id, user_message)
 
     water_triggers = ["drank", "drunk", "water", "hydrated", "bottle", "1.5l", "500ml"]
-    movement_triggers = ["walked", "moved", "exercise", "yoga", "gym", "weights", "run", "stretch"]
+    movement_triggers = ["walked", "walk", "moved", "exercise", "yoga", "gym", "weights", "run", "stretch"]
     drink_triggers = ["coffee", "tea", "juice", "smoothie", "drink", "drank", "water", "hydrated"]
     exercise_triggers = ["yoga", "gym", "weights", "workout", "worked out", "exercised", "went for a run"]
     message_lower_check = user_message.lower()
     now_mel = datetime.now(LOCAL_TZ)
     now_ts = now_mel.timestamp()
 
+    # Session 40: a "capture ..." message is an explicit filing instruction, NOT a
+    # behaviour log. Skip the passive water/movement/meal signal-recording below so
+    # "capture: the yoga note needs work" doesn't mark exercise done / score water /
+    # log a meal. Capture itself is still handled last, just before call_claude.
+    _is_capture = bool(_CAPTURE_TRIGGER_RE.match(user_message))
+    # Session 41: a retrospective question must not trigger the write-command paths below
+    # (vault-write / cascade / task-capture / habitica-create / completion) NOR the passive
+    # signal-recording — "have I had enough water?" must not score the Water habit, and
+    # "did I finish lunch?" must not log a meal. Combined with the S40 capture skip.
+    _retro = _is_retrospective_query(user_message)
+    _skip_passive = _is_capture or _retro
+
     seconds_to_midnight = int(((now_mel + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0) - now_mel).total_seconds())
+    water_now = (not _skip_passive) and any(t in message_lower_check for t in water_triggers)
     water_count = 0
     try:
         r = Redis(host=REDIS_HOST, port=6379, password=REDIS_PASSWORD, decode_responses=True)
-        if any(t in message_lower_check for t in water_triggers):
+        if water_now:
             await r.set("last_water_confirmed", now_ts, ex=86400)
             water_count = await r.incr("water_confirm_count")
             await r.expire("water_confirm_count", seconds_to_midnight)
-        if any(t in message_lower_check for t in movement_triggers):
+        if (not _skip_passive) and any(t in message_lower_check for t in movement_triggers):
             await r.set("last_movement_confirmed", now_ts, ex=86400)
-        if any(t in message_lower_check for t in drink_triggers):
+        if (not _skip_passive) and any(t in message_lower_check for t in drink_triggers):
             await r.set("last_drink_mentioned", now_ts, ex=7200)
-        if any(t in message_lower_check for t in exercise_triggers):
+        if (not _skip_passive) and any(t in message_lower_check for t in exercise_triggers):
             await r.set("exercise_confirmed", "1", ex=seconds_to_midnight)
         await r.aclose()
     except Exception as e:
         logger.error(f"Redis confirm flags error: {e}")
 
+    # Session 32: a water confirmation now scores the real "❤️‍🔥 Water" HABIT on
+    # Habitica. Before this NOTHING wrote water to Habitica — the habit existed on the
+    # board but nudges/logging only touched Redis + daily_events. Scored per confirmation
+    # (a habit is meant to be tapped each time). Errors log loudly, never swallowed
+    # (the app_usage silent-failure lesson); a False result means the habit wasn't found.
+    water_sync_failed = False   # Session 43: surface a genuine Habitica-sync failure to Lea once
+    if water_now:
+        try:
+            from habitica import log_habit
+            scored = await log_habit("Water", "up")
+            if scored:
+                logger.info("Water habit scored up on Habitica")
+                await _bust_board_cache()
+            else:
+                logger.error("Water habit score FAILED — 'Water' habit not found or API error")
+                water_sync_failed = True
+        except Exception as e:
+            logger.error(f"Water habit score error: {e}")
+            water_sync_failed = True
+
     # daily_events for multi-day pattern tracking
-    if any(t in message_lower_check for t in exercise_triggers):
+    if (not _skip_passive) and any(t in message_lower_check for t in exercise_triggers):
         await log_daily_event("exercise_done")
     if water_count >= 3:  # 3x 500ml bottles = 1.5L daily target
         await log_daily_event("water_target_hit")
     skip_words = ["skipped", "skipping", "didn't", "did not", "no time for"]
     eat_words = ["ate", "had", "having", "eating", "eaten", "finished", "grabbed", "made"]
     for meal in ("breakfast", "lunch", "dinner"):
-        if meal in message_lower_check:
+        if (not _skip_passive) and meal in message_lower_check:
             if any(w in message_lower_check for w in skip_words):
                 await log_daily_event(f"{meal}_skipped")
             elif any(w in message_lower_check for w in eat_words):
                 await log_daily_event(f"{meal}_done")
 
-    # Obsidian write commands
+    # S80: the old immediate (no-confirm) "add to note X" / "note that" vault-write block was
+    # removed — chat-triggered writes now go through handle_vault_write's confirm-first handshake
+    # earlier in this pipeline, so no write fires on an assumption and every write is logged.
     vault_write_ctx = None
-    try:
-        import re as _re
-        note_match = _re.search(r'add to note\s+([^:]+):\s*(.+)', user_message, _re.IGNORECASE | _re.DOTALL)
-        daily_match = None
-        for trig in ("note that", "log this", "write to my notes", "add to obsidian"):
-            idx = message_lower_check.find(trig)
-            if idx != -1:
-                daily_match = user_message[idx + len(trig):].strip(" :,-.!?")
-                break
-        if note_match:
-            path = append_to_note(note_match.group(1), note_match.group(2).strip())
-            vault_write_ctx = f"[Written to vault note {path}]" if path else f"[No vault note matching '{note_match.group(1).strip()}' found]"
-        elif daily_match:
-            path = append_to_daily_note(daily_match)
-            vault_write_ctx = f"[Noted in {path}]" if path else "[Vault write failed]"
-    except Exception as e:
-        logger.error(f"Vault write error: {e}")
 
-    # Stage-cascade unlocks (vault Goals specs): "finance stage 1 complete" → create stage 2 items.
+    # Stage-cascade unlocks (vault Area specs): "finance stage 1 complete" → create stage 2 items.
     # Explicit trigger by design — stage completion is a real-world milestone (loan paid off),
     # not something Ghost can infer from Habitica state.
     cascade_ctx = None
     try:
         import re as _re
-        cm = _re.search(r'\b(finance|creative)\s+stage\s+(\d)\s+(complete|done|finished)\b', message_lower_check)
+        cm = None if _retro else _re.search(r'\b(finance|creative)\s+stage\s+(\d)\s+(complete|done|finished)\b', message_lower_check)
         if cm:
             cascade, done_stage = cm.group(1), int(cm.group(2))
             next_stage = done_stage + 1
@@ -1576,7 +3190,7 @@ async def process_message(user_id: int, user_message: str, source: str = "telegr
         elif m_need and len(user_message) <= 80:
             # "need to" is common in venting — only treat short, imperative-shaped messages as tasks
             captured = m_need.group(1)
-        if captured:
+        if captured and not _retro:
             badge = None
             low = user_message.lower()
             if "urgent" in low or "today" in low:
@@ -1631,25 +3245,37 @@ async def process_message(user_id: int, user_message: str, source: str = "telegr
         m = message_lower_check
         def _after(trigger):
             return user_message[m.find(trigger) + len(trigger):].strip(" :,-.!?")
-        if "add to habitica" in m or m.startswith("add task"):
+        # S64: these Habitica write commands must be the OPENING intent of the message (after minor
+        # polite filler), not a phrase buried mid-sentence. The old checks matched the substring
+        # ANYWHERE — so "I added a habit on the new habit dashboard, can you see it?" hit "new habit"
+        # and created a stray "dashboard, can you see it" habit. Anchoring to the message start
+        # (like native's own creation regex) fixes the ambient false-positive. Shared by Telegram
+        # AND dashboard chat, since both route through this same process_message block.
+        def _opens_with(*phrases):
+            pat = (r'^\s*(?:(?:please|can you|could you|would you|pls|ok|okay|hey|hey ghost|ghost)[\s,]+)*'
+                   r'(?:' + '|'.join(re.escape(p) for p in phrases) + r')\b')
+            return re.match(pat, m) is not None
+        if _retro:
+            pass  # retrospective question ("did you add X to habitica?") must not create anything
+        elif _opens_with("add to habitica", "add task"):
             from habitica import create_todo
             text = _after("add to habitica") if "add to habitica" in m else _after("add task")
             if text:
                 ok = await create_todo(text)
                 habitica_ctx = f"[Habitica to-do '{text}' created]" if ok else "[Habitica to-do creation failed]"
-        elif "create daily" in m:
+        elif _opens_with("create daily"):
             from habitica import create_daily
             text = _after("create daily")
             if text:
                 ok = await create_daily(text)
                 habitica_ctx = f"[Habitica daily '{text}' created]" if ok else "[Habitica daily creation failed]"
-        elif "new habit" in m:
+        elif _opens_with("new habit"):
             from habitica import create_habit
             text = _after("new habit")
             if text:
                 ok = await create_habit(text)
                 habitica_ctx = f"[Habitica habit '{text}' created]" if ok else "[Habitica habit creation failed]"
-        elif "habit up" in m or "habit down" in m or m.startswith("scored"):
+        elif _opens_with("habit up", "habit down") or m.startswith("scored"):
             from habitica import log_habit
             if "habit down" in m:
                 direction, name = "down", _after("habit down")
@@ -1663,7 +3289,46 @@ async def process_message(user_id: int, user_message: str, source: str = "telegr
     except Exception as e:
         logger.error(f"Habitica write error: {e}")
 
-    completion_triggers = ["mark", "done", "finished", "complete", "ticked", "tick off", "mark off"]
+    # Ghost 2.0 (Phase 1) — native habit TICK / todo COMPLETE, deterministic, runs alongside
+    # Habitica. Placed AFTER the ambient water/movement/meal block (so Habitica's ambient paths
+    # still fire) and BEFORE the Habitica completion-by-name block below (so native items win for
+    # their own names). native.route_message only claims a message when an explicit action verb or
+    # +/- token matches exactly ONE native item; a bare ambient mention or no native match returns
+    # None, so this is invisible until Lea actually has native habits/todos. Parallel-run safe:
+    # nothing here touches habitica.py.
+    if not _retro:
+        try:
+            nres = await native.route_message(user_message, user_id)
+        except Exception as e:
+            logger.error(f"native action error: {e}")
+            nres = None
+        if nres and nres.get("action") == "ambiguous":
+            names = ", ".join(f"'{n}'" for n in nres["candidates"][:5])
+            return await call_claude(user_id, f"{user_message} [AMBIGUOUS native match: {names} — ask her which one to mark, do not guess or write anything]", route_text=user_message)
+        if nres and nres.get("action") == "tap_habit":
+            if nres.get("ok"):
+                await _bust_native_cache()
+                return await call_claude(user_id, f"{user_message} [Native habit '{nres['habit']}' tapped {nres['direction']}, streak now {nres['streak']} — confirm briefly what was logged]", route_text=user_message)
+            return await call_claude(user_id, f"{user_message} [Native habit tap FAILED — tell her it did not save, do not claim success]", route_text=user_message)
+        if nres and nres.get("action") == "complete_todo":
+            if nres.get("ok"):
+                await _bust_native_cache()
+                return await call_claude(user_id, f"{user_message} [Native to-do '{nres['text']}' completed — confirm briefly]", route_text=user_message)
+            return await call_claude(user_id, f"{user_message} [Native to-do completion FAILED — tell her it did not save]", route_text=user_message)
+        if nres and nres.get("action") == "list_edit":
+            # S79 Task 4: a swap/skip/remove actually mutated the native list (archive + optional add).
+            if nres.get("ok"):
+                await _bust_native_cache()
+                parts = []
+                if nres.get("removed"):
+                    parts.append(f"removed the {nres['removed'][0]} '{nres['removed'][1]}'")
+                if nres.get("added"):
+                    parts.append(f"added '{nres['added']}' to the to-dos")
+                return await call_claude(user_id, f"{user_message} [Native list updated: {' and '.join(parts)} — confirm briefly EXACTLY this and nothing else]", route_text=user_message)
+            return await call_claude(user_id, f"{user_message} [Native list edit: nothing on the native list matched '{nres.get('target','')}'; ask her which item she means, do NOT claim anything was changed]", route_text=user_message)
+
+    completion_triggers = ["mark", "done", "finished", "complete", "ticked", "tick off", "mark off",
+                           "did ", "did my", "went to", "smashed", "knocked out", "wrapped up"]
     message_lower = user_message.lower()
 
     if cascade_ctx:
@@ -1673,28 +3338,89 @@ async def process_message(user_id: int, user_message: str, source: str = "telegr
     if task_capture_ctx:
         return await call_claude(user_id, f"{user_message} {task_capture_ctx} [Confirm in one line: what was added and how it's tagged.]", route_text=user_message)
     if habitica_ctx:
+        await _bust_board_cache()
         return await call_claude(user_id, f"{user_message} {habitica_ctx} Please list this data clearly for {USER_NAME}.", route_text=user_message)
-    if any(trigger in message_lower for trigger in completion_triggers):
+    if (not _retro) and any(trigger in message_lower for trigger in completion_triggers):
         try:
-            from habitica import complete_task, get_dailies
+            # Session 33 — conversational write-through across the WHOLE board, not just
+            # dailies: match "done/finished X" against dailies, habits AND to-dos. Exact
+            # substring of the item name must appear in the message (guards against false
+            # writes); if the words hit >1 distinct item, ask which rather than guessing.
+            from habitica import complete_task, get_dailies, get_habits, get_todos, log_habit, complete_todo
             dailies = await get_dailies()
-            all_tasks = dailies["done"] + dailies["pending"]
-
-            matched_task = None
-            for task in all_tasks:
-                if task.lower() in message_lower:
-                    matched_task = task
-                    break
-
-            if matched_task:
-                success = await complete_task(matched_task)
-                if success:
-                    return await call_claude(user_id, f"{user_message} [Habitica task '{matched_task}' marked complete successfully]", route_text=user_message)
-                return await call_claude(user_id, f"{user_message} [Habitica task found but failed to mark complete]", route_text=user_message)
+            pending_dailies = dailies["pending"]
+            try:
+                habit_names = await get_habits()
+            except Exception:
+                habit_names = []
+            try:
+                todo_names = await get_todos()
+            except Exception:
+                todo_names = []
+            # candidate = (kind, name); only match reasonably specific names (>=4 chars)
+            candidates = ([("daily", t) for t in pending_dailies]
+                          + [("habit", t) for t in habit_names]
+                          + [("todo", t) for t in todo_names])
+            matches = []
+            for kind, name in candidates:
+                core = name.strip().lower()
+                # strip leading emoji/symbols so "❤️‍🔥 water" matches on "water"
+                core_words = core.split()
+                if core and core in message_lower and len(core) >= 4:
+                    matches.append((kind, name))
+                elif core_words and len(core_words[-1]) >= 4 and core_words[-1] in message_lower:
+                    matches.append((kind, name))
+            # de-dup by name
+            seen = set(); matches = [(k, n) for k, n in matches if not (n in seen or seen.add(n))]
+            if len(matches) > 1:
+                names = ", ".join(f"'{n.strip()}'" for _, n in matches[:5])
+                return await call_claude(user_id, f"{user_message} [AMBIGUOUS: that could mean {names} — ask her which one to mark, do not guess or write anything yet]", route_text=user_message)
+            if len(matches) == 1:
+                kind, name = matches[0]
+                if kind == "habit":
+                    ok = await log_habit(name.strip(), "up")
+                elif kind == "todo":
+                    ok = await complete_todo(name)
+                else:
+                    ok = await complete_task(name)
+                if ok:
+                    await _bust_board_cache()
+                    return await call_claude(user_id, f"{user_message} [Habitica {kind} '{name.strip()}' recorded (scored/completed) — confirm briefly what was logged]", route_text=user_message)
+                return await call_claude(user_id, f"{user_message} [Habitica {kind} '{name.strip()}' found but the write FAILED — tell her it didn't save, do not claim success]", route_text=user_message)
             return await call_claude(user_id, user_message)
         except Exception as e:
             logger.error(f"Habitica error: {e}")
             return await call_claude(user_id, user_message)
+
+    # Capture (Session 40) — LAST in precedence: only a message no earlier check
+    # claimed reaches here. A "capture ..." message files the rest to the routed
+    # project/goal note (or Inbox); everything else falls straight through to the
+    # normal chat/finance routing inside call_claude, unchanged.
+    capture_reply = await handle_capture(user_id, user_message)
+    if capture_reply is not None:
+        await save_to_postgres(user_id, "user", user_message)
+        await save_to_postgres(user_id, "assistant", capture_reply)
+        return capture_reply
+
+    # Session 43: if the Habitica half of a water confirmation genuinely failed, tell Lea
+    # ONCE — her water is noted locally (Redis is decoupled and already set above), but the
+    # Habitica habit tick didn't sync. Gated by a per-day Redis flag so a sustained outage
+    # doesn't re-nag on every confirmation, and it's framed as a status note, not a nudge.
+    if water_sync_failed:
+        try:
+            rr = Redis(host=REDIS_HOST, port=6379, password=REDIS_PASSWORD, decode_responses=True)
+            first = not await rr.get("water_sync_fail_notified")
+            if first:
+                await rr.set("water_sync_fail_notified", "1", ex=seconds_to_midnight)
+            await rr.aclose()
+            if first:
+                note = (" [STATUS NOTE — deliver ONCE, plainly, as a heads-up not a nudge and not a "
+                        "criticism of her: her water is noted locally, but the Habitica Water-habit tick "
+                        "did NOT sync just now (Habitica-side write issue). One line; do not repeat it in "
+                        "later turns.]")
+                return await call_claude(user_id, user_message + note, route_text=user_message)
+        except Exception as e:
+            logger.error(f"water sync-fail surface error: {e}")
     return await call_claude(user_id, user_message)
 
 # --- Voice notes: transcribe locally (faster-whisper, base/int8) and route by intent ---
@@ -1918,6 +3644,7 @@ def write_blog_draft(draft: dict, transcript: str) -> str:
         ]
         with open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(parts))
+        _preserve_vault_owner(path, None)  # always a new file → inherit vault owner, not root
         return os.path.relpath(path, VAULT_PATH)
     except OSError as e:
         logger.error(f"Blog write error: {e}")

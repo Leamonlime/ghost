@@ -1,0 +1,13 @@
+#!/bin/bash
+# Session 45: Ghost regression suite. Runs the real-integration tests INSIDE the bot pod
+# (where bot.py + deps + creds + the vault mount live), passing the on-disk dashboard.py md5
+# so the dashboard version check can confirm the deployed dashboard matches source. A
+# separate, deliberately-invoked command — NOT auto-run by ghost-deploy. Usage: ghost-test
+# (GHOST_TEST_ONLY=<1-8> ghost-test runs a single test, for meta-verification.)
+set -o pipefail
+BP=$(kubectl get pods -n ghost -l app=ghost-bot --field-selector=status.phase=Running \
+     --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1:].metadata.name}')
+if [ -z "$BP" ]; then echo "ghost-test: no running ghost-bot pod" >&2; exit 2; fi
+MD5=$(md5sum /home/USER/ghost/dashboard/dashboard.py | cut -d' ' -f1)
+kubectl exec -i "$BP" -n ghost -- env DASHBOARD_DISK_MD5="$MD5" GHOST_TEST_ONLY="${GHOST_TEST_ONLY:-}" \
+    python3 - < /home/USER/ghost/tests/run_all.py

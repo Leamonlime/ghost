@@ -105,7 +105,7 @@ async def get_today_summary() -> dict | None:
         if data is None:
             return None
         entries = _as_list((data.get("food_entries") or {}).get("food_entry"))
-        summary = {"calories": 0.0, "protein": 0.0, "carbs": 0.0, "fat": 0.0,
+        summary = {"calories": 0.0, "protein": 0.0, "carbs": 0.0, "fat": 0.0, "fiber": 0.0,
                    "entries": len(entries), "foods": [], "groups": []}
         groups = set()
         for e in entries:
@@ -113,6 +113,7 @@ async def get_today_summary() -> dict | None:
             summary["protein"] += _f(e.get("protein"))
             summary["carbs"] += _f(e.get("carbohydrate"))
             summary["fat"] += _f(e.get("fat"))
+            summary["fiber"] += _f(e.get("fiber"))  # Session 35: fiber for the command-center
             name = e.get("food_entry_name") or e.get("food_entry_description")
             if name:
                 summary["foods"].append(str(name))

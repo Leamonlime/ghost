@@ -17,13 +17,18 @@ DEST="$(cd "$(dirname "$0")" && pwd)/pages"
 
 PAGES=(ghost-dashboard-live.html ghost-bills.html ghost-horoscope.html ghost-tarot.html ghost-quest-log.html ghost-habits.html)
 
+# Shared assets to mirror alongside the pages (S83 added the PWA files for ghost-habits.html).
+ASSETS=(ghost-common.css manifest.webmanifest sw.js ghost-icon-192.png ghost-icon-512.png)
+
 mkdir -p "$DEST/assets"
 for p in "${PAGES[@]}"; do
   cp "$VAULT/$p" "$DEST/$p"
 done
-cp "$VAULT/assets/ghost-common.css" "$DEST/assets/ghost-common.css"
+for a in "${ASSETS[@]}"; do
+  [ -f "$VAULT/assets/$a" ] && cp "$VAULT/assets/$a" "$DEST/assets/$a"
+done
 
-echo "synced ${#PAGES[@]} pages + ghost-common.css"
+echo "synced ${#PAGES[@]} pages + ${#ASSETS[@]} assets"
 echo "  from: $VAULT"
 echo "  to:   $DEST"
 echo "Remember to 'git add dashboard/pages' and commit the mirror alongside the vault edits."

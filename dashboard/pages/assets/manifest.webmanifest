@@ -1,0 +1,16 @@
+{
+  "name": "Ghost — Habits & Todos",
+  "short_name": "Ghost Habits",
+  "id": "/ghost-habits.html",
+  "start_url": "/ghost-habits.html",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#050308",
+  "theme_color": "#150e14",
+  "description": "Ghost's native Habits & Todos board.",
+  "icons": [
+    { "src": "/assets/ghost-icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/assets/ghost-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

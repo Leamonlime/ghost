@@ -161,22 +161,27 @@
   <!-- S74: recurring-bill candidates detected from imported spending transactions -->
   <div class="table-card panel" id="candidatesCard" data-role="bill-candidates" style="display:none;">
     <div class="table-head">
+      <button class="ctoggle" data-sec="candidates" onclick="toggleSec('candidates')" style="background:transparent;border:none;color:var(--gc-ink-dim);cursor:pointer;font-size:13px;line-height:1;padding:0 6px 0 0;">▾</button>
       <span class="title">Detected recurring bills</span>
       <span class="spacer"></span>
       <span id="candCount" style="font-size:10.5px;color:var(--gc-ink-faint);"></span>
     </div>
-    <div style="font-size:10.5px;color:var(--gc-ink-faint);margin:2px 2px 8px;">Patterns that recur roughly monthly in your imported spending. Add the ones that are real bills — each is prefilled and fully editable first. Fixed vs usage-based is a suggestion; you decide.</div>
-    <div id="candidatesList"></div>
+    <div id="sec-candidates">
+      <div style="font-size:10.5px;color:var(--gc-ink-faint);margin:2px 2px 8px;">Patterns that recur roughly monthly in your imported spending. Add the ones that are real bills — each is prefilled and fully editable first. Fixed vs usage-based is a suggestion; you decide.</div>
+      <div id="candidatesList"></div>
+    </div>
   </div>
 
   <!-- table -->
   <div class="table-card panel">
     <div class="table-head">
+      <button class="ctoggle" data-sec="bills" onclick="toggleSec('bills')" style="background:transparent;border:none;color:var(--gc-ink-dim);cursor:pointer;font-size:13px;line-height:1;padding:0 6px 0 0;">▾</button>
       <span class="title">All bills</span>
       <span class="spacer"></span>
       <button class="btn" onclick="loadAll()">↻ Refresh</button>
       <button class="btn primary" onclick="openForm()">+ Add bill</button>
     </div>
+    <div id="sec-bills">
     <div class="scroll-x">
       <table id="billsTable">
         <thead>
@@ -196,18 +201,48 @@
       </table>
     </div>
     <div class="empty" id="emptyMsg" style="display:none;">No bills yet. Add your first recurring bill to start seeing the calculated views.</div>
+    </div><!-- /sec-bills -->
+  </div>
+
+  <!-- S87: Subscriptions — recurring-spend tracker beside Bills. -->
+  <div class="cards mini" style="margin-top:16px;">
+    <div class="card panel"><div class="lbl">Subscriptions / month</div><div class="big" id="cSubMonthly">—</div><div class="note" id="cSubNote"></div></div>
+    <div class="card panel"><div class="lbl">Per year</div><div class="big" id="cSubAnnual">—</div></div>
+    <div class="card panel"><div class="lbl">Next renewal</div><div class="big" id="cSubNext">—</div></div>
+  </div>
+  <div class="table-card panel">
+    <div class="table-head">
+      <button class="ctoggle" data-sec="subs" onclick="toggleSec('subs')" style="background:transparent;border:none;color:var(--gc-ink-dim);cursor:pointer;font-size:13px;line-height:1;padding:0 6px 0 0;">▾</button>
+      <span class="title">Subscriptions</span>
+      <span class="spacer"></span>
+      <button class="btn primary" onclick="openSubForm()">+ Add subscription</button>
+    </div>
+    <div id="sec-subs">
+    <div class="scroll-x">
+      <table id="subsTable">
+        <thead><tr>
+          <th>Name</th><th>Category</th><th class="num">Amount</th><th>Cycle</th>
+          <th>Next renewal</th><th class="num">Monthly</th><th></th><th></th>
+        </tr></thead>
+        <tbody id="subsBody" data-role="subscriptions-table"></tbody>
+      </table>
+    </div>
+    <div class="empty" id="subsEmpty" style="display:none;">No subscriptions yet. Add Netflix, Spotify, and the rest to track recurring spend.</div>
+    </div><!-- /sec-subs -->
   </div>
 
   <!-- Spending — Current picture. Upload a bank CSV -> deterministic parse/categorise/aggregate
        (Python, no model) -> LOCAL Ollama narration. Financial data never reaches the Claude API. -->
   <div class="table-card panel" id="spendingCard" data-role="spending-summary" style="margin-top:16px;">
     <div class="table-head">
+      <button class="ctoggle" data-sec="spending" onclick="toggleSec('spending')" style="background:transparent;border:none;color:var(--gc-ink-dim);cursor:pointer;font-size:13px;line-height:1;padding:0 6px 0 0;">▾</button>
       <span class="title">Current picture — spending</span>
       <span class="spacer"></span>
       <input type="file" id="csvFile" accept=".csv,text/csv" style="display:none" onchange="importCsv()">
       <button class="btn primary" id="importBtn" onclick="document.getElementById('csvFile').click()">⬆ Import bank CSV</button>
     </div>
     <div id="importMsg" style="font-size:11.5px;margin:6px 2px 0;min-height:1em;color:var(--gc-ink-dim);"></div>
+    <div id="sec-spending">
     <div class="empty" id="spendingEmpty">No spending imported yet. Import a bank CSV export to see your monthly picture.</div>
     <div id="spendingContent" style="display:none;padding:4px 2px 2px;">
       <div id="spendNarr" style="font-size:12.5px;line-height:1.55;color:var(--gc-ink);border-left:2px solid var(--bills-title);padding:6px 0 6px 12px;margin:4px 0 12px;white-space:pre-wrap;"></div>
@@ -220,14 +255,28 @@
            Default view = uncategorised only (the queue to clear); toggle to All to correct anything. -->
       <div id="reviewSection" data-role="spending-review" style="margin-top:18px;border-top:1px solid var(--gc-hairline);padding-top:12px;">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
+          <button class="ctoggle" data-sec="review" onclick="toggleSec('review')" style="background:transparent;border:none;color:var(--gc-ink-dim);cursor:pointer;font-size:13px;line-height:1;padding:0 6px 0 0;">▾</button>
           <span style="font-family:var(--gc-serif);font-variant:small-caps;letter-spacing:.06em;color:var(--bills-title);font-size:13px;">Categorise transactions</span>
           <span style="flex:1"></span>
           <button id="revFilterUncategorized" class="revfilter" onclick="setReviewFilter('uncategorized')">Uncategorised</button>
           <button id="revFilterAll" class="revfilter" onclick="setReviewFilter('all')">All transactions</button>
         </div>
+        <div id="sec-review">
         <div id="reviewHint" style="font-size:10.5px;color:var(--gc-ink-faint);margin-bottom:8px;"></div>
         <div id="merchantRules" style="margin-bottom:10px;"></div>
+        <!-- S87/S90: add / rename / merge / remove categories -->
+        <details id="manageCatsDetails" style="margin-bottom:10px;" ontoggle="try{localStorage.setItem('billsCollapse_managecats', this.open?'0':'1');}catch(e){}">
+          <summary style="cursor:pointer;font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--gc-ink-faint);">Manage categories</summary>
+          <div style="display:flex;gap:6px;align-items:center;margin:8px 0;">
+            <input id="newCatInput" placeholder="new category name" style="font-size:12px;padding:4px 8px;border:1px solid var(--gc-hairline);border-radius:5px;background:transparent;color:var(--gc-ink);width:170px;">
+            <button class="btn" style="font-size:11px;padding:4px 12px;" onclick="addCategory()">Add</button>
+            <span id="newCatStatus" style="font-size:10.5px;color:var(--gc-ink-faint);"></span>
+          </div>
+          <div style="font-size:9.5px;color:var(--gc-ink-faint);margin-bottom:6px;">Removing a category makes all of its transactions uncategorised again (back in the queue) and deletes any merchant rule pointing to it.</div>
+          <div id="catList"></div>
+        </details>
         <div id="reviewList"></div>
+        </div><!-- /sec-review -->
       </div>
 
       <!-- S73 keyword "Manage categories" — SUPERSEDED by S85's manual + merchant-rule model, which no
@@ -243,13 +292,14 @@
           <div style="font-size:10.5px;color:var(--gc-ink-faint);margin:4px 0 10px;">Edit the keyword rules that auto-categorise transactions. Changes write straight to <em>Ghost — Spending Categories.md</em> and re-derive all non-manual transactions live. Manually-fixed (sticky) transactions are unaffected.</div>
           <div id="mgrList"></div>
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:10px;padding-top:10px;border-top:1px dashed var(--gc-hairline);">
-            <input id="newCatName" placeholder="new category name" style="font-size:12px;padding:4px 8px;border:1px solid var(--gc-hairline);border-radius:5px;background:transparent;color:var(--gc-ink);width:170px;">
-            <button class="btn" style="font-size:11px;padding:4px 12px;" onclick="addCategory()">Add category</button>
-            <span id="newCatStatus" style="font-size:10.5px;color:var(--gc-ink-faint);"></span>
+            <input id="newCatNameLegacy" placeholder="new category name" style="font-size:12px;padding:4px 8px;border:1px solid var(--gc-hairline);border-radius:5px;background:transparent;color:var(--gc-ink);width:170px;">
+            <button class="btn" style="font-size:11px;padding:4px 12px;" onclick="addCategoryLegacy()">Add category</button>
+            <span id="newCatStatusLegacy" style="font-size:10.5px;color:var(--gc-ink-faint);"></span>
           </div>
         </div>
       </div>
-    </div>
+    </div><!-- /spendingContent -->
+    </div><!-- /sec-spending -->
   </div>
 </div>
 
@@ -280,6 +330,27 @@
   </div>
 </div>
 
+<!-- S87: subscription add/edit modal -->
+<div class="modal-bg" id="subModalBg" onclick="if(event.target===this)closeSubForm()">
+  <div class="modal panel">
+    <h2 id="subModalTitle">Add subscription</h2>
+    <div class="grid2">
+      <label class="f full">Name<input type="text" id="sName" placeholder="e.g. Netflix"></label>
+      <label class="f">Amount (AUD)<input type="number" id="sAmount" step="0.01" min="0" placeholder="0.00"></label>
+      <label class="f">Billing cycle<select id="sCycle"></select></label>
+      <label class="f">Next renewal (optional)<input type="date" id="sNext"></label>
+      <label class="f">Category (optional)<select id="sCategory"></select></label>
+      <div class="chk-row"><input type="checkbox" id="sActive" checked><label for="sActive">Active</label></div>
+      <label class="f full">Notes (optional)<textarea id="sNotes" rows="2"></textarea></label>
+    </div>
+    <div class="err" id="subFormErr"></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeSubForm()">Cancel</button>
+      <button class="btn primary" id="saveSubBtn" onclick="saveSub()">Save</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const DEMO = new URLSearchParams(location.search).get("demo") === "1";
 const Q = DEMO ? "?demo=1" : "";
@@ -294,6 +365,31 @@ const fmt = new Intl.NumberFormat("en-AU", {style:"currency", currency:"AUD"});
 function money(v){ return fmt.format(Number(v||0)); }
 function esc(s){ return (s==null?"":String(s)).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 function cap(s){ return s ? s[0].toUpperCase()+s.slice(1) : s; }
+
+// S90: collapsible sections, state remembered per-device in localStorage.
+function toggleSec(key){
+  const el = document.getElementById("sec-"+key); if(!el) return;
+  const nowCollapsed = el.style.display !== "none";
+  el.style.display = nowCollapsed ? "none" : "";
+  const btn = document.querySelector('.ctoggle[data-sec="'+key+'"]');
+  if(btn) btn.textContent = nowCollapsed ? "▸" : "▾";
+  try{ localStorage.setItem("billsCollapse_"+key, nowCollapsed ? "1" : "0"); }catch(e){}
+}
+function restoreSections(){
+  document.querySelectorAll('.ctoggle[data-sec]').forEach(btn=>{
+    const key = btn.getAttribute("data-sec");
+    let c=null; try{ c = localStorage.getItem("billsCollapse_"+key); }catch(e){}
+    const el = document.getElementById("sec-"+key);
+    if(c==="1" && el){ el.style.display="none"; btn.textContent="▸"; }
+    else if(btn){ btn.textContent="▾"; }
+  });
+  // "Manage categories" <details> — remember expanded state ('0' = expanded)
+  try{
+    const md = document.getElementById("manageCatsDetails");
+    if(md && localStorage.getItem("billsCollapse_managecats")==="0") md.open = true;
+  }catch(e){}
+}
+const CTOGGLE_STYLE = "background:transparent;border:none;color:var(--gc-ink-dim);cursor:pointer;font-size:13px;line-height:1;padding:0 6px 0 0;";
 
 function dueLabel(b){
   if(b.next_due==null) return {txt:"—", cls:""};
@@ -552,7 +648,12 @@ async function loadCandidates(){
           <span style="flex:1;min-width:140px;color:var(--gc-ink);font-size:12.5px;">${esc(c.suggested_name)} ${typeTag}
             <span style="font-size:9px;color:var(--gc-ink-faint);">${esc(catLabel(c.suggested_category))}</span></span>
           <span style="font-variant-numeric:tabular-nums;font-family:var(--gc-serif);font-size:13px;">${amtRange}</span>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:7px;">
           <button class="btn primary" style="font-size:11px;padding:4px 12px;" onclick="addCandidate(${i})">Add as bill…</button>
+          <button class="btn" style="font-size:11px;padding:4px 12px;" onclick="addCandidateAsSub(${i})">Add as subscription…</button>
+          <span style="flex:1"></span>
+          <button class="mini-btn del" style="font-size:11px;padding:4px 12px;" onclick="dismissCandidate(${i})">Remove</button>
         </div>
         <div style="font-size:10px;color:var(--gc-ink-faint);margin-top:4px;">${c.active_months} months, ~${c.median_gap_days}d apart&nbsp; &nbsp;${esc(candMonthsLabel(c.months))}</div>
       </div>`;
@@ -568,6 +669,24 @@ function addCandidate(i){
     day_of_month: c.suggested_day_of_month, category: c.suggested_category,
     bill_type: c.suggested_bill_type, source_pattern: c.source_pattern,
   });
+}
+function addCandidateAsSub(i){
+  const c = CANDIDATES[i]; if(!c) return;
+  // open the subscription form prefilled + linked; once saved, the candidate stops recurring.
+  openSubForm(null, {
+    name: c.suggested_name.replace(/\b\w/g,ch=>ch.toUpperCase()),
+    amount: c.suggested_amount, cycle: "monthly",
+    category: c.suggested_category, source_pattern: c.source_pattern,
+  });
+}
+async function dismissCandidate(i){
+  const c = CANDIDATES[i]; if(!c) return;
+  if(!confirm(`Remove “${c.suggested_name}” from detected bills? It won't be suggested again.`)) return;
+  try{
+    await fetch("/api/bills/candidates/dismiss",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({source_pattern:c.source_pattern})});
+    await loadCandidates();
+  }catch(e){ console.error("dismiss candidate failed", e); }
 }
 
 // --- Spending — Current picture (CSV import + Ollama narration) ---
@@ -618,8 +737,75 @@ var CATS = [], CATDETAILS = [], reviewFilter = "uncategorized", mgrOpen = false;
 async function loadCategories(){
   try{ const r = await (await fetch("/api/bills/categories",{cache:"no-store"})).json();
        if(r && r.ok){ CATS = r.categories||[]; CATDETAILS = r.details||[];
-         CATLABELS = {}; CATDETAILS.forEach(d=>{ CATLABELS[d.key]=d.label; }); } }
+         CATLABELS = {}; CATDETAILS.forEach(d=>{ CATLABELS[d.key]=d.label; }); renderCatList(); } }
   catch(e){ console.error("categories load failed", e); }
+}
+// S87/S90: add / rename / merge / remove categories + transfer flag (all DB-backed)
+function renderCatList(){
+  const box = document.getElementById("catList"); if(!box) return;
+  const mini = "font-size:10px;background:transparent;border:1px solid var(--gc-hairline);border-radius:4px;padding:1px 7px;cursor:pointer;";
+  box.innerHTML = (CATDETAILS||[]).map(d=>{
+    const others = (CATDETAILS||[]).filter(x=>x.key!==d.key);
+    const opts = `<option value="">merge into…</option>` + others.map(x=>`<option value="${esc(x.key)}">${esc(x.label)}</option>`).join("");
+    return `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:11px;color:var(--gc-ink-dim);padding:3px 0;border-bottom:1px solid var(--gc-hairline);">
+      <span style="flex:1;min-width:120px;color:var(--gc-ink);">${esc(d.label)}${d.exclude_from_totals?' <span title="excluded from income/spent totals" style="color:var(--gc-ink-faint);font-size:9px;">↔ transfer</span>':''}</span>
+      <label style="font-size:9.5px;color:var(--gc-ink-faint);display:flex;gap:3px;align-items:center;" title="own-account transfer — exclude from income/spent totals">
+        <input type="checkbox" ${d.exclude_from_totals?"checked":""} onchange="catToggleExclude('${esc(d.key)}',this.checked)">transfer</label>
+      <button onclick="catRename('${esc(d.key)}',${JSON.stringify(d.label)})" style="${mini}">rename</button>
+      <select id="merge_${esc(d.key)}" style="${mini}">${opts}</select>
+      <button onclick="catMerge('${esc(d.key)}',${JSON.stringify(d.label)})" style="${mini}">merge</button>
+      <button onclick="removeCategory('${esc(d.key)}',${JSON.stringify(d.label)})" style="${mini}color:#d97a8c;">remove</button>
+    </div>`;
+  }).join("");
+}
+async function catRename(key, label){
+  const nl = prompt(`Rename “${label}” to:`, label);
+  if(nl===null) return;
+  const v = nl.trim(); if(!v){ return; }
+  try{
+    const r = await (await fetch("/api/bills/category/rename",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({category:key,new_label:v})})).json();
+    if(!r.ok){ alert(r.error||"rename failed"); return; }
+    await loadCategories(); await loadMerchantRules(); await loadReview(); await loadSpending(); await loadSubscriptions();
+  }catch(e){ console.error("rename failed", e); }
+}
+async function catMerge(key, label){
+  const sel = document.getElementById("merge_"+key);
+  const target = sel ? sel.value : "";
+  if(!target){ alert("Pick a category to merge into first."); return; }
+  const tLabel = (CATDETAILS.find(x=>x.key===target)||{}).label || target;
+  if(!confirm(`Merge “${label}” into “${tLabel}”?\n\nEvery transaction and merchant rule in “${label}” moves to “${tLabel}”, then “${label}” is deleted. This preserves the categorisation but can't be easily undone.`)) return;
+  try{
+    const r = await (await fetch("/api/bills/category/merge",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({source:key,target})})).json();
+    if(!r.ok){ alert(r.error||"merge failed"); return; }
+    await loadCategories(); await loadMerchantRules(); await loadReview(); await loadSpending(); await loadSubscriptions();
+  }catch(e){ console.error("merge failed", e); }
+}
+async function catToggleExclude(key, checked){
+  try{
+    const r = await (await fetch("/api/bills/category/exclude",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({category:key,exclude:checked})})).json();
+    if(!r.ok){ alert(r.error||"failed"); await loadCategories(); return; }
+    await loadCategories(); await loadSpending();   // Transfers bucket in the summary changes
+  }catch(e){ console.error("exclude toggle failed", e); }
+}
+async function addCategory(){
+  const inp = document.getElementById("newCatInput"), st = document.getElementById("newCatStatus");
+  const name = (inp.value||"").trim();
+  if(!name){ st.style.color="#d97a8c"; st.textContent="type a name"; return; }
+  st.style.color="var(--gc-ink-dim)"; st.textContent="adding…";
+  try{
+    const r = await (await fetch("/api/bills/category/add",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})})).json();
+    if(!r.ok){ st.style.color="#d97a8c"; st.textContent=r.error||"failed"; return; }
+    st.style.color="var(--ok,#8fc9a3)"; st.textContent="added"; inp.value="";
+    await loadCategories(); await loadReview();
+  }catch(e){ st.style.color="#d97a8c"; st.textContent="error: "+e; }
+}
+async function removeCategory(key,label){
+  if(!confirm(`Remove category “${label}”? Every transaction in it becomes uncategorised (back in the queue) and any merchant rule for it is deleted.`)) return;
+  try{
+    const r = await (await fetch("/api/bills/category/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({category:key})})).json();
+    if(!r.ok){ alert(r.error||"failed"); return; }
+    await loadCategories(); await loadMerchantRules(); await loadReview(); await loadSpending();
+  }catch(e){ console.error("category remove failed", e); }
 }
 function catOptions(sel){
   // Fixed categories only — Uncategorised is the fallback state, never a pickable option.
@@ -717,6 +903,97 @@ async function removeMerchantRule(merchant){
   }catch(e){ console.error("rule remove failed", e); }
 }
 
+// --- S87: Subscriptions ---
+var SUBS = [];
+const SUB_CYCLES = ["weekly","fortnightly","monthly","quarterly","annual"];
+let editSubId = null;
+let subSourcePattern = null;   // S88: links a from-candidate subscription so the candidate disappears
+async function loadSubscriptions(){
+  try{
+    const r = await (await fetch("/api/subscriptions"+Q,{cache:"no-store"})).json();
+    if(!r || !r.ok) return;
+    SUBS = r.subscriptions||[];
+    const s = r.summary||{};
+    document.getElementById("cSubMonthly").textContent = DEMO ? (s.monthly_total||"—") : money(s.monthly_total||0);
+    document.getElementById("cSubAnnual").textContent  = DEMO ? (s.annual_total||"—")  : money(s.annual_total||0);
+    document.getElementById("cSubNote").textContent = (s.count_active||0)+" active"+((s.count_total||0)>(s.count_active||0)?(" · "+((s.count_total||0)-(s.count_active||0))+" paused"):"");
+    document.getElementById("cSubNext").textContent = s.next_renewal ? new Date(s.next_renewal+"T00:00:00").toLocaleDateString("en-AU",{day:"numeric",month:"short"}) : "—";
+    renderSubs();
+  }catch(e){ console.error("subs load failed", e); }
+}
+function renderSubs(){
+  const body = document.getElementById("subsBody"), empty = document.getElementById("subsEmpty");
+  if(!SUBS.length){ body.innerHTML=""; empty.style.display=""; return; }
+  empty.style.display="none";
+  body.innerHTML = SUBS.map(s=>{
+    const amt = DEMO ? s.amount : money(s.amount);
+    const meq = DEMO ? s.monthly_equiv : money(s.monthly_equiv);
+    const nr = s.next_renewal ? new Date(s.next_renewal+"T00:00:00").toLocaleDateString("en-AU",{day:"numeric",month:"short",year:"numeric"}) : "—";
+    return `<tr style="${s.active?'':'opacity:.5;'}">
+      <td>${esc(s.name)}${s.active?'':' <span style="font-size:9px;color:var(--gc-ink-faint);">paused</span>'}</td>
+      <td>${s.category?esc(catLabel(s.category)):'—'}</td>
+      <td class="num">${amt}</td>
+      <td>${esc(cap(s.cycle))}</td>
+      <td>${esc(nr)}</td>
+      <td class="num">${meq}</td>
+      <td><button class="mini-btn" onclick="openSubForm(${s.id})">Edit</button></td>
+      <td><button class="mini-btn del" onclick="delSub(${s.id})">Del</button></td>
+    </tr>`;
+  }).join("");
+}
+function subCatOptions(sel){
+  return `<option value="">— none —</option>` + (CATS||[]).map(k=>`<option value="${esc(k)}"${k===sel?" selected":""}>${esc(catLabel(k))}</option>`).join("");
+}
+function openSubForm(id, prefill){
+  editSubId = id || null;
+  const s = id ? SUBS.find(x=>x.id===id) : (prefill || null);
+  subSourcePattern = (!id && prefill) ? (prefill.source_pattern || null) : null;
+  document.getElementById("subModalTitle").textContent = id ? "Edit subscription" : "Add subscription";
+  document.getElementById("sName").value = s ? s.name : "";
+  document.getElementById("sAmount").value = (s && !DEMO && s.amount!=null) ? s.amount : "";
+  const cyc = s && s.cycle ? s.cycle : "monthly";
+  document.getElementById("sCycle").innerHTML = SUB_CYCLES.map(c=>`<option value="${c}"${c===cyc?" selected":""}>${cap(c)}</option>`).join("");
+  document.getElementById("sNext").value = (s && s.next_renewal) ? s.next_renewal : "";
+  document.getElementById("sCategory").innerHTML = subCatOptions(s?s.category:"");
+  document.getElementById("sActive").checked = s ? (s.active!==false) : true;
+  document.getElementById("sNotes").value = s ? (s.notes||"") : "";
+  document.getElementById("subFormErr").textContent = "";
+  document.getElementById("subModalBg").style.display = "flex";
+}
+function closeSubForm(){ document.getElementById("subModalBg").style.display = "none"; }
+async function saveSub(){
+  const err = document.getElementById("subFormErr");
+  const payload = {
+    name: document.getElementById("sName").value.trim(),
+    amount: parseFloat(document.getElementById("sAmount").value),
+    cycle: document.getElementById("sCycle").value,
+    next_renewal: document.getElementById("sNext").value || null,
+    category: document.getElementById("sCategory").value || null,
+    active: document.getElementById("sActive").checked,
+    notes: document.getElementById("sNotes").value.trim() || null,
+  };
+  if(subSourcePattern && !editSubId) payload.source_pattern = subSourcePattern;
+  if(!payload.name){ err.textContent="name is required"; return; }
+  if(isNaN(payload.amount)){ err.textContent="amount must be a number"; return; }
+  const url = editSubId ? "/api/subscriptions/"+editSubId : "/api/subscriptions";
+  const method = editSubId ? "PUT" : "POST";
+  try{
+    const r = await (await fetch(url,{method,headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)})).json();
+    if(!r.ok){ err.textContent=r.error||"failed"; return; }
+    const fromCandidate = !!(subSourcePattern && !editSubId);
+    closeSubForm(); await loadSubscriptions();
+    if(fromCandidate) await loadCandidates();   // the linked candidate now disappears
+  }catch(e){ err.textContent="error: "+e; }
+}
+async function delSub(id){
+  const s = SUBS.find(x=>x.id===id);
+  if(!confirm(`Delete subscription “${s?s.name:id}”?`)) return;
+  try{
+    await fetch("/api/subscriptions/"+id,{method:"DELETE"});
+    await loadSubscriptions();
+  }catch(e){ console.error("sub delete failed", e); }
+}
+
 // --- S73: Manage categories (edit the note's keyword rules) ---
 function toggleManager(){
   mgrOpen = !mgrOpen;
@@ -803,8 +1080,11 @@ async function deleteCategory(key, label){
     await afterRuleChange();
   }catch(e){ alert("error: "+e); }
 }
-async function addCategory(){
-  const inp = document.getElementById("newCatName"), out = document.getElementById("newCatStatus");
+// S88: legacy S73 keyword-manager add (hidden UI). Renamed from addCategory to stop it OVERRIDING
+// the S87 DB-backed addCategory above (JS keeps the last same-named function) — that name collision
+// was why "save new category" did nothing.
+async function addCategoryLegacy(){
+  const inp = document.getElementById("newCatNameLegacy"), out = document.getElementById("newCatStatusLegacy");
   const name = (inp.value||"").trim();
   if(!name){ out.style.color="#d97a8c"; out.textContent="type a name"; return; }
   out.style.color="var(--gc-ink-dim)"; out.textContent="adding…";
@@ -867,7 +1147,7 @@ async function importCsv(){
   }
 }
 
-document.addEventListener("keydown", e=>{ if(e.key==="Escape") closeForm(); });
+document.addEventListener("keydown", e=>{ if(e.key==="Escape"){ closeForm(); closeSubForm(); } });
 
 (async function init(){
   if(DEMO) document.getElementById("demoBadge").style.display="inline-block";
@@ -878,6 +1158,8 @@ document.addEventListener("keydown", e=>{ if(e.key==="Escape") closeForm(); });
   await loadCategories();
   await loadReview();
   await loadMerchantRules();
+  await loadSubscriptions();
+  restoreSections();   // S90: apply remembered collapse state
 })();
 </script>
 </body>

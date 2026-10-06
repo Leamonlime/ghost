@@ -109,6 +109,30 @@ spec:
               name: ghost-app-secrets
               key: fatsecret-access-secret
               optional: true
+        - name: GOOGLE_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: google-client-id
+              optional: true
+        - name: GOOGLE_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: google-client-secret
+              optional: true
+        - name: GOOGLE_REFRESH_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: google-refresh-token
+              optional: true
+        - name: GOOGLE_CALENDAR_ID
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: google-calendar-id
+              optional: true
         volumeMounts:
         - name: vault
           mountPath: /vault

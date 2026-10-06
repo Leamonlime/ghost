@@ -35,3 +35,6 @@ __pycache__/
 .idea/
 .vscode/
 *.swp
+
+# --- Session backups (e.g. bot.py.bak-s48-...) ---
+*.bak-*

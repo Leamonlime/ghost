@@ -1,5 +1,6 @@
 import asyncio
 import os
+import json
 import logging
 import random
 import re
@@ -25,13 +26,18 @@ POSTGRES_HOST = os.environ.get("POSTGRES_HOST", "ghost-postgres-postgresql.ghost
 POSTGRES_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "")
 USER_NAME = os.environ.get("GHOST_USER_NAME", "the user")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+# Ollama generate endpoint (money path). Was hardcoded here AND in bot.py (S27 diagnosed the
+# 10.42.0.1 node-gateway IP as load-bearing); moved to env S56 so a CNI/node change is one config
+# edit, not a silent break in two files. Same var name as bot.py = single source of truth (the env).
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://10.42.0.1:11434/api/generate")
 
 RECENT_PHRASES_KEY = "recent_ghost_phrases"
 
 SYSTEM_PROMPT = f"""You are Ghost. Dry, blunt, minimal. Dark humour when it fits.
-You are sending a proactive check-in message to {USER_NAME}. Keep it to one line unless told otherwise.
+You are sending a proactive check-in message. Keep it to one line unless told otherwise.
 You are a person who noticed something, not a timer going off. Vary how you open — never the same angle twice in a row.
 No filler words. Exclamation marks almost never.
+NAME: do NOT open with her name, and do not use it by default. There is one person you talk to and she knows who she is — opening with a name every time reads as a mechanical tic, not warmth. Use her name ONLY when it does real work: re-getting her attention after a long silence, or a moment that genuinely calls for it (something serious, a real celebration). Rare, not routine.
 NEVER INVENT: never state a specific event, place, trip, plan, purchase or fact that isn't in the data you were given. You know nothing about {USER_NAME}'s life beyond that data. If something's unclear, ask.
 A missing log is not a fact: never claim {USER_NAME} didn't do something because nothing was logged — say "nothing logged" or ask.
 Her routine (office days, meal times) is a typical pattern, not live knowledge — "usually", never "you are".
@@ -86,22 +92,27 @@ async def refresh_location_override():
 # edit the note, no redeploy. Informational only; never touches Habitica.
 # ---------------------------------------------------------------------------
 VAULT_PATH = os.environ.get("VAULT_PATH", "/vault")
-APP_CATEGORIES_REL = "Projects/Ghost/Ghost — App Categories.md"
+APP_CATEGORIES_REL = os.environ.get("GHOST_APP_CATEGORIES_REL", "Projects/Tech/Ghost/Ghost — App Categories.md")  # single-sourced via env S56 (was the same literal pasted here + in dashboard.py)
 APP_CATEGORIES_CACHE_SECONDS = 300
 _app_categories_cache = {"ts": 0.0, "data": None}
 
 def load_app_categories() -> dict:
-    """{'not_productive': set, 'streaming': set, 'excluded': set,
-    'wifi': {ssid_lower: 'home'|'work'}}. Unknown apps default to productive.
-    Placeholder SSIDs in <angle brackets> are ignored. Missing note = empty
-    config (everything productive, no wifi detection) — never an error state."""
+    """{'not_productive': set, 'streaming': set, 'excluded': set, 'ignored': set,
+    'display': {package_lower: friendly}, 'wifi': {ssid_lower: 'home'|'work'}}.
+    Unknown apps default to productive. Placeholder SSIDs in <angle brackets> are
+    ignored. Missing note = empty config (everything productive, no wifi
+    detection) — never an error state. The 'display' map doubles as the
+    categorisation join key (see categorize_app) so the note's short-name lists
+    resolve against full Android package names (Session 38 fix)."""
     now = time.monotonic()
     if _app_categories_cache["data"] is not None and \
             now - _app_categories_cache["ts"] < APP_CATEGORIES_CACHE_SECONDS:
         return _app_categories_cache["data"]
-    data = {"not_productive": set(), "streaming": set(), "excluded": set(), "wifi": {}}
+    data = {"not_productive": set(), "streaming": set(), "excluded": set(),
+            "ignored": set(), "display": {}, "wifi": {}}
     section_map = {"not productive": "not_productive", "streaming / neutral": "streaming",
-                   "excluded / unclassified": "excluded", "wi-fi networks": "wifi"}
+                   "excluded / unclassified": "excluded", "ignored": "ignored",
+                   "display names": "display", "wi-fi networks": "wifi"}
     try:
         text = open(os.path.join(VAULT_PATH, APP_CATEGORIES_REL), encoding="utf-8").read()
         section = None
@@ -114,6 +125,12 @@ def load_app_categories() -> dict:
                 m = re.match(r"\s*-\s*(home|work)\s*:\s*`([^`]+)`", line, re.I)
                 if m and not m.group(2).startswith("<"):
                     data["wifi"][m.group(2).strip().lower()] = m.group(1).lower()
+            elif section == "display":
+                # `package`: Friendly Name  -> the package->friendly map, reused as
+                # the categorisation join key (Session 38).
+                m = re.match(r"\s*-\s*`([^`]+)`\s*:\s*(.+?)\s*$", line)
+                if m:
+                    data["display"][m.group(1).strip().lower()] = m.group(2).strip()
             elif section:
                 m = re.match(r"\s*-\s*`([^`]+)`", line)
                 if m:
@@ -123,6 +140,36 @@ def load_app_categories() -> dict:
     _app_categories_cache["ts"] = now
     _app_categories_cache["data"] = data
     return data
+
+def _friendly_name(pkg: str, display: dict) -> str:
+    """Package -> friendly name via the note's display map, else a cleaned last
+    dotted segment (com.rotatelab.cubeblast -> 'Cubeblast'). Same resolution the
+    dashboard uses for display, reused here so display and categorisation share
+    one source and can't drift (Session 38)."""
+    p = pkg.lower()
+    if p in display:
+        return display[p]
+    seg = p.rsplit(".", 1)[-1] if "." in p else p
+    return seg.replace("_", " ").title() or pkg
+
+def categorize_app(pkg: str, cats: dict) -> str:
+    """'ignore' | 'excluded' | 'streaming' | 'not_productive' | 'productive'.
+    Matches on BOTH the raw package AND its friendly name (the display-map join
+    key), so a list entry written either as a short name ('instagram') or a full
+    package resolves against real app_usage data — fixes the Session-31 mismatch
+    where full packages never matched the short-name lists. Unknown -> productive."""
+    p = pkg.lower()
+    name = _friendly_name(pkg, cats.get("display", {})).lower()
+    keys = {p, name}
+    if keys & cats.get("ignored", set()):
+        return "ignore"
+    if keys & cats["excluded"]:
+        return "excluded"
+    if keys & cats["streaming"]:
+        return "streaming"
+    if keys & cats["not_productive"]:
+        return "not_productive"
+    return "productive"
 
 _wifi_location = None  # 'home' | 'work' | 'neither' | None (no wifi signal)
 
@@ -160,13 +207,13 @@ def time_context() -> str:
         part = "late evening"
     loc, source = location_today()
     if source == "manual":
-        location = f"{USER_NAME} said she's {'at the office' if loc == 'office' else 'working from home'} today (her word, today only)"
+        location = f"she said she's {'at the office' if loc == 'office' else 'working from home'} today (her word, today only)"
     elif source == "wifi":
         location = f"her phone is on the {'work' if loc == 'office' else 'home'} wifi (auto-detected, current)"
     elif loc == "office":
-        location = f"usually an office day for {USER_NAME} (Mon-Wed pattern, not confirmed)"
+        location = "usually an office day (Mon-Wed pattern, not confirmed)"
     elif loc == "wfh":
-        location = f"usually a WFH day for {USER_NAME} (Thu-Fri pattern, not confirmed)"
+        location = "usually a WFH day (Thu-Fri pattern, not confirmed)"
     else:
         location = "It's the weekend"
     return f"It is {part}, {clock} on {day} local time. {location}."
@@ -184,6 +231,29 @@ async def log_message(source: str, msg_type: str, content: str):
     except Exception as e:
         logger.error(f"message_log error: {e}")
 
+NTFY_URL = os.environ.get("NTFY_URL", "")          # internal svc, e.g. http://ntfy.ghost.svc.cluster.local
+NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
+NTFY_TOKEN = os.environ.get("NTFY_TOKEN", "")
+_NTFY_TITLES = {"briefing": "Ghost — morning", "summary": "Ghost — day's end",
+                "nudge": "Ghost", "alert": "Ghost — heads up"}
+
+
+async def publish_ntfy(message: str, msg_type: str = "nudge"):
+    """S92: push Ghost's proactive message to Lea's private ntfy topic (app push), IN ADDITION to
+    Telegram for now. Best-effort — a push failure never blocks the Telegram send. No-op if unset."""
+    if not (NTFY_URL and NTFY_TOPIC and NTFY_TOKEN):
+        return
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.post(f"{NTFY_URL.rstrip('/')}/{NTFY_TOPIC}", content=message.encode("utf-8"),
+                                  headers={"Authorization": f"Bearer {NTFY_TOKEN}",
+                                           "Title": _NTFY_TITLES.get(msg_type, "Ghost")}, timeout=10.0)
+        if r.status_code != 200:
+            logger.error(f"ntfy publish FAILED ({r.status_code}): {r.text[:160]}")
+    except Exception as e:
+        logger.error(f"ntfy publish error: {e}")
+
+
 async def send_telegram(message: str, msg_type: str = "nudge"):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     async with httpx.AsyncClient() as client:
@@ -195,6 +265,7 @@ async def send_telegram(message: str, msg_type: str = "nudge"):
             logger.error(f"Telegram send FAILED ({response.status_code}): {response.text[:200]}")
         else:
             await log_message("scheduler", msg_type, message)
+    await publish_ntfy(message, msg_type)   # S92: also push to the app (best-effort)
 
 async def get_redis():
     return Redis(host=REDIS_HOST, port=6379, password=REDIS_PASSWORD, decode_responses=True)
@@ -254,14 +325,18 @@ async def call_ollama(prompt: str) -> str:
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                "http://10.42.0.1:11434/api/generate",
+                OLLAMA_URL,
                 json={
-                    "model": "llama3.2",
+                    # Session 27 (30/07/2026): CPU-only + 1b model — see bot.py
+                    # call_ollama. The 940MX/NVK-Vulkan offload was ~14-16x slower
+                    # than CPU-only on this host; num_gpu:0 forces CPU-only.
+                    "model": "llama3.2:1b",
                     "prompt": prompt,
                     "stream": False,
                     "keep_alive": "1h",
                     "options": {
                         "temperature": 0.7,
+                        "num_gpu": 0,
                         "num_predict": 80
                     }
                 },
@@ -274,71 +349,31 @@ async def call_ollama(prompt: str) -> str:
         return ""
 
 # ---------------------------------------------------------------------------
-# Tier-2 nudge engine (water, meals — and debt if a debt nudge ever exists).
-# Session 15, tasks 1/2/5. Before this session NO resend-if-ignored escalation
-# existed anywhere (the "every 10 minutes" ladder was spec, never code) — this
-# builds it, at the 25-minute interval the user chose. Tier 1 (Habitica to-dos) has
-# no scheduled nudges today; the coordinator foregrounds a 'lead' item if one
-# is ever added, so tier-1-first consolidation is structural, not aspirational.
-#
-# Shape per tick: collectors return due items instead of sending; the
-# coordinator sends ONE message covering everything due (task 5), tracks
-# per-category escalation state in Redis (escalation:{category} JSON), and
-# resends at TIER2_RESEND_SECONDS with the tone ladder gentle → firmer → crude.
-# Session 17 retune: every stage asks rather than asserts, crude fires at most
-# CRUDE_CAP times then drops to the gentle stage-4 wind-down (still on the
-# resend cadence), and a 75+ min phone-inactivity gap freezes the whole ladder,
-# resuming at gentle. Angle rotation (NUDGE_ANGLES) keeps repeats from rhyming.
+# Daily anchors (Session 79 — messaging cadence v2). The old per-category nudge sprawl
+# (independent water/breakfast/lunch/dinner/movement timers, tier-1 focus-todo + dailies
+# nudges, board review) and its gentle->firmer->crude->dormant escalation ladder are
+# RETIRED. Ghost's proactive job is now three structured, two-way touchpoints a day —
+# morning debrief, lunch check-in, dinner catch-up+summary — plus at most ONE follow-up
+# per anchor if it goes unanswered. Quiet hours (10pm-6:30am, is_quiet_hours) still
+# suppress everything. Lea replies via Telegram at any point (handled in
+# bot.process_message: done / swap / edit -> native items), so the anchors only SEND;
+# reply-detection is `last_user_activity` (stamped by the bot on every inbound message)
+# vs the anchor's send time. Voice: sharp, sassy assistant who's got her back — dry,
+# blunt, dark humour where it fits, never exclamation marks, never motivational-poster,
+# never claims an unconfirmed action.
 # ---------------------------------------------------------------------------
-TIER2_RESEND_SECONDS = 25 * 60
-WATER_ESCALATION_TTL = 9000  # stop resending once the next regular cycle is near
-CRUDE_CAP = 2  # session 17 task 2: crude fires at most twice per escalation, then stage 4
-INACTIVITY_FREEZE_SECONDS = 75 * 60  # no phone-activity signal for this long -> freeze escalation
+# One follow-up if an anchor goes unanswered this long, then silence until the next
+# anchor (whose opener acknowledges the quiet). Single named constant, easy to retune.
+SILENCE_FOLLOWUP_SECONDS = 2 * 3600
+# Morning debrief fires on the first phone-unlock of the day (Task 5 webhook signal);
+# this is the fallback send time if no unlock signal has landed, so a Tasker/network
+# hiccup never means total morning silence.
+MORNING_FALLBACK_H, MORNING_FALLBACK_M = 7, 30
+LUNCH_ANCHOR_H, LUNCH_ANCHOR_M = 12, 30       # lunchtime progress check-in
+DINNER_ANCHOR_H, DINNER_ANCHOR_M = 18, 30     # dinner catch-up; summary follows once she replies
 
 MEAL_WINDOWS = {"breakfast": (7, 9), "lunch": (12, 14), "dinner": (18, 20)}
 
-# Every stage asks, never asserts: a missing log is not knowledge that she hasn't
-# done the thing, so the nudge is a question about whether it happened — the
-# escalation is in tone, not in certainty.
-STAGE_TONES = {
-    1: ("First nudge. Dry, one line, gentle by Ghost standards. Phrase it as a question "
-        "('had water yet?', 'have you eaten?') — never a claim that she hasn't."),
-    2: ("Second ask — no response to the first. Firmer and more direct, still one line, "
-        "no lecture, and still a QUESTION about whether it's happened, not a statement that it hasn't."),
-    3: ("She has not responded to repeated asks. Go genuinely crude and loud — "
-        "swearing is allowed and expected here, affectionate-abusive best-friend register. "
-        "Calibration for intensity (do NOT reuse the line itself): 'GO DRINK SOME WATER YOU "
-        "THIRSTY BITCH'. All-caps is fine. For THIS message the no-exclamation-marks rule is "
-        "suspended. One line. Crude about the nagging, never about her worth — and the core is "
-        "still asking her to do/confirm the thing, not declaring what she has or hasn't done."),
-    4: ("The crude stage already made its point twice and is spent — do NOT go loud again. "
-        "Noticeably gentle now: level, kind, one plain line, a simple question with no edge, "
-        "no sarcasm, no reference to the earlier yelling."),
-}
-
-# Rotate the ANGLE on every repeat ask so resends don't rhyme (same fix the
-# scrolling interrupts got in session 12 — the session 16 regression showed the
-# tier-2 ladder needs it too: three near-identical 'X IN THE FUCKING MORNING'
-# lines in one morning came from the prompt feeding the model the ask count).
-NUDGE_ANGLES = [
-    "how small and quick the thing itself is",
-    "what she gets out of it right now — energy, headache, focus",
-    "pure best-friend exasperation, no reasoning offered at all",
-    "flat and practical, like ticking a checklist item",
-    "one fresh absurd image, no recycled jokes",
-]
-NUDGE_BANS = ("Do NOT state the clock time or complain about what time it is, do NOT count or "
-              "mention how many times you've asked, and do not reuse the opening shape of any "
-              "recent Ghost line.")
-
-async def _escalation_get(r, category: str):
-    import json as _json
-    raw = await r.get(f"escalation:{category}")
-    return _json.loads(raw) if raw else None
-
-async def _escalation_set(r, category: str, state: dict, ttl: int):
-    import json as _json
-    await r.set(f"escalation:{category}", _json.dumps(state), ex=ttl)
 
 async def _meal_logged(meal: str):
     """True if the meal is verifiably logged (FatSecret or a daily_events row)."""
@@ -362,503 +397,513 @@ async def _meal_logged(meal: str):
         logger.error(f"meal daily_events check error: {e}")
         return False
 
-async def collect_water_nudge(r, now: float):
-    """Initial water nudge, same gating as the old check_water. Returns item or None."""
-    if await _escalation_get(r, "water"):
-        return None  # an active escalation owns the resend cadence
-    next_due = await r.get("water_next_due")
-    if next_due and now < float(next_due):
-        return None
-    interval = random.uniform(9000, 12600)  # 2.5-3.5 hours, unchanged
-    last_confirmed = await r.get("last_water_confirmed")
-    last_drink = await r.get("last_drink_mentioned")
-    if (last_confirmed and (now - float(last_confirmed)) < 10800) or \
-       (last_drink and (now - float(last_drink)) < 3600):
-        await r.set("water_next_due", now + interval, ex=86400)
-        logger.info("Water nudge skipped — recent drink/confirmation")
-        return None
-    nudge_count = int(await r.get("water_nudge_count") or 0)
-    return {"category": "water", "stage": 1, "tier": 2,
-            "desc": f"water (target 1.5L, nudge {nudge_count + 1} today)",
-            "interval": interval, "nudge_count": nudge_count}
 
-async def collect_meal_nudge(r, now_dt):
-    """Initial meal reminder, same gating as the old check_meals. Returns item or None."""
-    hour = now_dt.hour
-    meal = next((m for m, (a, b) in MEAL_WINDOWS.items() if a <= hour < b), None)
-    if meal is None:
-        return None
-    if await r.get(f"{meal}_reminded"):
-        return None
-    if await _meal_logged(meal):
-        await r.set(f"{meal}_reminded", "1", ex=seconds_to_midnight())
-        logger.info(f"{meal} reminder skipped — already logged")
-        return None
-    return {"category": meal, "stage": 1, "tier": 2,
-            "desc": f"{meal} (window open, nothing logged)"}
 
-async def _phone_activity_age(r, now: float):
-    """Seconds since the last Tasker-webhook signal, or None if no signal has ever
-    been recorded. Today the only feeder is the scrolling webhook (there is no
-    movement-detection webhook — checked, only /webhook/scrolling exists); task 3's
-    screen-unlock events make this signal much denser."""
-    last = await r.get("last_phone_activity")
-    return (now - float(last)) if last else None
 
-# ---------------------------------------------------------------------------
-# Tier 1: Habitica to-dos with the 'focus' (urgent/today) badge — session 17
-# task 4. Reality check first (grep, 21/07): before this, scheduler.py touched
-# Habitica in exactly three places — morning briefing read, evening summary
-# read, FatSecret 'Track food' auto-complete. The Integration Map's per-daily
-# reminder column and tier-1 to-do nudging existed NOWHERE. This builds both.
-# One escalation arc per day; escalates/freezes/caps through the same engine.
-# ---------------------------------------------------------------------------
-TODO_NUDGE_START_HOUR = 10
-TODO_NUDGE_END_HOUR = 18
-TODO_ESCALATION_TTL = 9000
-
-async def collect_todo_nudge(r, now_dt):
-    """First tier-1 nudge of the day if any focus-badged to-do is open."""
-    if not (TODO_NUDGE_START_HOUR <= now_dt.hour < TODO_NUDGE_END_HOUR):
-        return None
-    if await _escalation_get(r, "todo") or await r.get("todo_nudged"):
-        return None
+async def expire_commitments():
+    """Session 19: commitments must not pile up. Unanswered confirmations die after
+    an hour (she ignored the question — asking again would be nagging); tracked
+    commitments go stale after their window. Pure bookkeeping, sends nothing."""
     try:
-        from habitica import get_focus_todos
-        todos = await get_focus_todos()
+        conn = await asyncpg.connect(host=POSTGRES_HOST, port=5432, user="postgres",
+                                     password=POSTGRES_PASSWORD, database="ghost_db")
+        try:
+            result = await conn.execute(
+                "UPDATE commitments SET status = 'expired' "
+                "WHERE status IN ('pending_confirmation', 'active') AND expires_at <= NOW()")
+            n = int(result.split()[-1]) if result.split()[-1].isdigit() else 0
+            if n:
+                logger.info(f"Expired {n} stale commitment(s)")
+        finally:
+            await conn.close()
     except Exception as e:
-        logger.error(f"focus todo fetch error: {e}")
-        return None
-    if not todos:
-        return None
-    names = ", ".join(f"'{t}'" for t in todos[:3])
-    count = f"{len(todos)} to-dos" if len(todos) > 3 else "to-dos"
-    return {"category": "todo", "stage": 1, "tier": 1, "todos": todos,
-            "desc": f"her own urgent-flagged {count} ({names}{', …' if len(todos) > 3 else ''})"}
+        logger.error(f"Commitment expiry error: {e}")
 
-# Dailies reminders — the Integration Map's timing intent applied to the dailies
-# that ACTUALLY exist. Reality check 21/07 went deeper than expected: the map's
-# granular dailies (Film content, Yoga M/W/F, Weights, Long yoga flow, Wellness
-# protocols, Evening skincare, Track habits, Track food) do not exist in Habitica
-# anymore — the live board has 7 grouped dailies (Morning/Evening Routine,
-# Exercise, three meals, Bedtime). Rows are matched against the REAL names;
-# the map's yoga/weights "by 7pm" timing maps to Exercise, its evening-group
-# rows map to Evening Routine. One reminder per row per day, NO escalation
-# (only water/meals/to-dos escalate; a 9pm routine ladder helps nobody).
-# Not built: meal dailies (the tier-2 meal engine owns meal reminders),
-# Morning Routine (the 7am briefing already lists pending dailies), Bedtime
-# (check_wind_down owns it via the activity signal).
-DAILY_REMINDERS = [
-    # (key/name-substring, weekdays or None=all, (start_h, start_m), end_h, instruction)
-    ("exercise", None, (19, 0), 21,
-     "ask whether exercise happened today — her Habitica Exercise daily is still open"),
-    ("evening routine", None, (20, 0), 22,
-     "one grouped question — ask whether the evening routine is done (it's one daily "
-     "covering wellness protocols, skincare, tracking) — never item by item"),
-]
-
-async def collect_daily_reminders(r, now_dt):
-    """Due, unflagged Dailies-map reminders whose Habitica daily is still pending.
-    One get_dailies() call covers every due row; a daily that's already done (or
-    not present) is flagged silently so it isn't re-checked all window."""
-    due = []
-    for key, weekdays, (sh, sm), end_h, instruction in DAILY_REMINDERS:
-        if weekdays is not None and now_dt.weekday() not in weekdays:
-            continue
-        if not ((now_dt.hour, now_dt.minute) >= (sh, sm) and now_dt.hour < end_h):
-            continue
-        if await r.get(f"daily_reminded:{key}"):
-            continue
-        due.append((key, instruction))
-    if not due:
+async def get_active_commitments() -> list:
+    """Active, unexpired commitments for the evening summary."""
+    try:
+        conn = await asyncpg.connect(host=POSTGRES_HOST, port=5432, user="postgres",
+                                     password=POSTGRES_PASSWORD, database="ghost_db")
+        try:
+            rows = await conn.fetch(
+                "SELECT text FROM commitments WHERE status = 'active' AND expires_at > NOW() "
+                "ORDER BY confirmed_at")
+            return [r["text"] for r in rows]
+        finally:
+            await conn.close()
+    except Exception as e:
+        logger.error(f"Active commitments read error: {e}")
         return []
+
+
+
+# Session 41: don't fire proactive nudges while Lea is actively in conversation with
+# Ghost. The bot/dashboard stamp `last_user_activity` on every inbound message; if she
+# messaged within this window she is present and engaged, so a "you've gone quiet / glued
+# to the chair" nudge (the 10:58 incident, where a fresh movement nudge fired 10 min into
+# a live chat) is exactly wrong. Missing key = no recent message on record = normal
+# behaviour (absence is not evidence she is away).
+
+
+
+
+
+
+
+# Session 33 — full-board awareness with a NON-overwhelming cadence. The other
+# collectors only ever cover water/meals/movement/focus-todos/exercise+evening dailies.
+# This surfaces ONE rotating item from the rest of the board per day, so nothing is
+# permanently invisible, without dumping the whole board into a nudge. Ask-don't-assert,
+# no escalation ladder, and it flows through the same consolidation + min-gap as the rest.
+# Dailies already owned by other collectors / daily anchors — never double-nudge them.
+
+
+
+# ---------------------------------------------------------------------------
+# Goal next-actions for the morning briefing (Session 38). Live vault read every
+# call, NO cache — the briefing must always reflect the current frontmatter, not
+# a stale copy. Mirrors the set Home.md's Areas.base shows: every note under
+# Areas/ whose YAML frontmatter carries both `area` and `next_action`. An
+# unreadable vault or a note missing next_action just yields fewer rows, never a
+# fabricated one (anti-fabrication: a missing field is not evidence of anything).
+# ---------------------------------------------------------------------------
+AREAS_DIR_REL = "Areas"   # folder Goals/->Areas/ (rename S52, 31/08); fallback below keeps it working either way
+
+def get_goal_next_actions() -> list:
+    """Return [(area, next_action), ...] read live from the Areas-folder frontmatter,
+    sorted by area. Read fresh every call — never cached. Folder-tolerant: falls back to the
+    old Goals/ path if Areas/ isn't present yet, so a deploy either side of the rename works."""
+    out = []
+    root = os.path.join(VAULT_PATH, AREAS_DIR_REL)
+    if not os.path.isdir(root):
+        root = os.path.join(VAULT_PATH, "Goals")
+    try:
+        for dirpath, _dirs, files in os.walk(root):
+            for fn in files:
+                if not fn.endswith(".md"):
+                    continue
+                try:
+                    text = open(os.path.join(dirpath, fn), encoding="utf-8").read()
+                except OSError:
+                    continue
+                if not text.startswith("---"):
+                    continue
+                end = text.find("\n---", 3)
+                if end == -1:
+                    continue
+                area = na = None
+                for line in text[3:end].splitlines():
+                    m = re.match(r"\s*area:\s*(.+?)\s*$", line)
+                    if m:
+                        area = m.group(1).strip().strip('"').strip("'")
+                    m = re.match(r"\s*next_action:\s*(.+?)\s*$", line)
+                    if m:
+                        na = m.group(1).strip().strip('"').strip("'")
+                if area and na:
+                    out.append((area, na))
+    except OSError:
+        return []
+    out.sort(key=lambda x: x[0].lower())
+    return out
+
+# ===========================================================================
+# Daily anchors + silence handling (Session 79). Three two-way touchpoints; the
+# scheduler SENDS, bot.process_message handles replies (done/swap/edit -> native).
+# ===========================================================================
+async def _anchor_open(r, name: str, label: str, now: float):
+    """Record the just-sent anchor as the one awaiting a reply. 16h TTL so a quiet dinner
+    can still be acknowledged by the next morning's debrief."""
+    await r.set("anchor:current",
+                json.dumps({"name": name, "label": label, "sent_at": now, "followed_up": 0}),
+                ex=16 * 3600)
+
+async def _anchor_replied(r, sent_at: float) -> bool:
+    """True if Lea has sent Ghost anything since this anchor went out (bot stamps
+    last_user_activity on every inbound message). Absence = no reply on record."""
+    last = await r.get("last_user_activity")
+    return last is not None and float(last) > float(sent_at)
+
+async def _prev_anchor_silence(r) -> str:
+    """If the most recent anchor was never replied to, return its short label so the NEXT
+    anchor's opener can acknowledge the quiet (Task 3 memory). '' otherwise. Doesn't clear —
+    the next _anchor_open overwrites anchor:current, consuming the memory."""
+    raw = await r.get("anchor:current")
+    if not raw:
+        return ""
+    cur = json.loads(raw)
+    if await _anchor_replied(r, cur["sent_at"]):
+        return ""
+    return cur.get("label", "earlier")
+
+async def _anchor_silence_followup():
+    """Tick task (Task 3): if the current anchor has gone unanswered past
+    SILENCE_FOLLOWUP_SECONDS and hasn't already had its one follow-up, send EXACTLY ONE nudge
+    that plainly references the silence — then nothing more until the next anchor. On reply,
+    clear the anchor (resolved)."""
+    if is_quiet_hours():
+        return
+    r = await get_redis()
+    try:
+        raw = await r.get("anchor:current")
+        if not raw:
+            return
+        cur = json.loads(raw)
+        now = datetime.now(LOCAL_TZ).timestamp()
+        if await _anchor_replied(r, cur["sent_at"]):
+            await r.delete("anchor:current")            # she replied — resolved
+            return
+        if cur.get("followed_up") or (now - cur["sent_at"]) < SILENCE_FOLLOWUP_SECONDS:
+            return
+        prompt = (f"{time_context()} You sent a {cur['label']} check-in about two hours ago and got "
+                  "nothing back. Send ONE short line that plainly acknowledges being left on read — "
+                  "dry and a touch pointed, not a scold, no guilt-trip. A single nudge; you will not "
+                  "chase again after this. Ask, never assume what she has or hasn't done. No "
+                  "exclamation marks.")
+        msg = await call_claude(prompt)
+        await send_telegram(msg, msg_type="nudge")
+        cur["followed_up"] = 1
+        await r.set("anchor:current", json.dumps(cur), ex=16 * 3600)
+        logger.info(f"Anchor silence follow-up sent for {cur['name']}")
+    finally:
+        await r.aclose()
+
+async def _native_task_list(limit=8):
+    """Today's task list from the NATIVE system (post-S78): open todos, quest-flagged first
+    then by priority. Read-only direct SQL (the scheduler doesn't import native). Only real
+    rows — never fabricated. [] on any error."""
+    try:
+        conn = await asyncpg.connect(host=POSTGRES_HOST, port=5432, user="postgres",
+                                     password=POSTGRES_PASSWORD, database="ghost_db")
+        try:
+            rows = await conn.fetch(
+                "SELECT text, is_quest FROM todos WHERE NOT done AND NOT archived "
+                "ORDER BY is_quest DESC, "
+                "CASE priority WHEN 'high' THEN 0 WHEN 'med' THEN 1 ELSE 2 END, id LIMIT $1", limit)
+        finally:
+            await conn.close()
+        return [("[quest] " if r["is_quest"] else "") + r["text"] for r in rows]
+    except Exception as e:
+        logger.error(f"_native_task_list error: {e}")
+        return []
+
+# Google Calendar wiring (Session 82). Read-only from the scheduler. Morning debrief always
+# carries a calendar line (an empty day says so plainly — never silently omitted); lunch/dinner
+# reference an event ONLY when a timed one actually falls near that anchor's window, staying
+# silent otherwise. All degrade to '' when the calendar isn't connected or the fetch fails —
+# a calendar hiccup never blocks the anchor itself.
+CAL_LUNCH_WINDOW = (11, 14)      # local hours; a timed event starting in here is "near lunch"
+CAL_DINNER_WINDOW = (17, 21)
+
+async def _calendar_morning_part() -> str:
+    """Prompt fragment listing today's events for the morning debrief. '' when unconfigured.
+    A connected-but-empty day yields an explicit 'nothing on the calendar' instruction."""
+    try:
+        import gcal
+        if not gcal.is_configured():
+            return ""
+        events = await gcal.get_today_events()
+        if events is None:
+            return ""                         # fetch failed — don't fabricate a calendar line
+        if not events:
+            return ("Calendar today: nothing scheduled. State that plainly (e.g. 'calendar's clear "
+                    "today') — do not invent any events. ")
+        listing = "; ".join(gcal.fmt_event(e) for e in events[:10])
+        return (f"Today's calendar: {listing}. Fold these into the debrief as real fixed points; "
+                "use only these, invent nothing. ")
+    except Exception as e:
+        logger.error(f"_calendar_morning_part error: {e}")
+        return ""
+
+async def _calendar_meal_part(window: tuple, meal: str) -> str:
+    """Prompt fragment for the lunch/dinner anchors: mention a timed event ONLY if one starts
+    within `window` today. '' otherwise (and when unconfigured/failed) — no forced calendar line."""
+    try:
+        import gcal
+        if not gcal.is_configured():
+            return ""
+        now = datetime.now(LOCAL_TZ)
+        today = now.date()
+        start = datetime.combine(today, datetime.min.time(), tzinfo=LOCAL_TZ).replace(hour=window[0])
+        end = datetime.combine(today, datetime.min.time(), tzinfo=LOCAL_TZ).replace(hour=window[1])
+        events = await gcal.get_events_in_window(start, end)
+        if not events:
+            return ""
+        timed = [e for e in events if not e["all_day"] and isinstance(e["start"], datetime)
+                 and window[0] <= e["start"].hour < window[1]]
+        if not timed:
+            return ""
+        listing = "; ".join(gcal.fmt_event(e) for e in timed[:4])
+        return (f"There's something on her calendar around {meal}: {listing}. Reference it naturally "
+                "(one line), don't turn the whole message into a calendar readout. ")
+    except Exception as e:
+        logger.error(f"_calendar_meal_part error: {e}")
+        return ""
+
+async def morning_debrief():
+    """Anchor 1. Fires on the first phone-unlock of the day (Task 5 webhook sets
+    morning_unlock_signal), else at the MORNING_FALLBACK time so a network hiccup never means
+    total silence. Morning habits status + today's task list; she can reshape it by replying."""
+    if is_quiet_hours():
+        return
+    now = datetime.now(LOCAL_TZ)
+    r = await get_redis()
+    try:
+        if await r.get("morning_debrief_sent"):
+            return
+        unlocked = await r.get("morning_unlock_signal")
+        now_hm = now.hour * 60 + now.minute
+        past_fallback = now_hm >= (MORNING_FALLBACK_H * 60 + MORNING_FALLBACK_M)
+        if not (unlocked or past_fallback):
+            return
+        silence = await _prev_anchor_silence(r)
+    finally:
+        await r.aclose()
+    dailies_part = ""
     try:
         from habitica import get_dailies
-        dailies = await get_dailies()
+        d = await get_dailies()
+        dailies_part = (f"Habits/dailies still pending: {', '.join(d['pending']) if d['pending'] else 'none'}. "
+                        f"Already done: {', '.join(d['done']) if d['done'] else 'none'}. ")
     except Exception as e:
-        logger.error(f"daily reminders habitica fetch error: {e}")
-        return []
-    pending = [p.lower() for p in dailies["pending"]]
-    items = []
-    for key, instruction in due:
-        hit = any(key in p and not (key == "yoga" and "long" in p) for p in pending)
-        if hit:
-            items.append({"category": f"daily:{key}", "stage": 1, "tier": 2,
-                          "desc": instruction, "no_escalate": True})
-        else:
-            # done or not due in Habitica — flag so the window stays quiet
-            await r.set(f"daily_reminded:{key}", "1", ex=seconds_to_midnight())
-    return items
+        logger.error(f"morning_debrief habitica fetch: {e}")
+    tasks = await _native_task_list()
+    tasks_part = ("Today's task list: " + "; ".join(tasks) + ". ") if tasks else "The task list is empty right now. "
+    goals = get_goal_next_actions()
+    goal_part = (" Across her goals the next actions are: "
+                 + "; ".join(f"{a} — {na}" for a, na in goals) + ".") if goals else ""
+    cal_part = await _calendar_morning_part()
+    sil = (f"Open by acknowledging she went quiet {silence} — one dry aside, then move on. "
+           if silence else "")
+    prompt = (f"{time_context()} {sil}Generate a MORNING DEBRIEF, the first touchpoint of the day. "
+              f"{cal_part}{dailies_part}{tasks_part}{goal_part} "
+              "Give her the state of play — habits status and today's list — then invite her to reshape "
+              "it (add / drop / reorder / reprioritise, or just say what changed); she can reply. "
+              "Voice: a sharp, sassy assistant who has her back — dry, collaborative, a little wry, never "
+              "a drill sergeant, never a cheerleader, no exclamation marks. Under 5 lines. Use only these "
+              "facts, invent nothing; phrase anything unlogged as 'nothing logged', not as a failure.")
+    message = await call_claude(prompt, max_tokens=240)
+    await send_telegram(message, msg_type="briefing")
+    r = await get_redis()
+    try:
+        await r.set("morning_debrief_sent", "1", ex=seconds_to_midnight())
+        await _anchor_open(r, "morning", "this morning", datetime.now(LOCAL_TZ).timestamp())
+    finally:
+        await r.aclose()
+    logger.info("Morning debrief sent " + ("(first unlock)" if unlocked else "(fallback time)"))
 
-async def check_wind_down():
-    """Integration Map 'Bed by 9:30' row: if the phone is visibly active after
-    9:15pm, one gentle wind-down ask. Needs the Tasker activity signal — no
-    signal, no flag (a missing log is never evidence she's up)."""
-    now_dt = datetime.now(LOCAL_TZ)
-    if not (now_dt.hour == 21 and now_dt.minute >= 15):
+async def lunch_checkin():
+    """Anchor 2 (~LUNCH_ANCHOR). Assess real progress since the morning debrief. No progress ->
+    a blunt get-back-on-track nudge (a push, not a scold). Progress -> a dry nod + what's next."""
+    if is_quiet_hours():
+        return
+    now = datetime.now(LOCAL_TZ)
+    now_hm = now.hour * 60 + now.minute
+    start = LUNCH_ANCHOR_H * 60 + LUNCH_ANCHOR_M
+    if not (start <= now_hm < start + 30):
         return
     r = await get_redis()
     try:
-        if await r.get("wind_down_flagged"):
+        if await r.get("lunch_checkin_sent"):
             return
-        last = await r.get("last_phone_activity")
-        if not last or (now_dt.timestamp() - float(last)) > 900:
-            return
-        message = await call_claude(
-            f"{time_context()} Her phone has been active past 9:15pm and bed-by-9:30 is her own "
-            "goal. One gentle line asking whether she's winding down — a question, no lecture, "
-            "no guilt.")
-        await send_telegram(message)
-        await r.set("wind_down_flagged", "1", ex=seconds_to_midnight())
-        logger.info("Wind-down flag sent")
+        silence = await _prev_anchor_silence(r)
     finally:
         await r.aclose()
-
-async def collect_escalation_resends(r, now: float):
-    """Ignored tier-2 nudges past the 25-min resend interval. Clears responded/expired.
-    Session 17: freezes entirely during 75+ min phone-inactivity gaps (yelling at a
-    phone in a drawer helps nobody), resumes at gentle; crude capped at CRUDE_CAP
-    firings then drops to the stage-4 wind-down tone."""
-    items = []
-    activity_age = await _phone_activity_age(r, now)
-    # No signal ever recorded = the feed isn't wired/flowing, NOT evidence she's away
-    # (a missing log is never evidence). Freeze only on a real, stale signal.
-    inactive = activity_age is not None and activity_age >= INACTIVITY_FREEZE_SECONDS
-    for category in ("todo", "water", "breakfast", "lunch", "dinner"):
-        state = await _escalation_get(r, category)
-        if not state:
-            continue
-        fresh_todos = None
-        if category == "todo":
-            # responded = the focus list shrank (she acted) or emptied; arc dies at window end
-            try:
-                from habitica import get_focus_todos
-                fresh_todos = await get_focus_todos()
-            except Exception as e:
-                logger.error(f"todo escalation habitica check error: {e}")
-                continue  # can't verify — neither clear nor resend on a blind tick
-            if not fresh_todos or len(fresh_todos) < state.get("baseline", 1):
-                await r.delete("escalation:todo")
-                logger.info("todo escalation cleared — she acted on the list")
-                continue
-            if datetime.now(LOCAL_TZ).hour >= TODO_NUDGE_END_HOUR:
-                await r.delete("escalation:todo")
-                logger.info("todo escalation expired — nudge window closed")
-                continue
-        # responded? water: any confirmation newer than the escalation start
-        elif category == "water":
-            responded = False
-            for key in ("last_water_confirmed", "last_drink_mentioned"):
-                v = await r.get(key)
-                if v and float(v) > state["started"]:
-                    responded = True
-            if responded:
-                await r.delete("escalation:water")
-                logger.info("Water escalation cleared — she responded")
-                continue
-        else:
-            if await _meal_logged(category):
-                await r.delete(f"escalation:{category}")
-                logger.info(f"{category} escalation cleared — meal logged")
-                continue
-            end_hour = MEAL_WINDOWS[category][1]
-            if datetime.now(LOCAL_TZ).hour >= end_hour:
-                await r.delete(f"escalation:{category}")
-                logger.info(f"{category} escalation expired — window closed")
-                continue
-        ttl = await r.ttl(f"escalation:{category}")
-        if ttl is None or ttl <= 0:
-            ttl = 60
-        if inactive:
-            if not state.get("frozen"):
-                state["frozen"] = True
-                await _escalation_set(r, category, state, ttl)
-                logger.info(f"{category} escalation FROZEN — no phone activity for "
-                            f"{activity_age / 60:.0f}min")
-            continue  # no resend, no stage advance while frozen
-        if state.get("frozen"):
-            # Activity resumed — reset to gentle rather than picking up mid-crude.
-            state.update(frozen=False, stage=0, crude_sends=0)
-            await _escalation_set(r, category, state, ttl)
-            logger.info(f"{category} escalation unfrozen — reset to gentle")
-        if now - state["last_sent"] >= TIER2_RESEND_SECONDS:
-            cur = state["stage"]
-            stage = 4 if cur >= 4 else min(cur + 1, 3)
-            if stage == 3 and state.get("crude_sends", 0) >= CRUDE_CAP:
-                stage = 4  # crude spent — gentle wind-down, still on the 25-min cadence
-            if category == "todo":
-                names = ", ".join(f"'{t}'" for t in fresh_todos[:3])
-                count = f"{len(fresh_todos)} to-dos" if len(fresh_todos) > 3 else "to-dos"
-                desc = f"her own urgent-flagged {count}, still open ({names}{', …' if len(fresh_todos) > 3 else ''})"
-            else:
-                desc = f"{category} (still nothing logged)"
-            items.append({"category": category, "stage": stage,
-                          "tier": 1 if category == "todo" else 2, "desc": desc,
-                          "asks": state.get("sends", cur), "resend": True,
-                          "baseline": state.get("baseline")})
-    return items
-
-async def _apply_nudge_state(r, item, now: float):
-    """Post-send bookkeeping per item: flags, counters, escalation state."""
-    category = item["category"]
-    if item.get("no_escalate"):
-        # Dailies-map reminders: one per row per day, no escalation state at all.
-        await r.set(f"daily_reminded:{category.split(':', 1)[1]}", "1", ex=seconds_to_midnight())
-        return
-    if category == "todo":
-        if not item.get("resend"):
-            await r.set("todo_nudged", "1", ex=seconds_to_midnight())  # one arc per day
-        ttl = TODO_ESCALATION_TTL
-    elif category == "water":
-        if not item.get("resend"):
-            await r.set("water_nudge_count", item["nudge_count"] + 1, ex=seconds_to_midnight())
-            await r.set("water_next_due", now + item["interval"], ex=86400)
-        ttl = WATER_ESCALATION_TTL
+    completions_today = 0
+    try:
+        conn = await asyncpg.connect(host=POSTGRES_HOST, port=5432, user="postgres",
+                                     password=POSTGRES_PASSWORD, database="ghost_db")
+        try:
+            completions_today = await conn.fetchval(
+                "SELECT COUNT(*) FROM momentum_events WHERE (completed_at AT TIME ZONE $1)::date = $2",
+                str(LOCAL_TZ), now.date()) or 0
+        finally:
+            await conn.close()
+    except Exception as e:
+        logger.error(f"lunch_checkin momentum: {e}")
+    dailies_done = 0
+    try:
+        from habitica import get_dailies
+        d = await get_dailies()
+        dailies_done = len(d["done"])
+    except Exception as e:
+        logger.error(f"lunch_checkin habitica: {e}")
+    tasks = await _native_task_list(limit=5)
+    cal_part = await _calendar_meal_part(CAL_LUNCH_WINDOW, "lunchtime")
+    made_progress = (completions_today > 0) or (dailies_done > 0)
+    sil = (f"Open by noting she went quiet {silence} — one dry line, then carry on. " if silence else "")
+    if made_progress:
+        body = (f"She's moving — {completions_today} things logged and {dailies_done} dailies done since "
+                "this morning. Give that a quick dry nod, then surface what's next, one line. "
+                + ("Next up: " + "; ".join(tasks) + "." if tasks else ""))
     else:
-        if not item.get("resend"):
-            await r.set(f"{category}_reminded", "1", ex=seconds_to_midnight())
-        end_hour = MEAL_WINDOWS[category][1]
-        now_dt = datetime.now(LOCAL_TZ)
-        window_close = now_dt.replace(hour=end_hour, minute=0, second=0, microsecond=0)
-        ttl = max(int((window_close - now_dt).total_seconds()), 60)
-    prev = await _escalation_get(r, category)
-    started = prev["started"] if prev else now
-    sends = (prev.get("sends", prev["stage"]) if prev else 0) + 1
-    crude_sends = (prev.get("crude_sends", 0) if prev else 0) + (1 if item["stage"] == 3 else 0)
-    state = {"stage": item["stage"], "last_sent": now, "started": started,
-             "sends": sends, "crude_sends": crude_sends, "frozen": False}
-    baseline = item.get("baseline") or (len(item["todos"]) if item.get("todos") else None)
-    if baseline:
-        state["baseline"] = baseline
-    await _escalation_set(r, category, state, ttl)
-
-async def process_tier2_nudges():
-    """Tasks 1/2/5: collect everything due this tick, send ONE message, escalate on ignore."""
-    if is_quiet_hours():
-        return
-    now_dt = datetime.now(LOCAL_TZ)
-    now = now_dt.timestamp()
+        body = ("Nothing's been logged since this morning. Give a direct, blunt nudge to take some time "
+                "and get back on track — a push in your usual voice, not a scold, phrased as 'nothing "
+                "logged yet' not 'you failed'. "
+                + ("Still on the list: " + "; ".join(tasks) + "." if tasks else ""))
+    prompt = (f"{time_context()} {sil}Generate a LUNCHTIME CHECK-IN. {body} {cal_part}"
+              "Voice: sharp, sassy assistant on her side — dry, collaborative, no exclamation marks, no "
+              "motivational-poster energy, never claim she did or didn't do something you can't see. "
+              "Under 4 lines. She can reply to redirect or mark things done.")
+    message = await call_claude(prompt, max_tokens=200)
+    await send_telegram(message, msg_type="nudge")
     r = await get_redis()
     try:
-        pending = []
-        todo = await collect_todo_nudge(r, now_dt)
-        if todo:
-            pending.append(todo)
-        water = await collect_water_nudge(r, now)
-        if water:
-            pending.append(water)
-        meal = await collect_meal_nudge(r, now_dt)
-        if meal:
-            pending.append(meal)
-        pending.extend(await collect_daily_reminders(r, now_dt))
-        pending.extend(await collect_escalation_resends(r, now))
-        if not pending:
-            return
-        # Tier-ascending sort: tier-1 (her own urgent to-dos) leads a combined message.
-        pending.sort(key=lambda p: (p["tier"], -p["stage"]))
-        # Tone for the combined message: crude (3) wins if any item is there; the
-        # stage-4 wind-down is GENTLER than 3 despite the higher number.
-        stages = [p["stage"] for p in pending]
-        stage = 3 if 3 in stages else max(stages)
-        if len(pending) == 1:
-            p = pending[0]
-            if p["category"] == "todo" and not p.get("resend"):
-                body = (f"Generate a check-in about {p['desc']} — these are to-dos SHE flagged "
-                        "urgent, so ask how they're going or when she's starting, as an ally "
-                        "not a taskmaster.")
-            elif p["category"] == "water" and not p.get("resend"):
-                body = (f"Generate a water check-in for {USER_NAME} — ask whether she's had water yet "
-                        "(her target is 1.5L). Make it fit the time of day.")
-            elif p["category"] in MEAL_WINDOWS and not p.get("resend"):
-                body = (f"Generate a {p['category']} check-in for {USER_NAME} — ask whether she's eaten. "
-                        "She tends to skip meals when busy. Make it fit the day and time, "
-                        "not a generic 'eat food' ping.")
-            elif p.get("no_escalate"):
-                body = f"Generate a single one-line evening check-in for {USER_NAME}: {p['desc']}."
-            else:
-                angle = NUDGE_ANGLES[p.get("asks", 1) % len(NUDGE_ANGLES)]
-                body = (f"Generate a follow-up nudge about {p['desc']} — earlier nudge(s) got no "
-                        f"response, so ASK whether it's happened. "
-                        f"Take THIS angle and no other: {angle}. {NUDGE_BANS}")
-        else:
-            body = ("One combined nudge covering everything due right now — do NOT write separate "
-                    "messages, weave them into one or two lines as questions, most important first: "
-                    + "; ".join(p["desc"] for p in pending) + f". {NUDGE_BANS}")
-        prompt = f"{time_context()} {body} {STAGE_TONES[stage]}"
-        message = await call_claude(prompt)
-        await send_telegram(message)
-        for p in pending:
-            await _apply_nudge_state(r, p, now)
-        logger.info(f"Tier-2 nudge sent — items: {[p['category'] for p in pending]}, stage {stage}"
-                    + (", consolidated" if len(pending) > 1 else ""))
+        await r.set("lunch_checkin_sent", "1", ex=seconds_to_midnight())
+        await _anchor_open(r, "lunch", "at lunchtime", datetime.now(LOCAL_TZ).timestamp())
     finally:
         await r.aclose()
+    logger.info(f"Lunch check-in sent (progress={made_progress})")
 
-async def check_movement():
-    if is_quiet_hours():
-        return
-    now_dt = datetime.now(LOCAL_TZ)
-    now = now_dt.timestamp()
+async def _build_daily_summary(now):
+    """Grounded end-of-day summary from REAL logs only (never fabricates): dailies done/open,
+    to-dos knocked off, app-usage split, commitments (as open questions), water/exercise, plus
+    tomorrow's priority (absorbs the old board-review job). Anti-fabrication: gaps read as
+    'nothing logged', commitments are asked about, never asserted."""
     r = await get_redis()
-    next_due = await r.get("movement_next_due")
-    last_confirmed = await r.get("last_movement_confirmed")
-    exercise_done = await r.get("exercise_confirmed")
-    await r.aclose()
-
-    if next_due and now < float(next_due):
-        return
-
-    # Schedule-aware cadence (task 3): office days (Mon-Wed pattern) already contain
-    # commute + office movement, so relax the interval 3x (~2.25-3.75h). WFH days
-    # (Thu-Fri) and weekends keep the original 45-75 min — Ghost's own spec always
-    # said WFH days need this more. Pattern-based, overridable by "I'm home today" /
-    # "I'm at the office today" in chat (bounded to local midnight).
-    loc, overridden = location_today()
-    if loc == "office":
-        interval = random.uniform(2700, 4500) * 3
-    else:
-        interval = random.uniform(2700, 4500)  # 45-75 minutes, unchanged
-
-    if exercise_done:
-        r = await get_redis()
-        await r.set("movement_next_due", now + interval, ex=86400)
-        await r.aclose()
-        logger.info("Movement nudge skipped — exercise confirmed today")
-        return
-
-    confirmed_recently = last_confirmed and (now - float(last_confirmed)) < 3600
-    if confirmed_recently:
-        r = await get_redis()
-        await r.set("movement_next_due", now + interval, ex=86400)
-        await r.aclose()
-        logger.info("Movement nudge skipped — recent movement confirmation")
-        return
-
-    if now_dt.hour < 10:
-        suggestion = "Suggest something like a short morning walk before the day gets away."
-    elif now_dt.hour < 17:
-        suggestion = ("She's likely at a desk — suggest standing up, stretching, or a lap around the block."
-                      if loc != "office" else
-                      "Office day — she's had the commute at least; keep it light, a stretch or a walk at lunch.")
-    else:
-        suggestion = "Evening — suggest a stretch or short walk to close out the day, nothing strenuous."
-    prompt = (
-        f"{time_context()} Generate a movement nudge for {USER_NAME} — nothing logged for a while, so ASK "
-        f"whether she's been up and moving (a question, not a claim that she hasn't). {suggestion}"
-    )
-    message = await call_claude(prompt)
-    await send_telegram(message)
-    r = await get_redis()
-    await r.set("movement_next_due", now + interval, ex=86400)
-    await r.aclose()
-    logger.info(f"Movement nudge sent ({loc} {overridden or 'pattern'}), next due in {interval / 60:.0f}min")
-
-async def morning_briefing():
-    now = datetime.now(LOCAL_TZ)
-    if now.hour == 7 and now.minute < 5:
-        r = await get_redis()
-        already_sent = await r.get("morning_briefing_sent")
-        await r.aclose()
-        if not already_sent:
-            try:
-                from habitica import get_dailies, get_habits, get_todos
-                dailies = await get_dailies()
-                pending = dailies["pending"]
-                done = dailies["done"]
-                todos = await get_todos()
-                habits = await get_habits()
-                prompt = (
-                    f"{time_context()} Generate a morning briefing for {USER_NAME}. "
-                    f"Pending dailies: {(', '.join(pending)) if pending else 'none'}. "
-                    f"Already completed: {(', '.join(done)) if done else 'none'}. "
-                    f"Outstanding to-dos: {(', '.join(todos[:5])) if todos else 'none'}. "
-                    f"Habits to keep in mind: {(', '.join(habits)) if habits else 'none'}. "
-                    "Lead with dailies, mention key to-dos, habits are lowest priority. "
-                    "Keep it under 4 lines. Be specific."
-                )
-            except Exception as e:
-                logger.error(f"Habitica fetch failed: {e}")
-                prompt = f"{time_context()} Generate a brief morning briefing. Mention water, movement, and staying focused today. Keep it under 3 lines."
-            message = await call_claude(prompt, max_tokens=150)
-            await send_telegram(message, msg_type="briefing")
-            r = await get_redis()
-            await r.set("morning_briefing_sent", "1", ex=seconds_to_midnight())
-            await r.aclose()
-            logger.info("Morning briefing sent")
-
-async def evening_summary():
-    now = datetime.now(LOCAL_TZ)
-    if now.hour == 21 and now.minute < 5:
-        r = await get_redis()
-        already_sent = await r.get("evening_summary_sent")
+    try:
         water_count = await r.get("water_nudge_count") or 0
         last_water = await r.get("last_water_confirmed")
         exercise_done = await r.get("exercise_confirmed")
+    finally:
         await r.aclose()
-        if not already_sent:
-            habitica_part = ""
-            try:
-                from habitica import get_dailies, get_completed_todos_today
-                dailies = await get_dailies()
-                done_todos = await get_completed_todos_today(LOCAL_TZ)
-                habitica_part = (
-                    f"Dailies done: {', '.join(dailies['done']) if dailies['done'] else 'none logged'}. "
-                    f"Dailies still open: {', '.join(dailies['pending']) if dailies['pending'] else 'none'}. "
-                    f"To-dos knocked off today: {', '.join(done_todos) if done_todos else 'none'}. "
-                )
-            except Exception as e:
-                logger.error(f"Evening summary habitica fetch failed: {e}")
-            usage_part = ""
-            try:
-                cats = load_app_categories()
-                conn = await asyncpg.connect(
-                    host=POSTGRES_HOST, port=5432, user="postgres",
-                    password=POSTGRES_PASSWORD, database="ghost_db")
-                rows = await conn.fetch(
-                    "SELECT app, minutes FROM app_usage WHERE date = $1",
-                    now.date())
-                unlocks = await conn.fetchval(
-                    "SELECT value FROM daily_events WHERE date = $1 AND event_type = 'screen_unlocks'",
-                    now.date())
-                await conn.close()
-                if rows:
-                    prod = notprod = stream = 0
-                    for row in rows:
-                        a = row["app"]
-                        if a in cats["excluded"]:
-                            continue
-                        elif a in cats["streaming"]:
-                            stream += row["minutes"]
-                        elif a in cats["not_productive"]:
-                            notprod += row["minutes"]
-                        else:
-                            prod += row["minutes"]
-                    usage_part = (f"Phone use logged today: {prod}min in productive apps, "
-                                  f"{notprod}min in not-productive ones. ")
-                    if stream:
-                        usage_part += f"Streaming/video/music: {stream}min (neutral, counted in neither bucket). "
-                    usage_part += ("This split is informational — mention it plainly, no verdict on her day "
-                                   "from it, and it never touches the Habitica Productivity daily. ")
-                if unlocks:
-                    usage_part += f"Screen unlocks logged: {unlocks}. "
-            except Exception as e:
-                logger.error(f"Evening summary app-usage fetch failed: {e}")
-            prompt = (
-                f"{time_context()} Generate an evening summary for {USER_NAME}. "
-                f"{habitica_part}"
-                f"{usage_part}"
-                f"Water nudges sent today: {water_count}. "
-                f"Water logged at some point today: {'yes' if last_water else 'no'}. "
-                f"Exercise logged today: {'yes' if exercise_done else 'no'}. "
-                "Unlogged is not undone — phrase gaps as 'nothing logged', not as things she failed to do. "
-                "Up to 5 lines. React to how the day actually went; completed to-dos deserve a dry nod."
-            )
-            message = await call_claude(prompt)
-            await send_telegram(message, msg_type="summary")
-            r = await get_redis()
-            await r.set("evening_summary_sent", "1", ex=seconds_to_midnight())
-            await r.aclose()
-            logger.info("Evening summary sent")
+    habitica_part = ""
+    try:
+        from habitica import get_dailies, get_completed_todos_today
+        dailies = await get_dailies()
+        done_todos = await get_completed_todos_today(LOCAL_TZ)
+        habitica_part = (
+            f"Dailies done: {', '.join(dailies['done']) if dailies['done'] else 'none logged'}. "
+            f"Dailies still open: {', '.join(dailies['pending']) if dailies['pending'] else 'none'}. "
+            f"To-dos knocked off today: {', '.join(done_todos) if done_todos else 'none'}. ")
+    except Exception as e:
+        logger.error(f"daily summary habitica fetch: {e}")
+    usage_part = ""
+    try:
+        cats = load_app_categories()
+        conn = await asyncpg.connect(host=POSTGRES_HOST, port=5432, user="postgres",
+                                     password=POSTGRES_PASSWORD, database="ghost_db")
+        try:
+            rows = await conn.fetch("SELECT app, minutes FROM app_usage WHERE date = $1", now.date())
+        finally:
+            await conn.close()
+        if rows:
+            prod = notprod = stream = 0
+            for row in rows:
+                cat = categorize_app(row["app"], cats)
+                if cat in ("ignore", "excluded"):
+                    continue
+                elif cat == "streaming":
+                    stream += row["minutes"]
+                elif cat == "not_productive":
+                    notprod += row["minutes"]
+                else:
+                    prod += row["minutes"]
+            usage_part = (f"Phone use today: {prod}min productive, {notprod}min not-productive"
+                          + (f", {stream}min streaming (neutral)" if stream else "")
+                          + ". Mention it plainly, no verdict from it. ")
+    except Exception as e:
+        logger.error(f"daily summary app-usage fetch: {e}")
+    commitments_part = ""
+    try:
+        open_commitments = await get_active_commitments()
+        if open_commitments:
+            commitments_part = ("Commitments she asked you to track: " + "; ".join(open_commitments)
+                                + ". Ask about them ONCE as an open question — you do not know whether "
+                                "they happened, never assert she didn't. ")
+    except Exception as e:
+        logger.error(f"daily summary commitments fetch: {e}")
+    tasks = await _native_task_list(limit=5)
+    goals = get_goal_next_actions()
+    tomorrow_part = ""
+    if tasks or goals:
+        tomorrow_part = ("For tomorrow's priority, the open list is: "
+                         + ("; ".join(tasks) if tasks else "empty")
+                         + (". Goal next-actions: " + "; ".join(f"{a} — {na}" for a, na in goals) if goals else "")
+                         + ". Name ONE clear priority for tomorrow from these, not a pile. ")
+    prompt = (f"{time_context()} Generate the DAY'S SUMMARY (she has just confirmed/corrected the record). "
+              f"{commitments_part}{habitica_part}{usage_part}"
+              f"Water logged at some point today: {'yes' if last_water else 'no'}. "
+              f"Exercise logged today: {'yes' if exercise_done else 'no'}. "
+              f"{tomorrow_part}"
+              "Cover: what got done, progress against goals, what needs improvement, ONE priority for "
+              "tomorrow. Unlogged is not undone — phrase gaps as 'nothing logged', never as failures; a "
+              "completed to-do earns a dry nod. Voice: sharp, sassy assistant on her side, dry, no "
+              "exclamation marks, never claim an unconfirmed action. Up to 6 lines.")
+    return await call_claude(prompt, max_tokens=280)
+
+async def dinner_catchup():
+    """Anchor 3, two steps. Step 1 (~DINNER_ANCHOR): ask about anything unlogged (food/exercise/
+    habits) and invite corrections — get her in the loop BEFORE summarising. Step 2 (a later tick,
+    once she has replied): send the day's summary from real logs only. If she never replies, the
+    silence follow-up fires and NO summary is sent (anti-fabrication); tomorrow's debrief
+    acknowledges the quiet. Absorbs the old board-review's what's-next job into the summary."""
+    if is_quiet_hours():
+        return
+    now = datetime.now(LOCAL_TZ)
+    now_hm = now.hour * 60 + now.minute
+    r = await get_redis()
+    send_summary = False
+    silence = ""
+    try:
+        step = await r.get("dinner_step")
+        if step == "summarised":
+            return
+        if step == "asked":
+            raw = await r.get("anchor:current")
+            cur = json.loads(raw) if raw else None
+            if cur and cur.get("name") == "dinner" and await _anchor_replied(r, cur["sent_at"]):
+                await r.set("dinner_step", "summarised", ex=seconds_to_midnight())
+                await r.delete("anchor:current")     # resolved by her reply
+                send_summary = True
+            else:
+                return                                # still waiting (silence handler owns the follow-up)
+        else:
+            start = DINNER_ANCHOR_H * 60 + DINNER_ANCHOR_M
+            if not (start <= now_hm < start + 30):
+                return
+            silence = await _prev_anchor_silence(r)
+    finally:
+        await r.aclose()
+
+    if send_summary:
+        message = await _build_daily_summary(now)
+        await send_telegram(message, msg_type="summary")
+        logger.info("Dinner summary (step 2) sent")
+        return
+
+    # STEP 1 — the catch-up question. No summary yet; only tallies she confirms.
+    gaps = []
+    try:
+        for meal in ("breakfast", "lunch", "dinner"):
+            if not await _meal_logged(meal):
+                gaps.append(meal)
+    except Exception:
+        pass
+    r2 = await get_redis()
+    try:
+        ex_done = await r2.get("exercise_confirmed")
+    finally:
+        await r2.aclose()
+    gap_part = (f"Nothing logged yet for: {', '.join(gaps)}. " if gaps else "Meals look logged. ")
+    gap_part += ("No exercise logged today. " if not ex_done else "Exercise is logged. ")
+    cal_part = await _calendar_meal_part(CAL_DINNER_WINDOW, "dinnertime")
+    sil = (f"Open by noting she went quiet {silence} — one line, then move on. " if silence else "")
+    prompt = (f"{time_context()} {sil}Generate a DINNER-TIME CATCH-UP — the FIRST of two messages, not "
+              f"the summary yet. {gap_part}{cal_part}"
+              "Ask her to confirm or correct today's record: anything unlogged she actually did (food, "
+              "exercise, habits) or anything to tweak, before you tally the day. Make clear you'll only "
+              "count what she confirms — do not assume or assert completion. Voice: sharp, sassy "
+              "assistant on her side, dry, no exclamation marks. Two to three lines. She replies to set "
+              "the record straight and the summary follows.")
+    message = await call_claude(prompt, max_tokens=200)
+    await send_telegram(message, msg_type="summary")
+    rr = await get_redis()
+    try:
+        await rr.set("dinner_step", "asked", ex=seconds_to_midnight())
+        await _anchor_open(rr, "dinner", "at dinner", datetime.now(LOCAL_TZ).timestamp())
+    finally:
+        await rr.aclose()
+    logger.info("Dinner catch-up (step 1: ask) sent")
 
 async def check_missed_meals():
     """After each meal window closes, log meal_skipped for today unless the bot
@@ -896,8 +941,9 @@ FOOD_TRACK_INTERVAL = 1800
 _last_food_track_check = 0.0
 
 async def check_food_tracked():
-    """Once FatSecret has a real entry for today, mark the 'Track food' Habitica
-    daily complete (exact match only). Checks at most every 30 min, once per day."""
+    """Once FatSecret has a real entry for today, check off the 'Track food'
+    checklist item nested under the 'Bedtime' daily (NOT a same-named top-level
+    daily, which does not exist). Checks at most every 30 min, once per day."""
     global _last_food_track_check
     import time
     if is_quiet_hours() or time.time() - _last_food_track_check < FOOD_TRACK_INTERVAL:
@@ -915,15 +961,15 @@ async def check_food_tracked():
         summary = await fatsecret.get_today_summary()
         if not summary or not summary["entries"]:
             return
-        from habitica import complete_daily_exact
-        ok = await complete_daily_exact("Track food")
+        from habitica import complete_checklist_item
+        ok = await complete_checklist_item("Bedtime", "Track food")
         r = await get_redis()
         await r.set("food_daily_completed", "1", ex=seconds_to_midnight())
         await r.aclose()
         if ok:
-            logger.info("'Track food' daily auto-completed — FatSecret has entries today")
+            logger.info("'Track food' checklist item (under 'Bedtime') auto-checked — FatSecret has entries today")
         else:
-            logger.info("FatSecret has entries but no due/incomplete 'Track food' daily — nothing scored")
+            logger.info("FatSecret has entries but 'Track food' item not checkable (already done / not found) — nothing scored")
     except Exception as e:
         logger.error(f"check_food_tracked error: {e}")
 
@@ -1149,88 +1195,151 @@ async def health_check():
     finally:
         await conn.close()
 
-async def get_debt_status() -> str:
-    """One line per active (balance>0) debt stage, appended to the Sunday summary."""
-    try:
-        conn = await asyncpg.connect(
-            host=POSTGRES_HOST, port=5432, user="postgres",
-            password=POSTGRES_PASSWORD, database="ghost_db"
-        )
-        rows = await conn.fetch(
-            "SELECT account_name, balance, interest_rate, min_repayment, stage_number "
-            "FROM debt_accounts WHERE balance > 0 ORDER BY stage_number")
-        await conn.close()
-    except Exception as e:
-        logger.error(f"get_debt_status error: {e}")
-        return ""
-    if not rows:
-        return ""
-    lines = ["Debt:"]
-    for r in rows:
-        line = f"  Stage {r['stage_number']} {r['account_name']}: ${float(r['balance']):.2f} owing"
-        if r['interest_rate'] is not None:
-            line += f" @ {float(r['interest_rate']):.2f}%"
-        if r['min_repayment'] is not None:
-            line += f" (min ${float(r['min_repayment']):.2f}/mo)"
-        lines.append(line)
-    return "\n".join(lines)
-
-async def build_budget_summary() -> str:
-    try:
-        conn = await asyncpg.connect(
-            host=POSTGRES_HOST, port=5432, user="postgres",
-            password=POSTGRES_PASSWORD, database="ghost_db"
-        )
-        rows = await conn.fetch("""
-            SELECT bc.name, bc.monthly_limit, COALESCE(SUM(e.amount), 0) AS spent
-            FROM budget_categories bc
-            LEFT JOIN expenses e ON e.category = bc.name
-                AND DATE_TRUNC('month', e.logged_at) = DATE_TRUNC('month', NOW())
-            GROUP BY bc.name, bc.monthly_limit
-            ORDER BY bc.name
-        """)
-        await conn.close()
-        lines = []
-        for row in rows:
-            spent = float(row['spent'])
-            limit = float(row['monthly_limit'])
-            status = "OVER" if spent > limit else "under"
-            lines.append(f"{row['name']}: ${spent:.2f} / ${limit:.2f} ({status})")
-        summary = "\n".join(lines)
-        debt = await get_debt_status()
-        if debt:
-            summary += "\n\n" + debt
-        return summary
-    except Exception as e:
-        logger.error(f"Budget summary error: {e}")
-        return ""
-
-async def weekly_budget_summary():
+async def monthly_csv_upload_nudge():
+    """S70: once-a-month plain reminder to export + upload the latest bank CSV on the Bills dashboard,
+    so the spending picture stays current (her bank export caps at ~120 days with no custom range, so
+    a monthly upload keeps it from missing transactions). Deliberately a SINGLE plain reminder, not an
+    escalating nag — housekeeping, not a tracked habit with streaks. Fires on the 1st ~10:00 local,
+    once per calendar month (Redis-guarded). Uses the normal Telegram nudge channel."""
     now = datetime.now(LOCAL_TZ)
-    if now.weekday() == 6 and now.hour == 21 and now.minute < 10:
-        r = await get_redis()
-        already_sent = await r.get("budget_summary_sent")
-        await r.aclose()
-        if already_sent:
+    if not (now.day == 1 and now.hour == 10 and now.minute < 10):
+        return
+    r = await get_redis()
+    try:
+        key = f"csv_upload_nudge:{now.strftime('%Y-%m')}"
+        if await r.get(key):
             return
-        summary = await build_budget_summary()
-        if not summary:
-            logger.error("Weekly budget summary skipped — no data")
-            return
-        commentary = await call_ollama(
-            f"You are Ghost, a dry, blunt accountability partner tracking {USER_NAME}'s money. "
-            f"Here is her budget for the month so far:\n{summary}\n\n"
-            "Give exactly one dry line of commentary on the overall picture. "
-            "No exclamation marks, no filler. Don't repeat the table.\nGhost:"
-        )
-        message = "Weekly budget check.\n" + summary
-        if commentary:
-            message += "\n\n" + commentary
-        await send_telegram(message, msg_type="summary")
-        r = await get_redis()
-        await r.set("budget_summary_sent", "1", ex=seconds_to_midnight())
+        await r.set(key, "1", ex=40 * 86400)   # ~40 days, comfortably past the month
+    finally:
         await r.aclose()
-        logger.info("Weekly budget summary sent")
+    msg = ("Start-of-month check: export your latest bank CSV and upload it on the Bills dashboard so "
+           "your spending picture stays current. Your bank export only goes back about 120 days, so a "
+           "monthly upload keeps it from missing anything.")
+    await send_telegram(msg, msg_type="nudge")
+    logger.info("Monthly CSV-upload nudge sent")
+
+async def run_habitica_sync():
+    """Session 23: Habitica<->vault sync on its own jittered 15-30 min cadence
+    (separate from this 300s loop). Ships DRY-RUN (writes nothing) until the flip
+    to live after Lea reviews a day's log. The sync module owns all read/write
+    logic; this is just the scheduling gate."""
+    r = await get_redis()
+    try:
+        now = datetime.now(LOCAL_TZ).timestamp()
+        nxt = await r.get("habitica_sync_next_due")
+        if nxt and now < float(nxt):
+            return
+        await r.set("habitica_sync_next_due", now + random.uniform(900, 1800), ex=86400)
+    finally:
+        await r.aclose()
+    try:
+        import habitica_sync
+        await habitica_sync.run_once(get_redis)
+    except Exception as e:
+        logger.error(f"habitica_sync error: {e}")
+
+# ---------------------------------------------------------------------------
+# Session 76 — "bad guys": three named recurring obstacles surfaced as READ-ONLY threshold
+# checks against data that already exists (momentum_events, native todos, app_usage). No new
+# "has-a-bad-guy-appeared" table — the fired/cleared edge state lives in Redis. One mention when it
+# first triggers (consolidated if several trigger at once), then silence; it clears itself when the
+# underlying signal recovers (hysteresis so it can't flap). Waking-hours only. All thresholds are
+# biased CONSERVATIVE so these don't fire constantly.
+#   - burnout: 3 consecutive completed days each < 40% of the 14-day median daily completions,
+#     and only when that median is >= 3/day (an established routine to drop from). Clears when
+#     yesterday returns to >= 60% of the median.
+#   - decision_fatigue: open native-todo backlog >= 12 (her current 7 won't fire). Clears < 10.
+#   - doomscrolling: distraction (not_productive) minutes this week >= 1.5x last week, with a
+#     >=420min/prior-week floor. RELATIVE by design — app_usage minute magnitudes are inflated
+#     (a known Tasker duration quirk), so comparing this-week vs last-week (like-to-like) is far
+#     more trustworthy than any absolute cutoff. Clears when back under 1.2x.
+# ---------------------------------------------------------------------------
+BADGUY_LABELS = {"burnout": "Burnout", "decision_fatigue": "Decision fatigue",
+                 "doomscrolling": "Doomscrolling"}
+
+async def check_bad_guys():
+    now = datetime.now(LOCAL_TZ)
+    if not (8 <= now.hour < 21):          # a first-trigger heads-up, never a 3am buzz
+        return
+    today = now.date()
+    try:
+        conn = await asyncpg.connect(host=POSTGRES_HOST, port=5432, user="postgres",
+                                     password=POSTGRES_PASSWORD, database="ghost_db")
+    except Exception as e:
+        logger.error(f"bad_guys pg connect: {e}")
+        return
+    results = {}   # name -> (triggered, recovered, message)
+    try:
+        # --- burnout: sustained drop in daily completions ---
+        rows = await conn.fetch(
+            "SELECT (completed_at AT TIME ZONE $1)::date d, COUNT(*) n FROM momentum_events "
+            "WHERE completed_at >= now() - interval '18 days' GROUP BY d", str(LOCAL_TZ))
+        byday = {r["d"]: r["n"] for r in rows}
+        cnt = lambda off: byday.get(today - timedelta(days=off), 0)
+        recent3 = [cnt(1), cnt(2), cnt(3)]                       # 3 completed days (excl. partial today)
+        base_days = sorted(byday.get(today - timedelta(days=k), 0) for k in range(4, 18))
+        baseline = base_days[len(base_days) // 2] if base_days else 0    # 14-day median
+        burnout_trig = baseline >= 3 and all(x < 0.4 * baseline for x in recent3)
+        burnout_recov = (baseline == 0) or (cnt(1) >= 0.6 * baseline)
+        results["burnout"] = (burnout_trig, burnout_recov,
+            "Burnout watch: momentum's dropped off for a few days straight, well below your usual pace. "
+            "Not a nag — just noticing. Rest is allowed to count.")
+        # --- decision fatigue: open native-todo backlog ---
+        openn = await conn.fetchval(
+            "SELECT COUNT(*) FROM todos WHERE NOT done AND NOT archived") or 0
+        results["decision_fatigue"] = (openn >= 12, openn < 10,
+            f"Decision fatigue: {openn} open to-dos are stacking up. Maybe pick the three that "
+            "actually matter today and let the rest wait.")
+        # --- doomscrolling: distraction minutes elevated vs the prior week ---
+        au = await conn.fetch(
+            "SELECT date, app, minutes FROM app_usage WHERE date >= CURRENT_DATE - 14")
+        cats = load_app_categories()
+        last7 = prior7 = 0
+        for a in au:
+            if categorize_app(a["app"], cats) != "not_productive":
+                continue
+            age = (today - a["date"]).days
+            if 0 <= age < 7:
+                last7 += a["minutes"]
+            elif 7 <= age < 14:
+                prior7 += a["minutes"]
+        ds_trig = prior7 >= 420 and last7 >= 1.5 * prior7
+        ds_recov = (prior7 == 0) or (last7 < 1.2 * prior7)
+        results["doomscrolling"] = (ds_trig, ds_recov,
+            "Doomscrolling's up: distraction-app time has climbed noticeably over the last week. "
+            "A gentle heads-up, no judgement.")
+    finally:
+        await conn.close()
+
+    try:
+        r = await get_redis()
+    except Exception as e:
+        logger.error(f"bad_guys redis: {e}")
+        return
+    try:
+        newly = []
+        for name, (trig, recov, _msg) in results.items():
+            active = await r.get(f"badguy:{name}:active")
+            if trig and not active:
+                newly.append(name)
+                await r.set(f"badguy:{name}:active", "1", ex=30 * 86400)
+            elif active and recov:
+                await r.delete(f"badguy:{name}:active")
+                logger.info(f"bad guy cleared: {name}")
+            elif active:
+                await r.set(f"badguy:{name}:active", "1", ex=30 * 86400)   # keep, no repeat send
+        if newly:
+            if len(newly) == 1:
+                msg = results[newly[0]][2]
+            else:
+                names = ", ".join(BADGUY_LABELS[n] for n in newly)
+                msg = (f"A few obstacles showing up at once — {names}. One mention, not a nag: "
+                       "worth a pause and a small reset when you can.")
+            await send_telegram(msg, msg_type="nudge")
+            logger.info(f"bad guys triggered: {newly}")
+    finally:
+        await r.aclose()
+
 
 async def main():
     logger.info("Ghost scheduler starting...")
@@ -1238,14 +1347,17 @@ async def main():
         try:
             await refresh_location_override()
             await refresh_wifi_location()
-            await process_tier2_nudges()
-            await check_movement()
-            await check_wind_down()
-            await morning_briefing()
-            await evening_summary()
-            await weekly_budget_summary()
+            # Messaging cadence v2 (S79): three daily anchors + one silence follow-up each.
+            await morning_debrief()
+            await lunch_checkin()
+            await dinner_catchup()
+            await _anchor_silence_followup()
+            await monthly_csv_upload_nudge()
             await check_missed_meals()
             await check_food_tracked()
+            await expire_commitments()
+            await run_habitica_sync()
+            await check_bad_guys()
             await health_check()
         except Exception as e:
             logger.error(f"Scheduler error: {e}")

@@ -13,6 +13,15 @@
      tokens/base/grain/watermark from ghost-common.css; component styles below are lifted from
      the artboards. -->
 <link rel="stylesheet" href="/assets/ghost-common.css?v=61">
+<!-- S83: PWA — installable as a home-screen app (this page only). Manifest + theme colour +
+     home-screen icon. Service worker registered at the bottom of <body>. -->
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#150e14">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Ghost Habits">
+<link rel="apple-touch-icon" href="/assets/ghost-icon-192.png">
 <style>
   :root{
     --ink:#e6dde2; --ink-dim:#a8949e; --ink-faint:#8a7784; --ink-faintest:#5c5058;
@@ -536,5 +545,16 @@
 })();
 </script>
 
+<!-- S83: register the PWA service worker (shell caching for instant home-screen launch). Scoped
+     to the whole origin because /sw.js is served from root; failure is non-fatal (page still works). -->
+<script>
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", function () {
+      navigator.serviceWorker.register("/sw.js").catch(function (e) {
+        console.warn("Ghost SW registration failed:", e);
+      });
+    });
+  }
+</script>
 </body>
 </html>

@@ -14,6 +14,18 @@ HEADERS = {
 
 BASE_URL = "https://habitica.com/api/v3"
 
+async def health_check() -> tuple[bool, str]:
+    """Session 43: live Habitica reachability probe (GET /user), mirroring the dashboard's
+    _habitica_health. Lets the bot chat GROUND an 'is Habitica working?' answer in a real
+    just-now response instead of guessing — the 20/08 incident was Ghost asserting
+    'Habitica's out' while it was returning 200 the whole time. Returns (ok, detail)."""
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(f"{BASE_URL}/user?userFields=_id", headers=HEADERS, timeout=8.0)
+        return (r.status_code == 200, "200 OK" if r.status_code == 200 else f"http {r.status_code}")
+    except Exception as e:
+        return (False, f"{type(e).__name__}: {str(e)[:60]}")
+
 async def get_dailies() -> dict:
     """Get today's dailies and their completion status."""
     async with httpx.AsyncClient() as client:
@@ -209,3 +221,72 @@ async def get_todos() -> list:
         if not data.get("success"):
             return []
         return [task["text"] for task in data["data"] if not task.get("completed", False)]
+
+async def get_user_stats() -> dict:
+    """Vitals for the command-center dashboard (Session 35). Full /user is required —
+    ?userFields=stats drops the computed maxHealth/maxMP/toNextLevel. All fields real."""
+    async with httpx.AsyncClient() as client:
+        r = await client.get(f"{BASE_URL}/user", headers=HEADERS, timeout=30.0)
+        d = r.json()
+        if not d.get("success"):
+            return {}
+        s = d["data"]["stats"]
+        return {"hp": s.get("hp"), "hpMax": s.get("maxHealth"), "mp": s.get("mp"),
+                "mpMax": s.get("maxMP"), "xp": s.get("exp"), "xpMax": s.get("toNextLevel"),
+                "level": s.get("lvl"), "class": s.get("class"), "gold": s.get("gp")}
+
+async def get_habits_detailed() -> list:
+    """Habits as {name,type,positiveNegative,streak,doneToday,atRisk} (Session 35).
+    NB: streak/doneToday/atRisk are DERIVED — habits have no native streak/done state
+    (those are daily concepts). doneToday=tapped-up today, streak=trailing history days
+    with a positive score, atRisk=negative accumulated value. Best-effort, not exact."""
+    async with httpx.AsyncClient() as client:
+        r = await client.get(f"{BASE_URL}/tasks/user?type=habits", headers=HEADERS, timeout=30.0)
+        d = r.json()
+        if not d.get("success"):
+            return []
+        out = []
+        for t in d["data"]:
+            up, down = bool(t.get("up")), bool(t.get("down"))
+            pn = "both" if up and down else ("positive" if up else ("negative" if down else "none"))
+            streak = 0
+            for h in reversed(t.get("history") or []):
+                if (h.get("scoredUp") or 0) > 0 or (h.get("value") or 0) > 0:
+                    streak += 1
+                else:
+                    break
+            out.append({"name": t.get("text", "").strip(), "type": "habit",
+                        "positiveNegative": pn,
+                        "streak": streak,
+                        "doneToday": (t.get("counterUp") or 0) > 0,
+                        "atRisk": (t.get("value") or 0) < 0})
+        return out
+
+async def get_todos_detailed() -> list:
+    """Active to-dos as {text,priority,done} (Session 35). /tasks?type=todos returns
+    only incomplete ones, so done is False here — the actionable list."""
+    async with httpx.AsyncClient() as client:
+        r = await client.get(f"{BASE_URL}/tasks/user?type=todos", headers=HEADERS, timeout=30.0)
+        d = r.json()
+        if not d.get("success"):
+            return []
+        return [{"text": t.get("text", "").strip(), "priority": t.get("priority", 1),
+                 "done": bool(t.get("completed"))} for t in d["data"]]
+
+async def complete_todo(todo_text: str) -> bool:
+    """Complete a to-do by exact text match (name comes from get_todos, so exact is
+    safe and avoids the partial-word false matches complete_task risks). Session 33."""
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"{BASE_URL}/tasks/user?type=todos", headers=HEADERS, timeout=30.0
+        )
+        data = response.json()
+        if not data.get("success"):
+            return False
+        for task in data["data"]:
+            if task["text"].strip().lower() == todo_text.strip().lower():
+                score = await client.post(
+                    f"{BASE_URL}/tasks/{task['id']}/score/up", headers=HEADERS, timeout=30.0
+                )
+                return score.json().get("success", False)
+        return False
