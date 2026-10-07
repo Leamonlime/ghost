@@ -238,9 +238,66 @@ _NTFY_TITLES = {"briefing": "Ghost — morning", "summary": "Ghost — day's end
                 "nudge": "Ghost", "alert": "Ghost — heads up"}
 
 
+def _internal_push_url(endpoint: str) -> str:
+    """UnifiedPush endpoints point at ntfy's tailnet URL (tailscale serve :10443), which the pod
+    can't necessarily resolve. Same ntfy server, so post to its in-cluster service with the
+    endpoint's path instead. Endpoints on any other host are used as-is."""
+    from urllib.parse import urlsplit
+    u = urlsplit(endpoint)
+    if NTFY_URL and (u.hostname or "").endswith(".ts.net") and u.port == 10443:
+        return f"{NTFY_URL.rstrip('/')}{u.path}" + (f"?{u.query}" if u.query else "")
+    return endpoint
+
+
+async def push_app_endpoints(message: str, title: str = "Ghost") -> int:
+    """S93: deliver one message to every UnifiedPush endpoint the Ghost app registered
+    (app_push_endpoints, written by the dashboard's /api/app/v1/push/register). Body is JSON
+    {title, message}; the app also accepts plain text. Endpoints ntfy reports gone (404/410) are
+    dropped. Best-effort; returns how many deliveries succeeded."""
+    if not NTFY_TOKEN:
+        return 0
+    try:
+        conn = await asyncpg.connect(host=POSTGRES_HOST, port=5432, user="postgres",
+                                     password=POSTGRES_PASSWORD, database="ghost_db")
+    except Exception as e:
+        logger.error(f"app push: db connect error: {e}")
+        return 0
+    ok = 0
+    try:
+        exists = await conn.fetchval("SELECT to_regclass('public.app_push_endpoints') IS NOT NULL")
+        if not exists:
+            return 0
+        rows = await conn.fetch("SELECT endpoint FROM app_push_endpoints")
+        body = json.dumps({"title": title, "message": message}).encode("utf-8")
+        async with httpx.AsyncClient() as client:
+            for r in rows:
+                ep = r["endpoint"]
+                try:
+                    resp = await client.post(_internal_push_url(ep), content=body,
+                                             headers={"Authorization": f"Bearer {NTFY_TOKEN}"}, timeout=10.0)
+                    if resp.status_code in (404, 410):
+                        await conn.execute("DELETE FROM app_push_endpoints WHERE endpoint=$1", ep)
+                        logger.info("app push: endpoint gone, removed")
+                    elif resp.status_code >= 300:
+                        logger.error(f"app push FAILED ({resp.status_code}): {resp.text[:160]}")
+                    else:
+                        ok += 1
+                        await conn.execute("UPDATE app_push_endpoints SET last_ok_at=now() WHERE endpoint=$1", ep)
+                except Exception as e:
+                    logger.error(f"app push error: {e}")
+    finally:
+        await conn.close()
+    return ok
+
+
 async def publish_ntfy(message: str, msg_type: str = "nudge"):
     """S92: push Ghost's proactive message to Lea's private ntfy topic (app push), IN ADDITION to
-    Telegram for now. Best-effort — a push failure never blocks the Telegram send. No-op if unset."""
+    Telegram for now. Best-effort — a push failure never blocks the Telegram send. No-op if unset.
+    S93: also delivers to the Ghost app's UnifiedPush endpoints."""
+    try:
+        await push_app_endpoints(message, _NTFY_TITLES.get(msg_type, "Ghost"))
+    except Exception as e:
+        logger.error(f"app push error: {e}")
     if not (NTFY_URL and NTFY_TOPIC and NTFY_TOKEN):
         return
     try:

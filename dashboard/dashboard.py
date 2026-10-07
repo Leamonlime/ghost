@@ -3852,6 +3852,16 @@ async def _ensure_app_schema(conn):
             response   TEXT,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now()
         );
+        -- S93: UnifiedPush endpoints the app registers (ntfy app = distributor). The scheduler's
+        -- publish_ntfy also posts every proactive message to each of these.
+        CREATE TABLE IF NOT EXISTS app_push_endpoints (
+            endpoint   TEXT PRIMARY KEY,
+            p256dh     TEXT,
+            auth       TEXT,
+            platform   TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            last_ok_at TIMESTAMPTZ
+        );
     """)
     _APP_SCHEMA_READY = True
 
@@ -4422,6 +4432,80 @@ async def app_chat_history(request: Request, limit: int = 50):
     except Exception as e:
         logger.error(f"/api/app/v1/chat/history error: {e}")
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+# ---- S93: food-log listing + UnifiedPush registration (Ghost app 0.1.1) ------------------------
+@app.get("/api/app/v1/food-log")
+async def app_food_log_list(request: Request):
+    """Today's (or ?date=YYYY-MM-DD) food log entries, newest first — lets the app show entries
+    logged from the dashboard/Telegram, not just its own."""
+    if not _app_auth_ok(request):
+        return _app_401()
+    raw = (request.query_params.get("date") or "").strip()
+    try:
+        d = date.fromisoformat(raw) if raw else datetime.now(LOCAL_TZ).date()
+    except ValueError:
+        return JSONResponse({"ok": False, "error": "date must be YYYY-MM-DD"}, status_code=400)
+    conn = await pg_conn()
+    try:
+        await _ensure_app_schema(conn)
+        rows = await conn.fetch(
+            "SELECT id, food_name, servings::float8 s, calories::float8 c, protein::float8 p, log_date "
+            "FROM food_log WHERE user_id=$1 AND log_date=$2 ORDER BY logged_at DESC", OWNER_ID, d)
+    finally:
+        await conn.close()
+    return {"ok": True, "date": d.isoformat(), "entries": [
+        {"id": r["id"], "food_name": r["food_name"], "servings": r["s"], "calories": r["c"],
+         "protein": r["p"], "log_date": r["log_date"].isoformat()} for r in rows]}
+
+
+@app.post("/api/app/v1/push/register")
+async def app_push_register(request: Request):
+    """Register the app's UnifiedPush endpoint. Body {endpoint, p256dh?, auth?, platform?, client_id?}.
+    Upsert — the distributor can rotate endpoints and the app simply registers again."""
+    if not _app_auth_ok(request):
+        return _app_401()
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "bad request"}, status_code=400)
+    endpoint = (data.get("endpoint") or "").strip()
+    if not endpoint.startswith(("https://", "http://")) or len(endpoint) > 1000:
+        return JSONResponse({"ok": False, "error": "endpoint must be an http(s) URL"}, status_code=400)
+    client_id = data.get("client_id")
+    conn = await pg_conn()
+    try:
+        await _ensure_app_schema(conn)
+        cached = await _idem_get(conn, client_id)
+        if cached is not None:
+            return cached
+        await conn.execute(
+            "INSERT INTO app_push_endpoints (endpoint, p256dh, auth, platform) VALUES ($1,$2,$3,$4) "
+            "ON CONFLICT (endpoint) DO UPDATE SET p256dh=EXCLUDED.p256dh, auth=EXCLUDED.auth, "
+            "platform=EXCLUDED.platform", endpoint, data.get("p256dh"), data.get("auth"), data.get("platform"))
+        result = {"ok": True}
+        await _idem_put(conn, client_id, "push_register", result)
+    finally:
+        await conn.close()
+    return result
+
+
+@app.delete("/api/app/v1/push/register")
+async def app_push_unregister(request: Request):
+    """Remove one endpoint (?endpoint=) or, with no parameter, all of them."""
+    if not _app_auth_ok(request):
+        return _app_401()
+    endpoint = (request.query_params.get("endpoint") or "").strip()
+    conn = await pg_conn()
+    try:
+        await _ensure_app_schema(conn)
+        if endpoint:
+            status = await conn.execute("DELETE FROM app_push_endpoints WHERE endpoint=$1", endpoint)
+        else:
+            status = await conn.execute("DELETE FROM app_push_endpoints")
+    finally:
+        await conn.close()
+    return {"ok": True, "removed": int(status.split()[-1]) if status else 0}
 
 
 @app.get("/", response_class=HTMLResponse)
