@@ -23,6 +23,18 @@ sys.path.insert(0, os.path.dirname(__file__))
 from contract import PAGES, PAGE_HOOKS, API_ENDPOINTS  # noqa: E402
 
 BASE = os.environ.get("GHOST_SMOKE_BASE_URL", "http://localhost:8080").rstrip("/")
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _repo_head():
+    """Short HEAD hash of the repo containing this test file, or None."""
+    import subprocess
+    try:
+        p = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=REPO,
+                           capture_output=True, text=True, timeout=10)
+        return (p.stdout.strip() or None) if p.returncode == 0 else None
+    except Exception:
+        return None
 
 
 def main():
@@ -66,6 +78,20 @@ def main():
                     failures.append(f"API {ep}: HTTP {resp.status}")
             except Exception as e:
                 failures.append(f"API {ep}: request failed: {e}")
+
+        # 3. Deployed commit == HEAD of the repo this test file lives in (not the cwd).
+        want = _repo_head()
+        try:
+            resp = req.get(f"{BASE}/api/version", timeout=20000)
+            got = (resp.json() or {}).get("commit") if resp.status == 200 else None
+            if not want:
+                failures.append("api/version commit: could not read git HEAD of the test's repo")
+            elif not got:
+                failures.append(f"api/version commit: MISSING (HTTP {resp.status}) — want {want}")
+            elif got != want:
+                failures.append(f"api/version commit MISMATCH: deployed {got} != repo HEAD {want}")
+        except Exception as e:
+            failures.append(f"api/version commit check failed: {e}")
 
         browser.close()
 

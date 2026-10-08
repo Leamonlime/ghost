@@ -318,6 +318,7 @@
       </div>
       <div class="dock-chip panel" id="dockEscalation">⚑ none active</div>
     </div>
+    <div id="buildLine" style="display:none;flex:0 0 auto;text-align:center;font-family:var(--gc-serif);font-size:10px;color:var(--gc-ink-faint);padding-top:2px;"></div>
 
   </div>
 </div>
@@ -717,6 +718,26 @@ async function sendChat(){
 document.addEventListener("keydown", e => {
   if(document.getElementById("chatOverlay").style.display==="flex" && e.key==="Escape") closeChat();
 });
+
+/* Deployed-version footer: "build a1b2c3d · deployed DD/MM HH:MM [· dirty]" from /api/version.
+   Any failure, non-200 or null commit leaves the line hidden — never shows an error. */
+async function loadBuildLine(){
+  const el = document.getElementById("buildLine");
+  if(!el) return;
+  try{
+    const res = await fetch("/api/version", {cache:"no-store"});
+    if(!res.ok) return;
+    const v = await res.json();
+    if(!v || !v.commit) return;
+    let txt = "build " + v.commit;
+    const m = /^\d{4}-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(v.started_at || "");
+    if(m) txt += " · deployed " + m[2] + "/" + m[1] + " " + m[3] + ":" + m[4];
+    if(v.dirty === true) txt += " · dirty";
+    el.textContent = txt;
+    el.style.display = "block";
+  }catch(_){}
+}
+loadBuildLine();
 
 </script>
 </body>

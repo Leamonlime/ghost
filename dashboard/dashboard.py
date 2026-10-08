@@ -95,6 +95,24 @@ try:
 except Exception:
     _SOURCE_MD5 = "unknown"
 
+# Deployed-version indicator: build_info.json is captured from git on the host at deploy
+# time (selfcode._rebuild_dashboard) and shipped in the same configmap, next to this file.
+# The pod has no git, so missing/unreadable = nulls, never an exception.
+def _load_build_info():
+    info = {"commit": None, "commit_subject": None, "dirty": None}
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "build_info.json")) as f:
+            d = json.load(f)
+        if isinstance(d, dict):
+            for k in info:
+                info[k] = d.get(k)
+    except Exception:
+        pass
+    return info
+
+_BUILD_INFO = _load_build_info()
+_STARTED_AT = datetime.now(LOCAL_TZ).isoformat(timespec="seconds")
+
 def is_demo(request) -> bool:
     return request.query_params.get("demo") == "1"
 
@@ -421,7 +439,9 @@ async def api_feed(request: Request, after_id: int = 0):
 async def api_version():
     """Session 44: the source md5 of the dashboard.py this live process is running, so a
     deploy can be verified as actually-serving-the-new-code (not just 'a page loads')."""
-    return {"source_md5": _SOURCE_MD5, "build_id": BUILD_ID}
+    return {"source_md5": _SOURCE_MD5, "build_id": BUILD_ID,
+            "commit": _BUILD_INFO["commit"], "commit_subject": _BUILD_INFO["commit_subject"],
+            "dirty": _BUILD_INFO["dirty"], "started_at": _STARTED_AT}
 
 @app.get("/api/liveness")
 async def api_liveness():

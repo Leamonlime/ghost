@@ -111,13 +111,52 @@ def _rebuild_image_service(service: str, image: str):
     return rc == 0, f"$ sudo -n {REBUILD_WRAPPER} {service}\n{(out + err).strip()}"
 
 
+def _git_build_info():
+    """{commit, commit_subject, dirty} for the GHOST_ROOT checkout. Any git failure gives
+    nulls — build info is a display nicety and must never block a deploy."""
+    info = {"commit": None, "commit_subject": None, "dirty": None}
+    try:
+        rc, out, _ = _run(["git", "rev-parse", "--short", "HEAD"], cwd=GHOST_ROOT)
+        if rc == 0 and out.strip():
+            info["commit"] = out.strip()
+        rc, out, _ = _run(["git", "log", "-1", "--format=%s"], cwd=GHOST_ROOT)
+        if rc == 0:
+            info["commit_subject"] = (out.strip().splitlines() or [None])[0]
+        rc, out, _ = _run(["git", "status", "--porcelain"], cwd=GHOST_ROOT)
+        if rc == 0:
+            info["dirty"] = bool(out.strip())
+    except Exception:
+        pass
+    return info
+
+
+def _write_build_info():
+    """Write build_info.json to a temp file (never committed) for the dashboard configmap.
+    Returns the path, or None if even the temp write fails (deploy proceeds without it)."""
+    try:
+        import tempfile
+        fd, path = tempfile.mkstemp(prefix="ghost-build-info-", suffix=".json")
+        with os.fdopen(fd, "w") as f:
+            json.dump(_git_build_info(), f)
+        return path
+    except Exception:
+        return None
+
+
 def _rebuild_dashboard():
     """dashboard: refresh configmap from dashboard.py + rollout. kubectl only, no sudo."""
     dpy = os.path.join(ALLOWED_DIRS["dashboard"], "dashboard.py")
     log = []
-    rc, cm_yaml, err = _run(["kubectl", "create", "configmap", "ghost-dashboard-code",
-                             f"--from-file={dpy}", "-n", "ghost",
-                             "--dry-run=client", "-o", "yaml"])
+    bi_path = _write_build_info()
+    argv = ["kubectl", "create", "configmap", "ghost-dashboard-code", f"--from-file={dpy}"]
+    if bi_path:
+        argv.append(f"--from-file=build_info.json={bi_path}")
+    rc, cm_yaml, err = _run(argv + ["-n", "ghost", "--dry-run=client", "-o", "yaml"])
+    if bi_path:
+        try:
+            os.unlink(bi_path)
+        except OSError:
+            pass
     if rc != 0:
         return False, "configmap render failed:\n" + err
     rc, out, err = _run(["kubectl", "apply", "-f", "-"], stdin_bytes=cm_yaml.encode())
