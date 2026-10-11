@@ -647,7 +647,7 @@ async def api_command_center(request: Request):
     out = {"time": now.strftime("%A %d %B %Y, %I:%M %p").replace(" 0", " "), "errors": [],
            "_meta": {"derived": {
                "habits.streak/doneToday/atRisk": "approximated from Habitica history/counterUp/value — habits have no native streak/done/at-risk",
-               "nutrition.caloriesTarget": "from GHOST_CALORIE_TARGET env (0 = not set) — not available from FatSecret",
+               "nutrition": "from the Ghost app food_log (calories + protein only; carbs/fat/fiber null)", "nutrition.caloriesTarget": "from GHOST_CALORIE_TARGET env (0 = not set)",
            }}}
     # Habitica: habits, todos, vitals
     try:
@@ -664,18 +664,20 @@ async def api_command_center(request: Request):
         out["errors"].append(f"vitals: {e}"); out["vitals"] = {}
     # S70: conversational money pipeline removed — spending is CSV-only (Bills dashboard / spending
     # card). No budget-vs-limit block from expenses/budget_categories here anymore.
-    # Nutrition (FatSecret)
+    # Nutrition: the Ghost app's food_log (FatSecret retired 01/11/2026). The app tracks calories and
+    # protein only, so carbs / fat / fiber are null, not zero (a missing figure is not a zero).
     try:
-        import fatsecret
-        f = await fatsecret.get_today_summary()
-        if f is None:
-            out["nutrition"] = None
-        else:
-            out["nutrition"] = {
-                "caloriesLogged": round(f["calories"]), "caloriesTarget": CALORIE_TARGET or None,
-                "macros": {"protein": round(f["protein"]), "carbs": round(f["carbs"]),
-                           "fat": round(f["fat"]), "fiber": round(f.get("fiber", 0))},
-                "mealsLoggedToday": len(f.get("groups", [])) or f.get("entries", 0)}
+        conn = await pg_conn()
+        try:
+            row = await conn.fetchrow(
+                "SELECT COALESCE(SUM(calories),0)::float8 c, COALESCE(SUM(protein),0)::float8 p, COUNT(*) n "
+                "FROM food_log WHERE user_id=$1 AND log_date=$2", OWNER_ID, now.date())
+        finally:
+            await conn.close()
+        out["nutrition"] = {
+            "caloriesLogged": round(row["c"]), "caloriesTarget": CALORIE_TARGET or None,
+            "macros": {"protein": round(row["p"]), "carbs": None, "fat": None, "fiber": None},
+            "mealsLoggedToday": int(row["n"])}
     except Exception as e:
         out["errors"].append(f"nutrition: {e}"); out["nutrition"] = None
     # Self-check (health_checks table) + live Cephalopod ping
@@ -683,7 +685,7 @@ async def api_command_center(request: Request):
         conn = await pg_conn()
         rows = await conn.fetch("""
             SELECT DISTINCT ON (service) service, status, detail, checked_at
-            FROM health_checks WHERE service IN ('ntfy','postgres','redis','fatsecret')
+            FROM health_checks WHERE service IN ('ntfy','postgres','redis','habitica','anthropic')
             ORDER BY service, checked_at DESC
         """)
         await conn.close()

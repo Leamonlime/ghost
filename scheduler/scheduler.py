@@ -1028,26 +1028,39 @@ async def check_missed_meals():
 FOOD_TRACK_INTERVAL = 1800
 _last_food_track_check = 0.0
 
+# the single user's numeric id (keys food_log); same secret value the dashboard uses as OWNER_ID
+GHOST_USER_ID = os.environ.get("GHOST_USER_ID") or os.environ.get("TELEGRAM_USER_ID") or "0"
+
+async def count_app_food_logs_today() -> int:
+    """Entries in the Ghost app's food_log for today (local date). Decision #9 (11/10/2026):
+    the app replaced FatSecret completely, so this is the ONLY food signal 'Track food' reads."""
+    conn = await asyncpg.connect(
+        host=POSTGRES_HOST, port=5432, user="postgres",
+        password=POSTGRES_PASSWORD, database="ghost_db", timeout=15)
+    try:
+        return int(await conn.fetchval(
+            "SELECT COUNT(*) FROM food_log WHERE user_id = $1 AND log_date = $2",
+            int(GHOST_USER_ID or "0"), datetime.now(LOCAL_TZ).date()) or 0)
+    finally:
+        await conn.close()
+
 async def check_food_tracked():
-    """Once FatSecret has a real entry for today, check off the 'Track food'
+    """Once the Ghost app's food log has an entry for today, check off the 'Track food'
     checklist item nested under the 'Bedtime' daily (NOT a same-named top-level
-    daily, which does not exist). Checks at most every 30 min, once per day."""
+    daily, which does not exist). Checks at most every 30 min, once per day.
+    FatSecret is retired and no longer counts (decision #9)."""
     global _last_food_track_check
     import time
     if is_quiet_hours() or time.time() - _last_food_track_check < FOOD_TRACK_INTERVAL:
         return
     _last_food_track_check = time.time()
     try:
-        import fatsecret
-        if not fatsecret.is_configured():
-            return
         r = await get_redis()
         already = await r.get("food_daily_completed")
         await r.aclose()
         if already:
             return
-        summary = await fatsecret.get_today_summary()
-        if not summary or not summary["entries"]:
+        if await count_app_food_logs_today() <= 0:
             return
         from habitica import complete_checklist_item
         ok = await complete_checklist_item("Bedtime", "Track food")
@@ -1055,9 +1068,9 @@ async def check_food_tracked():
         await r.set("food_daily_completed", "1", ex=seconds_to_midnight())
         await r.aclose()
         if ok:
-            logger.info("'Track food' checklist item (under 'Bedtime') auto-checked — FatSecret has entries today")
+            logger.info("'Track food' checklist item (under 'Bedtime') auto-checked — app food log has entries today")
         else:
-            logger.info("FatSecret has entries but 'Track food' item not checkable (already done / not found) — nothing scored")
+            logger.info("App food log has entries but 'Track food' item not checkable (already done / not found) — nothing scored")
     except Exception as e:
         logger.error(f"check_food_tracked error: {e}")
 
@@ -1077,7 +1090,6 @@ SERVICE_HINTS = {
     "habitica": "the API token may be stale",
     "postgres": "database unreachable — check the pod or the password secret",
     "redis": "redis unreachable — check the pod or the password secret",
-    "fatsecret": "API auth failing — tokens may have been revoked",
     "anthropic": "the Claude API is refusing calls — Ghost's brain is down",
 }
 
@@ -1118,13 +1130,6 @@ async def check_redis_health():
         await r.aclose()
     return None
 
-async def check_fatsecret_health():
-    import fatsecret
-    if not fatsecret.is_configured():
-        return "unconfigured"
-    summary = await fatsecret.get_today_summary()
-    return None if summary is not None else "fetch failed (see pod log for detail)"
-
 async def check_anthropic_health():
     """Anthropic has no balance endpoint for a standard API key (the usage/cost
     reports need an Admin key), so we probe with the cheapest possible call and
@@ -1161,7 +1166,6 @@ HEALTH_CHECKS = [
     ("habitica", check_habitica_health),
     ("postgres", check_postgres_health),
     ("redis", check_redis_health),
-    ("fatsecret", check_fatsecret_health),
     ("anthropic", check_anthropic_health),
 ]
 
@@ -1211,8 +1215,7 @@ async def health_check():
     results = await run_health_checks()
     ntfy_ok = results["ntfy"][0] == "ok"
     bad = {s: d for s, (st, d) in results.items() if st == "fail"}
-    logger.info(f"Health check: {'all ok' if not bad else 'FAILING: ' + ', '.join(bad)}"
-                + (" (fatsecret unconfigured)" if results["fatsecret"][0] == "unconfigured" else ""))
+    logger.info(f"Health check: {'all ok' if not bad else 'FAILING: ' + ', '.join(bad)}")
 
     try:
         conn = await asyncpg.connect(

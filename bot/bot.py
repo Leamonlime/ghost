@@ -103,7 +103,7 @@ WHEN HANDLING EXCUSES: weak excuse — call it out in one line. Legitimate — a
 WHEN ASKED WHAT YOU CAN DO: tell her plainly what's listed above. Don't pretend you can't do things you can.
 
 CURRENT TIMEZONE: {TZ_NAME}
-CURRENT INTEGRATIONS: Ghost app chat and push notifications (ntfy; Telegram and voice notes were removed 01/11/2026 — never offer or claim them), Habitica (read/write), Postgres, Redis, Obsidian vault (read/write), desk dashboard with chat, Tasker scrolling interrupts, FatSecret food diary (READ AND WRITE — voice food notes log to it automatically, and a typed message containing "fatsecret" plus the food logs it too, e.g. "log to fatsecret: crackers and pate". If TODAY SO FAR shows no food logged, that means the diary is empty so far today — NOT that FatSecret is disconnected or read-only; never claim either)."""
+CURRENT INTEGRATIONS: Ghost app chat and push notifications (ntfy; Telegram and voice notes were removed 01/11/2026 — never offer or claim them), Habitica (read/write), Postgres, Redis, Obsidian vault (read/write), desk dashboard with chat, Tasker scrolling interrupts. FatSecret is RETIRED (since 11/10/2026): food is logged by {USER_NAME} herself in the Ghost app's food log, which replaced FatSecret completely. You cannot log food from chat or voice — if she tells you what she ate, never say it was logged; tell her to add it in the Ghost app. The "Track food" item ticks itself once the app's food log has an entry for the day."""
 
 async def get_history(user_id: int) -> list:
     try:
@@ -409,6 +409,8 @@ async def _probe_habitica_status() -> str:
 async def _probe_fatsecret_status() -> str:
     try:
         import fatsecret
+        if getattr(fatsecret, "RETIRED", False):
+            return "retired (replaced by the Ghost app's food log)"
         if not fatsecret.is_configured():
             return "not configured"
         summ = await get_fatsecret_summary()   # 15-min cached; None here = a real fetch failure
@@ -2521,7 +2523,7 @@ async def handle_integration_status(user_id: int, user_message: str) -> str | No
     if not targets and status_word and any(g in low for g in ("integration", "everything", "all your",
                                               "your systems", "all systems", "fully connected",
                                               "your connection", "connected to everything")):
-        targets = ["habitica", "fatsecret"]   # the external WRITE integrations
+        targets = ["habitica", "fatsecret"]   # the external WRITE integrations (fatsecret reports retired)
     if not targets:
         return None
     results = []
@@ -2531,8 +2533,12 @@ async def handle_integration_status(user_id: int, user_message: str) -> str | No
         results.append(f"Habitica = {'OK' if ok else 'UNREACHABLE'} ({detail})")
     if "fatsecret" in targets:
         import fatsecret
-        results.append("FatSecret = " + ("configured/connected" if fatsecret.is_configured()
-                                         else "NOT configured"))
+        if getattr(fatsecret, "RETIRED", False):
+            results.append("FatSecret = RETIRED on purpose (11/10/2026) — food is logged in the "
+                           "Ghost app's food log now; this is not an outage")
+        else:
+            results.append("FatSecret = " + ("configured/connected" if fatsecret.is_configured()
+                                             else "NOT configured"))
     if "cephalopod" in targets:
         results.append("Cephalopod = a separate system; from here you cannot reach or query it "
                        "(dashboard chat only), so you have no live status for it here")

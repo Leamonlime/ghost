@@ -33,6 +33,11 @@ spec:
             secretKeyRef:
               name: ghost-app-secrets
               key: anthropic-api-key
+        - name: GHOST_USER_ID
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: telegram-user-id
         - name: GHOST_USER_NAME
           valueFrom:
             secretKeyRef:
