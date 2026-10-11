@@ -7,13 +7,14 @@ import re
 import time
 import asyncpg
 from redis.asyncio import Redis
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters, ContextTypes
 import httpx
 import zoneinfo
 from datetime import datetime, timedelta
 
 import native  # Ghost 2.0 native Habits & Todos (Phase 1) — shared by bot + dashboard
+import decisions  # decision loop: questions the overnight runner needs answered (Telegram buttons + app API)
 
 # Source of the message currently being handled (telegram | dashboard). Set once at
 # the top of process_message; read by call_claude when it writes the routing_log row,
@@ -33,6 +34,9 @@ REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
 POSTGRES_HOST = os.environ.get("POSTGRES_HOST", "ghost-postgres-postgresql.ghost.svc.cluster.local")
 POSTGRES_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "")
 USER_NAME = os.environ.get("GHOST_USER_NAME", "the user")
+# Decision-button authorisation: only the owner's Telegram id may answer. Deliberately NOT
+# TELEGRAM_USER_ID, which would also change native.DEFAULT_USER_ID in this pod. Unset = fail closed.
+OWNER_ID = int(os.environ.get("GHOST_OWNER_ID") or "0")
 BRAND_PRIMARY = os.environ.get("GHOST_BRAND_PRIMARY", "Personal Blog")
 BRAND_SECONDARY = os.environ.get("GHOST_BRAND_SECONDARY", "Second Brand")
 BRAND_DOMAIN = os.environ.get("GHOST_BRAND_DOMAIN", "example.com")
@@ -62,6 +66,7 @@ WHAT YOU CAN DO:
 - Google Calendar: on request you READ her calendar ("what's on today/tomorrow", "when's my next dentist", "am I free Friday") and WRITE it — create, move or delete events ("schedule X on Friday at 3pm", "move my dentist appointment to Tuesday", "cancel my 2pm meeting"). Every write is confirm-first, exactly like Obsidian: you read back precisely what will change (title, date, time) and only touch the calendar after she says yes that same turn; you NEVER create/move/delete on an assumption, and if which event she means is unclear you ask rather than guessing. Use the title/detail she actually gives — don't add vagueness or specificity she didn't ask for. If the calendar isn't connected yet, say so plainly; never claim an event was added/moved/deleted unless your context confirms it happened.
 - Long-term memory: when {USER_NAME} says "remember ..." (or "don't forget ..."), you save it durably — it is shown back to you as LONG-TERM MEMORY in every later chat, so rely on it and never claim you can't recall something listed there. She can ask "what do you remember" or say "forget ...". If she shares something clearly worth keeping and doesn't say "remember", you can offer to.
 - Track water, meals, movement and exercise day to day, and notice multi-day patterns
+- Overnight build decisions: when the overnight build runner stops on a question, it arrives as a Telegram card with answer buttons (and /decisions re-sends pending ones). Answers are recorded by the buttons themselves, deterministically — you do NOT record or apply them from chat, and you never claim a decision was answered or applied unless your context says so.
 - Proactive check-ins arrive via a scheduler; scrolling interrupts arrive from her phone
 - Remember today's conversation (Redis) and store everything permanently (Postgres)
 
@@ -3786,9 +3791,131 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Voice handling error: {e}")
         await update.message.reply_text("Voice note didn't process. Type it instead.")
 
+
+# ---------------------------------------------------------------------------------------------
+# Decision loop (Telegram front end for bot/decisions.py). Callback handling is deterministic:
+# matched on decision id + option key, never interpreted by an LLM. Double taps are idempotent
+# because decisions.answer() only ever flips a 'pending' row.
+# ---------------------------------------------------------------------------------------------
+DECISION_OTHER_TTL = 3600
+
+def _decision_markup(row):
+    return InlineKeyboardMarkup([[InlineKeyboardButton(b["text"], callback_data=b["callback_data"]) for b in line]
+                                 for line in decisions.button_rows(row)])
+
+async def _edit_decision_msg(q, text, markup=None):
+    try:
+        await q.edit_message_text(text[:4000], reply_markup=markup)
+    except Exception as e:  # "message is not modified" on a double tap is expected
+        logger.info(f"decision edit skipped: {e}")
+
+async def handle_decision_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    if q is None:
+        return
+    async def toast(text=None, alert=False):
+        try:
+            await q.answer(text, show_alert=alert)
+        except Exception as e:
+            logger.info(f"decision callback answer skipped: {e}")
+    parsed = decisions.parse_callback(q.data)
+    if not parsed:
+        return await toast()
+    if not OWNER_ID or q.from_user.id != OWNER_ID:
+        logger.warning(f"decision callback from non-owner {q.from_user.id} refused")
+        return await toast("Not authorised.", True)
+    did, key = parsed
+    conn = await pg_conn()
+    try:
+        row = await decisions.get_decision(conn, did)
+        if row is None:
+            return await toast("That decision no longer exists.", True)
+        if key == decisions.OTHER_KEY and row["status"] == "pending":
+            r = Redis(host=REDIS_HOST, port=6379, password=REDIS_PASSWORD, decode_responses=True)
+            await r.set(f"decision_other:{q.from_user.id}",
+                        json.dumps({"id": did, "chat_id": q.message.chat_id, "message_id": q.message.message_id}),
+                        ex=DECISION_OTHER_TTL)
+            await r.aclose()
+            await _edit_decision_msg(q, decisions.waiting_other_text(row), _decision_markup(row))
+            return await toast("Type your answer as your next message.")
+        outcome, row = await decisions.answer(conn, did, key, via="telegram")
+    finally:
+        await conn.close()
+    if outcome == "invalid":
+        return await toast("That option isn't valid for this decision.", True)
+    if outcome == "answered":
+        logger.info(f"decision #{did} answered via telegram: {row['answer_key']}")
+        try:
+            r = Redis(host=REDIS_HOST, port=6379, password=REDIS_PASSWORD, decode_responses=True)
+            await r.delete(f"decision_other:{q.from_user.id}")
+            await r.aclose()
+        except Exception:
+            pass
+        await toast("Recorded.")
+    else:  # already answered: same tap twice, or a different tap after the first
+        await toast("Already recorded." if row["answer_key"] == key
+                    else f"Already answered: {row['answer_text'] or row['answer_key']}", row["answer_key"] != key)
+    await _edit_decision_msg(q, decisions.answered_text(row))
+
+async def maybe_handle_decision_other(update: Update) -> str | None:
+    """If the previous tap was 'Other…', this text message IS that decision's answer."""
+    uid = update.message.from_user.id
+    if not OWNER_ID or uid != OWNER_ID:
+        return None
+    r = Redis(host=REDIS_HOST, port=6379, password=REDIS_PASSWORD, decode_responses=True)
+    try:
+        raw = await r.get(f"decision_other:{uid}")
+        if not raw:
+            return None
+        bound = json.loads(raw)
+        text = (update.message.text or "").strip()
+        if text.lower() in ("cancel", "/cancel"):
+            await r.delete(f"decision_other:{uid}")
+            return f"Okay, decision #{bound['id']} is still pending. /decisions shows it again."
+        conn = await pg_conn()
+        try:
+            outcome, row = await decisions.answer(conn, bound["id"], decisions.OTHER_KEY, text, via="telegram")
+        finally:
+            await conn.close()
+        await r.delete(f"decision_other:{uid}")
+    finally:
+        await r.aclose()
+    if outcome == "missing":
+        return "That decision no longer exists."
+    if outcome == "invalid":
+        return "I couldn't use that as an answer — tap Other… again and type it."
+    try:  # update the original card so it doesn't keep offering buttons
+        await update.get_bot().edit_message_text(decisions.answered_text(row)[:4000],
+                                                 chat_id=bound["chat_id"], message_id=bound["message_id"])
+    except Exception as e:
+        logger.info(f"decision card edit skipped: {e}")
+    if outcome == "already":
+        return f"Decision #{row['id']} was already answered ({row['answer_text'] or row['answer_key']}); nothing changed."
+    return decisions.answered_text(row)
+
+async def cmd_decisions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Re-send every pending decision as a card with buttons."""
+    if not OWNER_ID or update.message.from_user.id != OWNER_ID:
+        return
+    conn = await pg_conn()
+    try:
+        rows = await decisions.list_decisions(conn, "pending")
+    finally:
+        await conn.close()
+    if not rows:
+        await update.message.reply_text("No decisions waiting on you.")
+        return
+    for row in rows:
+        await update.message.reply_text(decisions.render_card(row)[:4000], reply_markup=_decision_markup(row))
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await log_message("telegram_in", "chat", update.message.text)
+        bound_reply = await maybe_handle_decision_other(update)
+        if bound_reply is not None:
+            await update.message.reply_text(bound_reply)
+            await log_message("telegram_out", "chat", bound_reply)
+            return
         response = await process_message(update.message.from_user.id, update.message.text)
         await update.message.reply_text(response)
         await log_message("telegram_out", "chat", response)
@@ -3814,6 +3941,8 @@ async def _post_init(app):
 def main():
     app = Application.builder().token(BOT_TOKEN).post_init(_post_init).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("decisions", cmd_decisions))
+    app.add_handler(CallbackQueryHandler(handle_decision_callback, pattern=r"^dec:"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_error_handler(error_handler)

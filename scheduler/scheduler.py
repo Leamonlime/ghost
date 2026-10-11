@@ -12,6 +12,8 @@ import httpx
 import asyncpg
 from redis.asyncio import Redis
 
+import decisions  # decision loop: pending-decision reminders in the evening summary
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
@@ -888,6 +890,21 @@ async def _build_daily_summary(now):
               "exclamation marks, never claim an unconfirmed action. Up to 6 lines.")
     return await call_claude(prompt, max_tokens=280)
 
+async def _pending_decisions_footer() -> str:
+    """Unanswered overnight-runner decisions, appended verbatim (deterministic, not model-written)
+    to the evening summary until answered. Bumps reminder_count; never answers or expires anything."""
+    try:
+        conn = await asyncpg.connect(host=POSTGRES_HOST, port=5432, user="postgres",
+                                     password=POSTGRES_PASSWORD, database="ghost_db")
+        try:
+            block = await decisions.reminder_block(conn)
+        finally:
+            await conn.close()
+        return ("\n\n" + block) if block else ""
+    except Exception as e:
+        logger.error(f"decisions reminder error: {e}")
+        return ""
+
 async def dinner_catchup():
     """Anchor 3, two steps. Step 1 (~DINNER_ANCHOR): ask about anything unlogged (food/exercise/
     habits) and invite corrections — get her in the loop BEFORE summarising. Step 2 (a later tick,
@@ -924,6 +941,7 @@ async def dinner_catchup():
 
     if send_summary:
         message = await _build_daily_summary(now)
+        message += await _pending_decisions_footer()
         await send_telegram(message, msg_type="summary")
         logger.info("Dinner summary (step 2) sent")
         return
@@ -1147,13 +1165,17 @@ async def run_health_checks() -> dict:
             results[service] = ("fail", detail)
     return results
 
-async def send_alert(text: str) -> bool:
-    """Telegram send that reports success instead of assuming it."""
+async def send_alert(text: str, reply_markup: dict | None = None) -> bool:
+    """Telegram send that reports success instead of assuming it. `reply_markup` (an inline
+    keyboard dict) is used by the ghost-runner's decision cards; the bot handles the taps."""
     try:
+        payload = {"chat_id": TELEGRAM_USER_ID, "text": text}
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
         async with httpx.AsyncClient() as client:
             r = await client.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                json={"chat_id": TELEGRAM_USER_ID, "text": text}, timeout=15
+                json=payload, timeout=15
             )
             if r.status_code == 200:
                 await log_message("scheduler", "alert", text)

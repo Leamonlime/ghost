@@ -295,6 +295,15 @@
         </div>
       </div>
 
+      <!-- Decision loop: overnight-runner questions waiting on Lea. Read-only; answer in Telegram
+           (buttons / /decisions) or via POST /api/decisions/answer. Fed by d.decisions. -->
+      <div class="row4">
+        <div class="card panel" id="cardDecisions">
+          <div class="card-title">Pending decisions<span class="count" id="decCount" style="margin-left:auto;font-size:9px;color:#8a6a7c;"></span></div>
+          <div class="scroll-list" id="decisionList" data-role="decisions"></div>
+        </div>
+      </div>
+
       <!-- Momentum signal (Session 57): "am I actually moving, over time" — one number + sparkline -->
       <div class="row4">
         <div class="card panel" id="cardMomentum" data-role="momentum">
@@ -438,6 +447,16 @@ function renderTodos(d){
   }).join("");
 }
 
+function renderDecisions(d){
+  const list = d.decisions||[];
+  const cnt = document.getElementById("decCount"); if(cnt) cnt.textContent = list.length ? list.length : "none";
+  document.getElementById("decisionList").innerHTML = list.length ? list.map(x => {
+    const rec = (x.options||[]).find(o => o.key === x.recommended_key);
+    const q = String(x.question||"").replace(/\s+/g," ");
+    return `<div class="mission-row" data-role="decision-row"><span class="time">#${esc(x.id)}${x.stale?" ⚠":""}</span><span class="label">${esc(q.length>140?q.slice(0,139)+"…":q)}${rec?` — recommended: ${esc(rec.label)}`:""} <span style="color:#8a6a7c;">(${esc(x.age_days)}d)</span></span></div>`;
+  }).join("") : `<div style="font-size:11.5px;color:#c9a4bb;">Nothing waiting on you.</div>`;
+}
+
 function renderTimeline(d){
   const items = d.timeline||[];
   document.getElementById("tlTrack").innerHTML = items.map(t => `<div class="tl-event ${esc(t.type)}" style="left:${timeToPct(t.time)}%"></div>`).join("");
@@ -560,6 +579,7 @@ async function fetchDashboard(){
     renderHabits(d);
     renderTodos(d);
     renderTimeline(d);
+    renderDecisions(d);
     renderMonitor(d);
     renderBudget(d);
     renderIntegrations(d);

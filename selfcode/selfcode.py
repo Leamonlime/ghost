@@ -178,8 +178,8 @@ def _rebuild_dashboard():
 # tooling so they can't be skipped. Failure is loud and non-zero; auto-rollback is
 # deliberately out of scope.
 # --------------------------------------------------------------------------
-_IMAGE_FILES = {"bot": ["bot.py", "habitica.py", "fatsecret.py"],
-                "scheduler": ["scheduler.py", "habitica.py", "habitica_sync.py", "fatsecret.py"]}
+_IMAGE_FILES = {"bot": ["bot.py", "habitica.py", "fatsecret.py", "decisions.py"],
+                "scheduler": ["scheduler.py", "habitica.py", "habitica_sync.py", "fatsecret.py", "decisions.py"]}
 
 def _newest_pod(app_label: str) -> str:
     rc, out, err = _run(["kubectl", "get", "pods", "-n", "ghost", "-l", f"app={app_label}",

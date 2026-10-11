@@ -11,6 +11,7 @@ COPY bot.py .
 COPY native.py .
 COPY habitica.py .
 COPY fatsecret.py .
+COPY decisions.py .
 COPY gcal.py .
 
 CMD ["python", "bot.py"]

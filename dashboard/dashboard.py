@@ -20,6 +20,7 @@ sys.path.insert(0, os.environ.get("BOT_CODE_PATH", "/botcode"))
 import bot  # noqa: E402 — Ghost's own module, mounted read-only
 import habitica  # noqa: E402
 import native  # noqa: E402 — Ghost 2.0 native Habits & Todos (Phase 1), shared with the bot pipeline
+import decisions  # noqa: E402 — decision loop store (bot/decisions.py, mounted with bot code)
 
 import asyncpg  # noqa: E402
 import httpx  # noqa: E402
@@ -627,6 +628,10 @@ def _mask_command_center(data: dict) -> dict:
         if isinstance(p, dict):
             p["file"] = "example_module.py"
             p["explanation"] = "Sample proposed change"
+    for x in d.get("decisions") or []:
+        if isinstance(x, dict):
+            x["question"] = "Sample decision"
+            x["prompt_slug"] = "sample"
     esc = d.get("escalation")
     if isinstance(esc, dict) and esc.get("topic"):
         esc["topic"] = str(esc["topic"]).split(":")[0]   # drop any board:<real item> tail
@@ -736,6 +741,15 @@ async def api_command_center(request: Request):
                             "label": (m["content"] or "")[:120]} for m in msgs]
     except Exception as e:
         out["errors"].append(f"timeline: {e}"); out["timeline"] = []
+    # Pending overnight-runner decisions (read-only card; answering is Telegram / the app API)
+    try:
+        conn = await pg_conn()
+        try:
+            out["decisions"] = [decisions.to_public(x) for x in await decisions.list_decisions(conn, "pending")]
+        finally:
+            await conn.close()
+    except Exception as e:
+        out["errors"].append(f"decisions: {e}"); out["decisions"] = []
     try:
         r = redis_conn()
         await r.set("command_center", json.dumps(out), ex=25)
@@ -743,6 +757,55 @@ async def api_command_center(request: Request):
     except Exception:
         pass
     return _mask_command_center(out) if demo else out
+
+
+# ===========================================================================
+# DECISION LOOP API — questions the overnight ghost-runner needs Lea to answer.
+# Behind the SAME bearer-token auth as the app API (fails closed). Notifier-agnostic: Telegram
+# buttons, this API and the Ghost app all call decisions.answer(), which is idempotent and only
+# ever flips a 'pending' row. Nothing here applies, deploys or expires anything — an answer just
+# queues the runner's follow-up (built host-side from a fixed template).
+# ===========================================================================
+@app.get("/api/decisions")
+async def api_decisions(request: Request, status: str = "pending"):
+    if not _app_auth_ok(request):
+        return _app_401()
+    status = (status or "pending").lower()
+    if status != "all" and status not in decisions.STATUSES:
+        return JSONResponse({"ok": False, "error": "status must be pending|answered|applied|expired|all"},
+                            status_code=400)
+    conn = await pg_conn()
+    try:
+        rows = await decisions.list_decisions(conn, None if status == "all" else status)
+    finally:
+        await conn.close()
+    return {"ok": True, "decisions": [decisions.to_public(r) for r in rows]}
+
+
+@app.post("/api/decisions/answer")
+async def api_decisions_answer(request: Request):
+    """Body {id, key, text?}. key is an option key or "other" (text required). A repeat answer
+    to an already-answered decision returns 200 with outcome "already" and changes nothing."""
+    if not _app_auth_ok(request):
+        return _app_401()
+    try:
+        data = await request.json()
+        did, key = int(data["id"]), str(data["key"])
+        text = data.get("text")
+        if text is not None and not isinstance(text, str):
+            raise ValueError("text")
+    except Exception:
+        return JSONResponse({"ok": False, "error": "body must be {id:int, key:str, text?:str}"}, status_code=400)
+    conn = await pg_conn()
+    try:
+        outcome, row = await decisions.answer(conn, did, key, text, via="app")
+    finally:
+        await conn.close()
+    if outcome == "missing":
+        return JSONResponse({"ok": False, "error": "no such decision"}, status_code=404)
+    if outcome == "invalid":
+        return JSONResponse({"ok": False, "error": "unknown option, or empty text for 'other'"}, status_code=400)
+    return {"ok": True, "outcome": outcome, "decision": decisions.to_public(row)}
 
 
 # ===========================================================================

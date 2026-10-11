@@ -33,6 +33,11 @@ spec:
             secretKeyRef:
               name: ghost-app-secrets
               key: bot-token
+        - name: GHOST_OWNER_ID
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: telegram-user-id
         - name: ANTHROPIC_API_KEY
           valueFrom:
             secretKeyRef:

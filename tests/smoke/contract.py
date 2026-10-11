@@ -10,7 +10,7 @@ contract, immune to class/structure restyling) and the API endpoints that MUST r
 PAGE_HOOKS = {
     "ghost-dashboard-live.html": [
         "nav-item", "habits", "todos", "budget",
-        "momentum", "momentum-ratio", "momentum-sparkline", "momentum-counts",
+        "momentum", "momentum-ratio", "momentum-sparkline", "momentum-counts", "decisions",
     ],
     "ghost-bills.html":     ["bills-table", "spending-summary", "spending-review", "category-manager", "bill-candidates"],
     "ghost-quest-log.html": ["quest-list"],
