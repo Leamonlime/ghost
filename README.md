@@ -44,8 +44,9 @@ through Kubernetes Secrets; no real values live in the repo.
 
 - **Self-code proposals.** Ghost can propose changes to its own bot and scheduler
   code. Nothing applies until approved on the dashboard, and the privileged
-  rebuild is a fixed, root-owned wrapper (`selfcode/ghost-rebuild.sh`) that can
-  only rebuild `bot` or `scheduler`. See `selfcode/README-sudo.md`.
+  rebuild goes through a fixed, root-owned wrapper that can only rebuild `bot` or
+  `scheduler`. (That wrapper and its single-line sudoers grant are host-specific,
+  so they are kept out of this repo.)
 - **Overnight runner.** A host-side runner works through queued build prompts
   headlessly at night, one branch per prompt. It runs syntax and smoke checks,
   merges only if they pass, and auto-deploys the dashboard alone. Anything it
@@ -114,8 +115,15 @@ FoodData Central key (nutrition fallback) and an ntfy server (phone push).
 5. **Run Ollama** for the finance route (`llama3.2`), reachable from the `ghost`
    namespace. A sanitised Ollama and Helm setup lives in
    [hivequeen-k3s](https://github.com/Leamonlime/hivequeen-k3s).
-6. **Adjust the manifests.** The `hostPath` volumes (code mounts and the notes
-   vault) point at the author's machine; change them to your paths.
+6. **Adjust the manifests.** The deployment manifests ship as `*.example.yaml`
+   (bot, scheduler, dashboard); the host-specific real copies are not published.
+   Copy each to its real name, then set the `hostPath` volumes (code mounts and
+   the notes vault) to your own paths:
+   ```bash
+   for s in bot/ghost-bot-deployment scheduler/ghost-scheduler-deployment dashboard/ghost-dashboard; do
+     cp "$s.example.yaml" "$s.yaml"   # then edit the hostPath values
+   done
+   ```
 7. **Build the bot and scheduler images** and import them into k3s. The
    manifests use `imagePullPolicy: Never`.
    ```bash

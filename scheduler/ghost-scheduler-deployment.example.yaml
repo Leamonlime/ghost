@@ -1,0 +1,150 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ghost-scheduler
+  namespace: ghost
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ghost-scheduler
+  template:
+    metadata:
+      labels:
+        app: ghost-scheduler
+    spec:
+      containers:
+      - name: ghost-scheduler
+        image: docker.io/library/ghost-scheduler:latest
+        imagePullPolicy: Never
+        env:
+        - name: HABITICA_USER_ID
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: habitica-user-id
+        - name: HABITICA_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: habitica-api-token
+        - name: BOT_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: bot-token
+        - name: ANTHROPIC_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: anthropic-api-key
+        - name: TELEGRAM_USER_ID
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: telegram-user-id
+        - name: GHOST_USER_NAME
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: ghost-user-name
+        - name: REDIS_HOST
+          value: "ghost-redis-master.ghost.svc.cluster.local"
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: ghost-redis
+              key: redis-password
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: ghost-postgres-postgresql
+              key: postgres-password
+        - name: FATSECRET_CONSUMER_KEY
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: fatsecret-consumer-key
+              optional: true
+        - name: FATSECRET_CONSUMER_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: fatsecret-consumer-secret
+              optional: true
+        - name: FATSECRET_ACCESS_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: fatsecret-access-token
+              optional: true
+        - name: FATSECRET_ACCESS_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: fatsecret-access-secret
+              optional: true
+        - name: GOOGLE_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: google-client-id
+              optional: true
+        - name: GOOGLE_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: google-client-secret
+              optional: true
+        - name: GOOGLE_REFRESH_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: google-refresh-token
+              optional: true
+        - name: GOOGLE_CALENDAR_ID
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: google-calendar-id
+              optional: true
+        - name: TZ
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: ghost-tz
+        - name: GHOST_TZ
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: ghost-tz
+        - name: VAULT_PATH
+          value: "/vault"
+        # Habitica<->vault sync: LIVE as of 30/07/2026 (Session 26), after dry-run review.
+        # "0" = live two-way writes. Vault mount is read-write below (live writes need it).
+        - name: GHOST_SYNC_DRYRUN
+          value: "0"
+        # S92: app push via ntfy (internal service URL; topic + token from the secret).
+        - name: NTFY_URL
+          value: "http://ntfy.ghost.svc.cluster.local"
+        - name: NTFY_TOPIC
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: ntfy-topic
+              optional: true
+        - name: NTFY_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: ghost-app-secrets
+              key: ntfy-token
+              optional: true
+        volumeMounts:
+        - name: vault
+          mountPath: /vault
+          readOnly: false
+      volumes:
+      - name: vault
+        hostPath:
+          path: /home/youruser/CentralVault
+          type: Directory
