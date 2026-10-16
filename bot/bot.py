@@ -2173,7 +2173,7 @@ async def call_claude(user_id: int, message: str, route_text: str = None) -> str
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Ghost online. I'm watching.")
 
-SELFCODE_DIR = os.environ.get("SELFCODE_DIR", "/home/USER/ghost/selfcode")
+SELFCODE_DIR = os.environ.get("SELFCODE_DIR") or os.path.expanduser("~/ghost/selfcode")
 
 async def handle_selfcode_command(user_message: str) -> str | None:
     """Approval gate for self-code proposals. The bot RECORDS intent only — it flips

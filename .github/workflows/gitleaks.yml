@@ -1,0 +1,32 @@
+name: gitleaks
+
+# Backstop secret scan. The primary guard runs host-side in publish.sh before
+# every push; this re-scans the full history on GitHub as defence in depth.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install gitleaks 8.18.4 (pinned)
+        run: |
+          set -euo pipefail
+          curl -sSL -o gitleaks.tar.gz \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz
+          tar -xzf gitleaks.tar.gz gitleaks
+          echo "46a05260e7cce527f132cb618de59d22262b8b5eb47f66c288447b95c7a98b7e  gitleaks" | sha256sum -c -
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+      - name: Scan full history
+        run: gitleaks detect --redact --no-banner --exit-code 1

@@ -38,3 +38,16 @@ __pycache__/
 
 # --- Session backups (e.g. bot.py.bak-s48-...) ---
 *.bak-*
+
+# --- Host-specific infra: deployed from local copies, kept out of the public
+#     repo (they carry absolute hostPaths / a service URL tied to this host). ---
+bot/ghost-bot-deployment.yaml
+dashboard/ghost-dashboard.yaml
+scheduler/ghost-scheduler-deployment.yaml
+ops/ntfy.yaml
+ghost-deploy
+ghost-test
+selfcode/ghost-rebuild.sh
+selfcode/README-sudo.md
+selfcode/runner.py
+tests/run_all.py

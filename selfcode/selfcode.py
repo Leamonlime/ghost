@@ -35,7 +35,7 @@ from datetime import datetime, timezone, timedelta
 import asyncpg
 import httpx
 
-GHOST_ROOT = os.environ.get("GHOST_ROOT", "/home/USER/ghost")
+GHOST_ROOT = os.environ.get("GHOST_ROOT") or os.path.expanduser("~/ghost")
 ALLOWED_DIRS = {
     "bot": os.path.join(GHOST_ROOT, "bot"),
     "scheduler": os.path.join(GHOST_ROOT, "scheduler"),

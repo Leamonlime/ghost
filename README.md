@@ -1,5 +1,8 @@
 # Ghost
 
+[![Last commit](https://img.shields.io/github/last-commit/Leamonlime/ghost/master)](https://github.com/Leamonlime/ghost/commits/master)
+[![gitleaks](https://github.com/Leamonlime/ghost/actions/workflows/gitleaks.yml/badge.svg)](https://github.com/Leamonlime/ghost/actions/workflows/gitleaks.yml)
+
 Personal AI accountability assistant running on a self-hosted Kubernetes cluster.
 Talks to me over Telegram, tracks money and habits, and nudges me back on track
 when I'm scrolling instead of living.
