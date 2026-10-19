@@ -3,7 +3,7 @@
 throwaway vault and a throwaway Postgres schema (zzt_run_<pid>, dropped at the end). Never touches
 the real repo, vault, decisions table or Telegram (stdout notifier).
 
-Needs ~/.ghost-runner/runner.py and ~/ghost/selfcode/runner.env (Postgres creds). Skips if absent.
+Needs ~/.ghost-runner/runner.py and ~/.ghost-runner/host.env (Postgres creds). Skips if absent.
   python3 tests/runner_decisions_isolated.py
 """
 import asyncio
@@ -19,9 +19,9 @@ from pathlib import Path
 HOME = Path.home()
 RUNNER = HOME / ".ghost-runner" / "runner.py"
 REPO = Path(__file__).resolve().parent.parent
-ENV_FILE = REPO / "selfcode" / "runner.env"
+ENV_FILE = HOME / ".ghost-runner" / "host.env"
 if not RUNNER.exists() or not ENV_FILE.exists():
-    print("SKIP: runner.py or runner.env not present")
+    print("SKIP: runner.py or host.env not present")
     sys.exit(0)
 
 TMP = Path(tempfile.mkdtemp(prefix="zzt_runner_"))

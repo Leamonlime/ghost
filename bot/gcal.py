@@ -8,7 +8,7 @@ unconfigured or on error) so an absent/expired credential never crashes a caller
 
 Auth model (Session 82, provider decision locked 13/07/2026 — Google over Proton):
     - A Desktop-app OAuth 2.0 client minted once via the interactive consent flow
-      (see selfcode/../tools/gcal_mint_token.py). That one-time flow yields a
+      (see tools/gcal_mint_token.py). That one-time flow yields a
       long-lived refresh token; from then on token refresh is fully automatic here,
       no further manual steps.
     - Scope: https://www.googleapis.com/auth/calendar (full read/write).

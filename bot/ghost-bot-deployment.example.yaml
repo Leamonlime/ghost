@@ -65,8 +65,6 @@ spec:
               key: redis-password
         - name: VAULT_PATH
           value: "/vault"
-        - name: SELFCODE_DIR
-          value: "/home/youruser/ghost/selfcode"
         - name: GHOST_USER_NAME
           valueFrom:
             secretKeyRef:

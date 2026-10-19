@@ -88,7 +88,7 @@ _MONEY_RE = re.compile(r"\$\s?\d[\d,]*(?:\.\d+)?")
 BUILD_ID = "S57 · momentum + data-role hooks · 2026-09-02"
 
 # Session 44: md5 of the dashboard.py that THIS process is running, computed once at import.
-# The deploy verifier (selfcode._verify_dashboard_deploy) polls /api/version until this
+# The deploy verifier (deploy/deploy.py _verify_dashboard_deploy) polls /api/version until this
 # equals md5(disk dashboard.py) — proving the NEW code is actually being served, not the
 # old process during the pip-install startup overlap (the Session-31 caching confusion).
 try:
@@ -97,7 +97,7 @@ except Exception:
     _SOURCE_MD5 = "unknown"
 
 # Deployed-version indicator: build_info.json is captured from git on the host at deploy
-# time (selfcode._rebuild_dashboard) and shipped in the same configmap, next to this file.
+# time (deploy/deploy.py _rebuild_dashboard) and shipped in the same configmap, next to this file.
 # The pod has no git, so missing/unreadable = nulls, never an exception.
 def _load_build_info():
     info = {"commit": None, "commit_subject": None, "dirty": None}
@@ -214,27 +214,6 @@ async def claude_line(prompt: str) -> str:
     return reply
 
 
-async def _open_proposals(demo=False):
-    """Open (proposed/approved/apply_queued) self-code proposals, newest first, capped at 10.
-    S78: this exact query + row-shaping was duplicated verbatim in /api/data and /api/command-center
-    (the budget-summary query the retirement pass named was already removed in S70, so THIS is the
-    real remaining duplication) — now one shared function both endpoints call. `demo` reproduces
-    /api/data's masking; the command center passes demo=False and masks on egress instead."""
-    conn = await pg_conn()
-    try:
-        rows = await conn.fetch(
-            "SELECT id, service, file_path, explanation, status FROM code_proposals "
-            "WHERE status IN ('proposed','approved','apply_queued') ORDER BY id DESC LIMIT 10")
-    finally:
-        await conn.close()
-    return [{
-        "id": r["id"], "service": r["service"], "status": r["status"],
-        "file": "example_module.py" if demo else os.path.basename(r["file_path"]),
-        "explanation": "Sample proposed change" if demo else r["explanation"],
-        "can_apply": r["service"] in ("bot", "scheduler") and r["status"] == "approved",
-    } for r in rows]
-
-
 @app.get("/api/data")
 async def api_data(request: Request):
     now = datetime.now(LOCAL_TZ)
@@ -304,45 +283,7 @@ async def api_data(request: Request):
     except Exception as e:
         out["errors"].append(f"health: {e}")
         out["health"] = []
-    try:
-        out["proposals"] = await _open_proposals(demo)   # S78: shared helper (was duplicated here)
-    except Exception as e:
-        out["errors"].append(f"proposals: {e}")
-        out["proposals"] = []
     return out
-
-@app.post("/api/apply")
-async def api_apply(request: Request):
-    """Queue an ALREADY-APPROVED bot/scheduler proposal for the host runner to apply.
-    This does NOT approve anything — it only fires the apply of a proposal the user already
-    approved in Telegram, replacing the manual SSH `selfcode.py apply <id>` step. The
-    dashboard never touches the filesystem or runs a rebuild; it flips one DB status
-    and the host-side runner (with the scoped rebuild grant) does the privileged work."""
-    if is_demo(request):
-        return {"ok": False, "error": "demo mode is read-only"}
-    try:
-        data = await request.json()
-        pid = int(data.get("id"))
-    except Exception:
-        return {"ok": False, "error": "bad request"}
-    try:
-        conn = await pg_conn()
-        try:
-            row = await conn.fetchrow("SELECT service, status FROM code_proposals WHERE id=$1", pid)
-            if not row:
-                return {"ok": False, "error": f"no proposal #{pid}"}
-            if row["service"] not in ("bot", "scheduler"):
-                return {"ok": False, "error": "button only applies to bot/scheduler proposals"}
-            if row["status"] != "approved":
-                return {"ok": False, "error": f"proposal #{pid} is '{row['status']}', not 'approved' — approve it in Telegram first"}
-            await conn.execute("UPDATE code_proposals SET status='apply_queued' WHERE id=$1 AND status='approved'", pid)
-        finally:
-            await conn.close()
-        logger.info(f"Proposal #{pid} queued for apply via dashboard button")
-        return {"ok": True, "queued": pid}
-    except Exception as e:
-        logger.error(f"api_apply error: {e}")
-        return {"ok": False, "error": str(e)}
 
 @app.post("/api/chat")
 async def api_chat(request: Request):
@@ -624,10 +565,6 @@ def _mask_command_center(data: dict) -> dict:
     for c in d.get("selfCheck") or []:
         if isinstance(c, dict):
             c["detail"] = ""            # scrub any host/error string; keep service+status
-    for p in d.get("proposals") or []:
-        if isinstance(p, dict):
-            p["file"] = "example_module.py"
-            p["explanation"] = "Sample proposed change"
     for x in d.get("decisions") or []:
         if isinstance(x, dict):
             x["question"] = "Sample decision"
@@ -718,12 +655,6 @@ async def api_command_center(request: Request):
         out["selfCheck"] = checks
     except Exception as e:
         out["errors"].append(f"selfCheck: {e}"); out["selfCheck"] = []
-    # Self-code proposals (Session 42: restore to the v8 dashboard). S78: shared _open_proposals
-    # with /api/data (was a verbatim copy). demo=False here — demo masking is applied on egress.
-    try:
-        out["proposals"] = await _open_proposals(demo=False)
-    except Exception as e:
-        out["errors"].append(f"proposals: {e}"); out["proposals"] = []
     # Escalation (Redis)
     try:
         out["escalation"] = await _escalation_topic()

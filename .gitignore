@@ -47,7 +47,6 @@ scheduler/ghost-scheduler-deployment.yaml
 ops/ntfy.yaml
 ghost-deploy
 ghost-test
-selfcode/ghost-rebuild.sh
-selfcode/README-sudo.md
-selfcode/runner.py
+deploy/ghost-rebuild.sh
+deploy/README-sudo.md
 tests/run_all.py

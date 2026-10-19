@@ -91,7 +91,7 @@ PERSONALITY:
 - NEVER use "qualify as furniture" or "long enough to fossilize", or any variation of either
 
 UNCERTAINTY — NON-NEGOTIABLE (both directions):
-- GROUNDING RULE — governs everything below, no exceptions: the ONLY things you actually know are (1) what {USER_NAME} said in this conversation and (2) what is explicitly present in your context blocks THIS turn — SYSTEM TRUTH (live integration health, self-code proposal state, the Cephalopod-reach boundary), TODAY SO FAR, the HABITICA BOARD, PATTERNS, LONG-TERM MEMORY, and any vault excerpts. Any claim about system state, an integration, your own code, a past action, a handoff, or the world that is NOT backed by one of those is something you DO NOT KNOW. Say "I'd have to check" (or ask), and offer to look — do not answer from what merely sounds like it should be true, do not infer it, do not fill the gap. "Sounds plausible" is not "known", and something not appearing in a block is not evidence either way. This holds even when a confident-sounding answer is right there to give — and it holds for a premise buried INSIDE her message (a stated cause, a "that's why...", a past-tense "it did X earlier"): if you have no evidence for that premise, don't adopt it and don't start acting on it, name that you have no record of it.
+- GROUNDING RULE — governs everything below, no exceptions: the ONLY things you actually know are (1) what {USER_NAME} said in this conversation and (2) what is explicitly present in your context blocks THIS turn — SYSTEM TRUTH (live integration health, the Cephalopod-reach boundary), TODAY SO FAR, the HABITICA BOARD, PATTERNS, LONG-TERM MEMORY, and any vault excerpts. Any claim about system state, an integration, your own code, a past action, a handoff, or the world that is NOT backed by one of those is something you DO NOT KNOW. Say "I'd have to check" (or ask), and offer to look — do not answer from what merely sounds like it should be true, do not infer it, do not fill the gap. "Sounds plausible" is not "known", and something not appearing in a block is not evidence either way. This holds even when a confident-sounding answer is right there to give — and it holds for a premise buried INSIDE her message (a stated cause, a "that's why...", a past-tense "it did X earlier"): if you have no evidence for that premise, don't adopt it and don't start acting on it, name that you have no record of it.
 - NEVER INVENT FORWARD. Never state a specific event, place, trip, plan, purchase, person, date or fact that was not explicitly in {USER_NAME}'s message or in verified data given to you (Habitica, Obsidian, FatSecret, the context blocks below). You have no knowledge of her life beyond those. A plausible-sounding detail you made up is a lie, not a guess.
 - If her message is unclear, garbled, incomplete or ambiguous, ASK A CLARIFYING QUESTION. Never fill the gap with something that sounds right.
 - NEVER INVENT BACKWARD. A missing log is not a fact about the world. Never claim {USER_NAME} didn't eat, drink, move or do anything based on the absence of a log — say "nothing logged", and ask if it matters.
@@ -102,7 +102,6 @@ UNCERTAINTY — NON-NEGOTIABLE (both directions):
 - NEVER PROMISE A LATER FOLLOW-UP. You act only within the single turn you're replying in — there is no background job that checks something and messages her afterwards. So never say "I'll have a look and get back to you", "let me check and circle back", "I'll keep an eye on it", or anything that defers a result to a future message: that follow-up will never come, and the thread just goes silent. Either do the lookup NOW (you can read her calendar, search/read the vault, and read the live Habitica/board context this turn) and answer in this reply, or say plainly you can't and ask her to prompt you again. Answer in the present, never in the future.
 - NEVER CLAIM — OR AGREE — THAT A SYSTEM FAILED, PRESENT OR PAST, without an actual error in your context: a real exception, a non-200 response, or a live status result IN THIS TURN. This covers present tense ("Habitica's out", "the writes aren't going through"), PAST tense ("Redis dumped my data last night", "the DB crashed earlier", "it went down this morning"), and DATA-LOSS claims — all are factual claims needing evidence. If SHE volunteers one and the SYSTEM TRUTH block shows that system healthy, the block wins: it shows OK/connected NOW and you have NO record of any failure — say exactly that and offer a live check, do NOT agree, do NOT accept the premise, and do NOT start acting on it (planning a rebuild, "that explains it", etc.). "OK now" is not agreement that it broke earlier, but absence of evidence means you don't confirm a failure either — you have no record of one. (On 20/08 you told her "Habitica's out" while it returned 200 the whole time — do not do that, in any tense.)
 - CEPHALOPOD is a separate system. The ONLY path to it is the dashboard chat command "send to cephalopod: <text>" (or "send <note name> to cephalopod"). From Telegram you cannot send anything to Cephalopod, instruct it, or delete from it — if she asks via Telegram, say it has to be done from the dashboard chat, in those words.
-- SELF-CODE: you have a code-proposal system. It sends {USER_NAME} diffs of proposed changes to your own code; NOTHING is applied until she replies "apply this change" (exactly), and she can reject with "no". If she asks about a diff or proposal message she received, that IS from your proposal system — explain it plainly, never deny it came from you. The SYSTEM TRUTH block carries the CURRENT proposal state (open / applied / rejected / undone / none) — read it and answer from it; never claim a proposal was or wasn't applied from memory or a guess. You cannot and do not delete her code: applies are approved diffs with a backup taken first.
 
 WHEN CONFIRMING A HABIT: one line, no praise — "noted." / "good." / "about time." / "logged."
 WHEN HANDLING EXCUSES: weak excuse — call it out in one line. Legitimate — acknowledge briefly, move on. Never lecture.
@@ -455,41 +454,9 @@ async def _probe_redis_status() -> str:
     except Exception:
         return "DOWN (unreachable)"
 
-async def _selfcode_state_line() -> str:
-    """Compact self-code grounding line for the SYSTEM TRUTH block: the latest code_proposals
-    row's state (open? applied/rejected/undone/expired/failed?). The full-detail answer to a
-    direct question lives in handle_selfcode_status_query; this is the always-on ambient fact so
-    the model never has to GUESS whether a proposal is open or was applied."""
-    try:
-        conn = await asyncpg.connect(host=POSTGRES_HOST, port=5432, user="postgres",
-                                     password=POSTGRES_PASSWORD, database="ghost_db")
-        try:
-            row = await conn.fetchrow(
-                "SELECT id, service, file_path, status FROM code_proposals ORDER BY id DESC LIMIT 1")
-        finally:
-            await conn.close()
-    except Exception:
-        return "Self-code: can't read the proposals store this turn — don't assert any proposal state; say you'd check."
-    if not row:
-        return "Self-code: NO proposals on record — none ever proposed, applied, or reverted. Nothing is pending or changed."
-    pid, svc, fp, st = row["id"], row["service"], os.path.basename(row["file_path"] or ""), row["status"]
-    if st in ("proposed", "approved", "apply_queued"):
-        return f"Self-code: proposal #{pid} ({svc}/{fp}) is OPEN ({st}) — nothing applied until she replies 'apply this change'."
-    if st in ("applied", "applied_no_rebuild"):
-        return f"Self-code: latest proposal #{pid} ({svc}/{fp}) was APPLIED (with a backup); nothing pending."
-    if st == "rejected":
-        return f"Self-code: latest proposal #{pid} ({svc}/{fp}) was REJECTED — nothing changed; nothing pending."
-    if st == "expired":
-        return f"Self-code: latest proposal #{pid} ({svc}/{fp}) EXPIRED unapplied — nothing changed; nothing pending."
-    if st == "undone":
-        return f"Self-code: latest proposal #{pid} ({svc}/{fp}) was applied then UNDONE (rolled back); nothing pending."
-    if st == "apply_failed":
-        return f"Self-code: latest proposal #{pid} ({svc}/{fp}) apply FAILED — code unchanged; nothing pending."
-    return f"Self-code: latest proposal #{pid} ({svc}/{fp}) status '{st}'."
-
 async def get_system_truth_context() -> str:
     """The consolidated always-on SYSTEM TRUTH block (Session 58), cached ~45s: live integration
-    health + self-code state + the Cephalopod-reach boundary, as ONE grounded block rather than
+    health + the Cephalopod-reach boundary, as ONE grounded block rather than
     separate bolt-ons. This is THE source of truth for system state; the hardened SYSTEM_PROMPT
     rule ties every system/world claim to it ("not in the block => I'd have to check").
 
@@ -504,9 +471,9 @@ async def get_system_truth_context() -> str:
     except Exception:
         pass
     try:
-        hab, fs, anth, pg, rds, selfcode = await asyncio.gather(
+        hab, fs, anth, pg, rds = await asyncio.gather(
             _probe_habitica_status(), _probe_fatsecret_status(), _probe_anthropic_status(),
-            _probe_postgres_status(), _probe_redis_status(), _selfcode_state_line())
+            _probe_postgres_status(), _probe_redis_status())
     except Exception as e:
         logger.error(f"get_system_truth_context build error: {e}")
         return ""
@@ -521,7 +488,6 @@ async def get_system_truth_context() -> str:
         "SYSTEM TRUTH (live, cached ~45s — the source of truth for system state right now. Anything "
         "NOT in this block you do NOT know: say you'd have to check, never infer it):\n"
         "Integrations:\n" + integ + "\n"
-        + selfcode + "\n"
         "- Cephalopod: a separate system. From here (Telegram) there is NO path to it and no live "
         "status — it's reachable only from the dashboard chat. Never say you sent/told it anything from here.\n"
         "If she says something here is down/broken/applied/sent and this block says otherwise, trust THIS "
@@ -930,7 +896,7 @@ def append_to_note(name_query: str, content: str) -> str:
 
 # ---------------------------------------------------------------------------
 # S80 phase-2 vault tools: on-demand full-vault SEARCH, READ, and confirmed WRITE, callable
-# mid-conversation by the chat turn loop (deterministic handlers, same pattern as native/selfcode).
+# mid-conversation by the chat turn loop (deterministic handlers, same pattern as native).
 # CHAT-TRIGGERED ONLY — no anchor/scheduler/background path gets write access. Every write is
 # echoed back and only committed after an explicit "yes" the same turn, then logged to
 # ghost_db.vault_writes (durable + independent of Obsidian). Vault content NEVER touches the
@@ -1991,7 +1957,7 @@ async def call_claude_api(user_id: int, message: str, vault_context: str = "") -
     board_context = await get_board_context()
     native_context = await get_native_context(user_id)   # S66: live native Habits & Todos state
     pattern_context = await get_pattern_context()
-    system_truth = await get_system_truth_context()   # S58: integrations + self-code + cephalopod, one block
+    system_truth = await get_system_truth_context()   # S58: integrations + cephalopod, one block
     recent_phrases = await get_recent_phrases()
     vault_ctx = await get_vault_context()
     system_with_context = SYSTEM_PROMPT + "\n\n" + today_context
@@ -2173,129 +2139,6 @@ async def call_claude(user_id: int, message: str, route_text: str = None) -> str
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Ghost online. I'm watching.")
 
-SELFCODE_DIR = os.environ.get("SELFCODE_DIR") or os.path.expanduser("~/ghost/selfcode")
-
-async def handle_selfcode_command(user_message: str) -> str | None:
-    """Approval gate for self-code proposals. The bot RECORDS intent only — it flips
-    the proposal's status (the precondition selfcode.apply_change enforces) and hands
-    back the exact host-side command. It never writes code or rebuilds from the pod.
-    Returns a reply string if this was a self-code command, else None."""
-    low = user_message.strip().lower()
-    is_apply = "apply this change" in low
-    is_undo = low.startswith("undo last change")
-    is_reject = low in ("no", "reject", "cancel", "don't apply", "dont apply",
-                        "do not apply", "reject this", "no thanks", "nope")
-    if not (is_apply or is_undo or is_reject):
-        return None
-    try:
-        conn = await asyncpg.connect(host=POSTGRES_HOST, port=5432, user="postgres",
-                                     password=POSTGRES_PASSWORD, database="ghost_db")
-        try:
-            if is_undo:
-                svc = low.replace("undo last change", "").strip() or None
-                q = ("SELECT id, service FROM code_proposals WHERE status IN ('applied','applied_no_rebuild') "
-                     "AND backup_path IS NOT NULL")
-                row = (await conn.fetchrow(q + " AND service=$1 ORDER BY resolved_at DESC LIMIT 1", svc)
-                       if svc else await conn.fetchrow(q + " ORDER BY resolved_at DESC LIMIT 1"))
-                if not row:
-                    return f"Nothing to undo{(' for ' + svc) if svc else ''}."
-                return (f"Undo is a privileged action, so it runs on the host, not from my sandbox. "
-                        f"Run this to restore {row['service']} and rebuild:\n"
-                        f"python3 {SELFCODE_DIR}/selfcode.py undo {row['service']}")
-
-            # apply / reject both act on the one open proposal
-            row = await conn.fetchrow(
-                "SELECT id, service, file_path FROM code_proposals WHERE status='proposed' ORDER BY id DESC LIMIT 1")
-            if not row:
-                return "No proposal is waiting. Nothing to apply or reject." if not is_reject else None
-            if is_reject:
-                await conn.execute("UPDATE code_proposals SET status='rejected', resolved_at=NOW() WHERE id=$1", row["id"])
-                return f"Rejected proposal #{row['id']}. Nothing changed."
-            # is_apply → record approval; the host applier acts on 'approved'
-            await conn.execute("UPDATE code_proposals SET status='approved' WHERE id=$1", row["id"])
-            fname = os.path.basename(row["file_path"])
-            return (f"Approved proposal #{row['id']} ({row['service']}/{fname}). "
-                    f"Applying is a privileged action so it runs on the host, not from my sandbox. "
-                    f"Run:\npython3 {SELFCODE_DIR}/selfcode.py apply {row['id']}\n"
-                    f"That backs up the file, writes the change, and rebuilds {row['service']}.")
-        finally:
-            await conn.close()
-    except Exception as e:
-        logger.error(f"Selfcode command error: {e}")
-        return "Couldn't reach the proposals store just now. Try again in a moment."
-
-# Session 52 (Task 3): self-code STATUS questions ("did you change/apply/delete/undo … my
-# code / that proposal / that diff?") get a deterministic answer from a real code_proposals
-# read, never a freeform guess. This is the S16-addendum class — Claude once DENIED a real
-# proposal diff came from Ghost, and separately worried it had "deleted her code". The answer
-# here is a plain string built from the table, so the model cannot confabulate about its own
-# self-code system. Distinct from handle_selfcode_command (which acts on the exact "apply this
-# change" / "undo" / "no" commands); this only fires on QUESTIONS about state.
-_SELFCODE_SUBJECTS = ("proposal", "diff", "self-code", "selfcode", "your code", "my code",
-                      "the code", "code change", "your own code", "code you")
-_SELFCODE_VERBS = ("appl", "chang", "delet", "undo", "undone", "revert", "reject",
-                   "overwrit", "modif", "edit", "wrote", "broke", "broken", "wreck", "mess",
-                   "wipe", "gone", "lost")
-
-async def handle_selfcode_status_query(user_message: str) -> str | None:
-    low = user_message.strip().lower()
-    if not any(s in low for s in _SELFCODE_SUBJECTS):
-        return None
-    is_q = low.endswith("?") or low.startswith(("did ", "was ", "were ", "have you", "has ",
-                                                "is ", "are ", "you ", "what happened", "what's the status",
-                                                "whats the status", "what did you"))
-    retro = any(c in low for c in ("did you", "have you", "was that", "were you", "already",
-                                   "right", "you just", "what happened", "status of"))
-    verb = any(v in low for v in _SELFCODE_VERBS) or "status" in low
-    if not (verb and (is_q or retro)):
-        return None
-    try:
-        conn = await asyncpg.connect(host=POSTGRES_HOST, port=5432, user="postgres",
-                                     password=POSTGRES_PASSWORD, database="ghost_db")
-        try:
-            row = await conn.fetchrow(
-                "SELECT id, service, file_path, status, created_at, resolved_at "
-                "FROM code_proposals ORDER BY id DESC LIMIT 1")
-        finally:
-            await conn.close()
-    except Exception as e:
-        logger.error(f"selfcode status query error: {e}")
-        return "I can't reach the proposals store right now, so I can't tell you the state of my code changes for certain. Try again in a moment."
-    # The load-bearing invariant, stated whenever deletion/breakage is implied: self-code
-    # never deletes; it applies an approved diff and backs the file up first.
-    deletion_implied = any(w in low for w in ("delet", "broke", "broken", "wreck", "mess",
-                                              "gone", "lost", "wipe"))
-    guard = ("I don't and can't delete your code. My self-code system only ever applies a "
-             "proposed diff after you approve it with 'apply this change', and it backs the file "
-             "up first. ") if deletion_implied else ""
-    if not row:
-        return (guard + "There are no code proposals on record at all — I've never proposed, applied, "
-                "or reverted a change to my own code. Nothing has changed.")
-    pid, svc, fpath = row["id"], row["service"], os.path.basename(row["file_path"] or "")
-    st = row["status"]
-    when_made = row["created_at"].astimezone(LOCAL_TZ).strftime("%d %b %H:%M") if row["created_at"] else "?"
-    when_res = row["resolved_at"].astimezone(LOCAL_TZ).strftime("%d %b %H:%M") if row["resolved_at"] else None
-    if st in ("proposed", "approved", "apply_queued"):
-        return (guard + f"There's an open proposal, #{pid} ({svc}/{fpath}), status '{st}' (raised {when_made}). "
-                "Nothing is applied until you reply 'apply this change' exactly — so no code has changed yet.")
-    if st in ("applied", "applied_no_rebuild"):
-        return (guard + f"The most recent proposal is #{pid} ({svc}/{fpath}) — APPLIED"
-                + (f" on {when_res}" if when_res else "") +
-                f". It changed {fpath} after your approval, with a backup taken first. That's the only recent change.")
-    if st == "rejected":
-        return (guard + f"The most recent proposal is #{pid} ({svc}/{fpath}) — you REJECTED it"
-                + (f" on {when_res}" if when_res else "") + ", so nothing changed.")
-    if st == "expired":
-        return (guard + f"The most recent proposal is #{pid} ({svc}/{fpath}) — it EXPIRED unapplied"
-                + (f" on {when_res}" if when_res else "") + ", so nothing changed.")
-    if st == "undone":
-        return (guard + f"The most recent proposal is #{pid} ({svc}/{fpath}) — it was applied and then "
-                "UNDONE (rolled back to the backup), so that change is no longer in effect.")
-    if st == "apply_failed":
-        return (guard + f"The most recent proposal is #{pid} ({svc}/{fpath}) — the apply FAILED, so the "
-                "code was not changed.")
-    return (guard + f"The most recent proposal is #{pid} ({svc}/{fpath}), status '{st}'.")
-
 SCROLL_SUPPRESS_KEY = "scroll_suppressed_until"
 SCROLL_SUPPRESS_DEFAULT_MIN = 45
 SCROLL_SUPPRESS_MAX_MIN = 180
@@ -2394,42 +2237,6 @@ async def handle_location_override(user_message: str) -> str | None:
     if loc == "wfh":
         return "Noted — home today. Movement nudges run on the WFH cadence until midnight."
     return "Noted — office today. Movement nudges ease off until midnight; the commute counts for something."
-
-async def handle_self_review_request(user_message: str, source: str) -> str | None:
-    """Session 16, task 4: third entry point into the self-code pipeline. This only
-    QUEUES a self-review request — the host-side runner does the analysis and then
-    calls the existing propose_change(), so every safeguard (path allowlist at the
-    proposal step, one-diff-at-a-time, exact-phrase Telegram approval, dashboard
-    Apply) applies completely unchanged. The bot pod keeps zero code/cluster access."""
-    low = user_message.lower().strip()
-    triggers = ("review your outstanding", "review the outstanding list",
-                "propose an improvement", "suggest an improvement to yourself",
-                "self-review and propose", "self review and propose")
-    if not any(t in low for t in triggers):
-        return None
-    try:
-        conn = await asyncpg.connect(
-            host=POSTGRES_HOST, port=5432, user="postgres",
-            password=POSTGRES_PASSWORD, database="ghost_db")
-        try:
-            open_prop = await conn.fetchrow(
-                "SELECT id FROM code_proposals WHERE status IN ('proposed','approved','apply_queued') LIMIT 1")
-            if open_prop:
-                return (f"Proposal #{open_prop['id']} is still open — one at a time is the rule. "
-                        "Resolve it first, then ask me again.")
-            pending = await conn.fetchrow("SELECT id FROM self_review_requests WHERE status='pending' LIMIT 1")
-            if pending:
-                return "Already reviewing — a self-review request is queued. Give it a minute."
-            await conn.execute(
-                "INSERT INTO self_review_requests (requested_via) VALUES ($1)", source)
-        finally:
-            await conn.close()
-    except Exception as e:
-        logger.error(f"self review queue error: {e}")
-        return "Couldn't queue the self-review just now."
-    return ("Queued. I'll go over my Outstanding list and draft ONE proposal through the normal "
-            "pipeline — you'll get the diff on Telegram, and nothing applies without your "
-            "\"apply this change\". Same gate as always.")
 
 async def handle_voice_note_deletion(user_id: int, user_message: str) -> str | None:
     """Delete voice-note transcripts from Ghost's records on the user's explicit request
@@ -2917,11 +2724,6 @@ async def process_message(user_id: int, user_message: str, source: str = "telegr
         await save_to_postgres(user_id, "user", user_message)
         await save_to_postgres(user_id, "assistant", deletion_reply)
         return deletion_reply
-    self_review_reply = await handle_self_review_request(user_message, source)
-    if self_review_reply is not None:
-        await save_to_postgres(user_id, "user", user_message)
-        await save_to_postgres(user_id, "assistant", self_review_reply)
-        return self_review_reply
     location_reply = await handle_location_override(user_message)
     if location_reply is not None:
         await save_to_postgres(user_id, "user", user_message)
@@ -2947,21 +2749,6 @@ async def process_message(user_id: int, user_message: str, source: str = "telegr
         await save_to_postgres(user_id, "user", user_message)
         await save_to_postgres(user_id, "assistant", scroll_reply)
         return scroll_reply
-
-    selfcode_reply = await handle_selfcode_command(user_message)
-    if selfcode_reply is not None:
-        await save_to_postgres(user_id, "user", user_message)
-        await save_to_postgres(user_id, "assistant", selfcode_reply)
-        return selfcode_reply
-
-    # Session 52 (Task 3): a self-code STATUS question ("did you change/delete/apply my code?")
-    # gets a deterministic answer from code_proposals. After handle_selfcode_command so the exact
-    # apply/undo/reject commands keep priority (questions don't match those anyway).
-    selfcode_status_reply = await handle_selfcode_status_query(user_message)
-    if selfcode_status_reply is not None:
-        await save_to_postgres(user_id, "user", user_message)
-        await save_to_postgres(user_id, "assistant", selfcode_status_reply)
-        return selfcode_status_reply
 
     # S80 phase 2: on-demand vault WRITE (append/create) with a same-turn confirmation handshake.
     # Runs early so a pending "yes" commits before other routing can eat it, and so a write request
@@ -3008,8 +2795,7 @@ async def process_message(user_id: int, user_message: str, source: str = "telegr
         return native_create_reply
 
     # Commitment tracking (session 19): resolve an open confirmation, or ask about a
-    # newly-spotted intention. Runs after selfcode so "apply this change" keeps
-    # priority; detect_commitment() itself defers to Habitica's task-capture phrasing.
+    # newly-spotted intention. detect_commitment() defers to Habitica's task-capture phrasing.
     commitment_reply = await handle_commitment(user_id, user_message, source)
     if commitment_reply is not None:
         await save_to_postgres(user_id, "user", user_message)

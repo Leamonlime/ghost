@@ -60,7 +60,7 @@
   .profile .name { font-size: 10.5px; color: #ffe3f1; }
   .profile .role { font-size: 8px; color: #a97b95; }
 
-  /* S63: row2 is now content-driven (auto) — it holds the sparse Overview/Proposals + Timeline,
+  /* S63: row2 is now content-driven (auto) — it holds the sparse Overview + Timeline,
      which should read compact, not a fixed slab. The two content-rich Habitica lists live in the
      tall 1.5fr row1 instead. */
   .content { flex: 1 1 auto; min-height: 0; display: grid; grid-template-rows: 1.5fr auto 0.82fr auto; gap: 7px; }
@@ -78,12 +78,12 @@
      row so neither is squeezed; each card's own .scroll-list handles overflow (the grid fraction
      bounds the height, so the row never grows unbounded). */
   .row1 { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; min-height: 0; }
-  /* S63: row2 = Overview + Timeline + Proposals. align-items:start so the sparse Overview/Proposals
-     stay compact (a min-height floor, not stretched to Timeline's height); Timeline drives the row. */
-  .row2 { display: grid; grid-template-columns: 1fr 1.15fr 1fr; gap: 7px; min-height: 0; align-items: start; }
-  #cardOverview, #cardProposals { min-height: 116px; }
+  /* S63: row2 = Overview + Timeline. align-items:start so the sparse Overview stays compact
+     (a min-height floor, not stretched to Timeline's height); Timeline drives the row.
+     19/10/2026: the Self-Code Proposals card was removed with self-coding. */
+  .row2 { display: grid; grid-template-columns: 1fr 1.15fr; gap: 7px; min-height: 0; align-items: start; }
+  #cardOverview { min-height: 116px; }
   #cardTimeline .scroll-list { max-height: 210px; }   /* bound the timeline so row2 stays compact */
-  #cardProposals .scroll-list { max-height: 240px; }  /* a rare proposal burst scrolls, doesn't push layout */
   .row3 { display: grid; grid-template-columns: 1fr 1fr 1.2fr; gap: 7px; min-height: 0; }
 
   .card { padding: 9px 11px; display: flex; flex-direction: column; min-height: 0; }
@@ -185,8 +185,6 @@
   .chat-input { flex:1 1 auto; background:rgba(10,3,8,0.5); border:1px solid rgba(255,150,200,0.18); border-radius:10px; padding:9px 12px; color:#f3e6ee; font-size:12px; outline:none; }
   textarea.chat-input { resize:none; font-family:inherit; line-height:1.35; max-height:120px; }
   .sidebar.collapsed { display:none; }  /* S42: hamburger toggle */
-  .prop-row { display:flex; justify-content:space-between; align-items:flex-start; gap:6px; padding:5px 4px; border-bottom:1px solid rgba(255,150,200,0.06); font-size:11px; }
-  .prop-apply { background:rgba(126,230,171,0.16); color:#7ee6ab; border:none; border-radius:7px; padding:3px 9px; font-size:10px; cursor:pointer; flex-shrink:0; }
   #btnBell { position:relative; }
   .bell-badge { position:absolute; top:-3px; right:-3px; background:#ff5f7a; color:#fff; font-size:8px; min-width:13px; height:13px; border-radius:7px; display:none; align-items:center; justify-content:center; padding:0 2px; }
   .chat-send { background:rgba(255,95,168,0.28); color:#ffe3f1; border:none; border-radius:10px; padding:0 16px; cursor:pointer; font-size:12px; }
@@ -270,11 +268,6 @@
           <div class="tl-axis"><span>6a</span><span>9a</span><span>12p</span><span>3p</span><span>6p</span><span>9p</span></div>
           <div class="tl-track" id="tlTrack" style="margin-bottom:6px;"></div>
           <div class="scroll-list" id="missionList"></div>
-        </div>
-
-        <div class="card panel" id="cardProposals">
-          <div class="card-title">Self-Code Proposals<span class="count" id="propCount" style="margin-left:auto;font-size:9px;color:#8a6a7c;"></span></div>
-          <div class="scroll-list" id="proposalList"></div>
         </div>
       </div>
 
@@ -517,26 +510,6 @@ function renderTop(d){
   document.getElementById("navEscCount").textContent = d.escalation ? "1" : "0";
 }
 
-// S42: self-code proposals restored to the v8 dashboard (backend was intact).
-function renderProposals(d){
-  const props = d.proposals || [];
-  const cnt = document.getElementById("propCount"); if(cnt) cnt.textContent = props.length ? props.length : "none";
-  const el = document.getElementById("proposalList"); if(!el) return;
-  if(!props.length){ el.innerHTML = '<div style="font-size:11px;color:#8a6a7c;padding:4px;">No open proposals.</div>'; return; }
-  el.innerHTML = props.map(p => {
-    const col = p.status==='approved' ? '#7ee6ab' : (p.status==='apply_queued' ? '#e6c07e' : '#c98aab');
-    const btn = p.can_apply ? `<button class="prop-apply" onclick="applyProposal(${p.id})">Apply</button>` : '';
-    return `<div class="prop-row"><div style="min-width:0"><span style="color:${col}">#${p.id} ${esc(p.service)}/${esc(p.file)}</span> <span style="font-size:9px;color:#8a6a7c">${esc(p.status)}</span><div style="font-size:10px;color:#9a7a8c">${esc(p.explanation||'')}</div></div>${btn}</div>`;
-  }).join("");
-}
-async function applyProposal(id){
-  if(!confirm("Queue proposal #"+id+" to apply? (it must already be approved via Telegram)")) return;
-  try{
-    const r = await (await fetch("/api/apply",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})})).json();
-    alert(r.ok ? ("Queued #"+id+" — the host runner will apply it.") : ("Couldn't queue: "+(r.error||"unknown")));
-    fetchDashboard();
-  }catch(e){ alert("Apply request failed: "+e); }
-}
 function renderMomentum(m){
   const set=(role,txt)=>{const e=document.querySelector('[data-role="'+role+'"]'); if(e) e.textContent=txt;};
   const o = m.overall||{};
@@ -583,10 +556,9 @@ async function fetchDashboard(){
     renderMonitor(d);
     renderBudget(d);
     renderIntegrations(d);
-    renderProposals(d);
     loadMomentum();  // momentum is its own endpoint (S57); fire-and-forget alongside the main refresh
-    // bell badge: count of open proposals + active escalation
-    const bb=document.getElementById("bellBadge"); if(bb){ const n=(d.proposals||[]).length+(d.escalation?1:0); bb.textContent=n; bb.style.display=n?"flex":"none"; }
+    // bell badge: active escalation
+    const bb=document.getElementById("bellBadge"); if(bb){ const n=(d.escalation?1:0); bb.textContent=n; bb.style.display=n?"flex":"none"; }
     applySearch();  // re-apply the habits/todos filter after the lists re-render
   } catch(e){
     document.getElementById("statusDot").className = "dot err";

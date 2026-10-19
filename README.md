@@ -42,8 +42,8 @@ through Kubernetes Secrets; no real values live in the repo.
 
 ## How it improves itself
 
-- **Self-code proposals.** Ghost can propose changes to its own bot and scheduler
-  code. Nothing applies until approved on the dashboard, and the privileged
+- **Verified deploys.** `deploy/deploy.py` rebuilds one service and only reports
+  success once the new pod is healthy and serving the new code. The privileged
   rebuild goes through a fixed, root-owned wrapper that can only rebuild `bot` or
   `scheduler`. (That wrapper and its single-line sudoers grant are host-specific,
   so they are kept out of this repo.)
@@ -71,7 +71,7 @@ Telegram / Android app / dashboard
 | `bot/` | Telegram bot: routing, habits/todos, money, voice, calendar |
 | `scheduler/` | Proactive nudges, summaries, health checks |
 | `dashboard/` | FastAPI dashboard and the phone-app API, plus `pages/` |
-| `selfcode/` | Self-code proposals and the rebuild wrapper |
+| `deploy/` | Verified deploy (rebuild + post-deploy checks) |
 | `tests/smoke/` | Dashboard contract and smoke tests |
 
 Everything runs as pods in the `ghost` namespace. Secrets are read with

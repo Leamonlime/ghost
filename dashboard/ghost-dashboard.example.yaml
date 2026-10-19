@@ -84,8 +84,6 @@ spec:
           value: "/vault"
         - name: GHOST_CALORIE_TARGET
           value: "2600"
-        - name: SELFCODE_DIR
-          value: "/home/youruser/ghost/selfcode"
         - name: FATSECRET_CONSUMER_KEY
           valueFrom:
             secretKeyRef:

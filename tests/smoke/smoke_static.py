@@ -51,12 +51,12 @@ def check_decisions_wiring(repo_root):
         except OSError as e:
             out.append(f"{svc}/Dockerfile: cannot read ({e})")
     try:
-        sc = open(os.path.join(repo_root, "selfcode", "selfcode.py")).read()
+        sc = open(os.path.join(repo_root, "deploy", "deploy.py")).read()
         m = re.search(r"_IMAGE_FILES\s*=\s*\{(.*?)\}", sc, re.S)
         if not m or m.group(1).count("decisions.py") < 2:
-            out.append("selfcode._IMAGE_FILES: decisions.py must be listed for both bot and scheduler")
+            out.append("deploy._IMAGE_FILES: decisions.py must be listed for both bot and scheduler")
     except OSError as e:
-        out.append(f"selfcode.py: cannot read ({e})")
+        out.append(f"deploy.py: cannot read ({e})")
     return out
 
 
