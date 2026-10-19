@@ -3618,12 +3618,10 @@ async def wifi_webhook(request: Request):
 # API, so its relative fetch("/api/command-center") needs no CORS. It's read from the
 # vault mount at request time (no new configmap/mount — least surface), so editing the
 # .html in Obsidian updates the live page. no-store so a fresh copy is always served.
-# Candidate locations for the served page — the vault Ghost folder got reorganised
-# (Projects/Ghost -> Projects/Tech/Ghost), so try both rather than hardcode one and
-# 500 when it moves again. First one that exists wins.
+# Served-page location. The pre-reorganisation Projects/Ghost/ fallback was dropped
+# 19/10/2026 (that folder no longer exists in the vault).
 DASHBOARD_HTML_CANDIDATES = [
     "Projects/Tech/Ghost/ghost-dashboard-live.html",
-    "Projects/Ghost/ghost-dashboard-live.html",
 ]
 
 # ===========================================================================
@@ -4357,12 +4355,6 @@ async def index():
     return HTMLResponse(content="<h1>Ghost dashboard HTML not found</h1>"
                         f"<p>tried: {DASHBOARD_HTML_CANDIDATES}</p>", status_code=500)
 
-# Session 78: the legacy /console interactive dashboard (the pre-S36 feed/chat/Cephalopod/apply
-# page, served from the inline PAGE constant) was retired — nothing linked it (no nav pill, not in
-# the smoke contract, no bot/scheduler reference), superseded by the v8 command center at "/". Route
-# and PAGE both removed.
-
-
 # Session 47: serve static assets (tarot card art) referenced by the ghost-*.html pages
 # relative to themselves. URL /assets/... -> the vault's Projects/Tech/Ghost/assets folder,
 # i.e. "next to" the served page, as ghost-tarot.html's own comment intends. Whitelisted
@@ -4371,7 +4363,7 @@ async def index():
 # served here too, same-origin, next to the pages. Short cache for css/js so token edits land fast.
 _SAFE_ASSET = re.compile(r"^[a-z0-9][a-z0-9/_.-]*\.(jpg|jpeg|png|webp|gif|svg|css|js)$", re.I)
 _CTYPE = {"css": "text/css", "js": "application/javascript"}
-ASSET_DIRS = ["Projects/Tech/Ghost/assets", "Projects/Ghost/assets"]
+ASSET_DIRS = ["Projects/Tech/Ghost/assets"]
 
 @app.get("/assets/{path:path}")
 async def serve_asset(path: str):
@@ -4422,7 +4414,7 @@ async def pwa_service_worker():
 # "/" and every /api|/webhook route are declared earlier and win by order;
 # multi-segment paths never match this single path param anyway.
 _SAFE_GHOST_PAGE = re.compile(r"^ghost-[a-z0-9-]+\.html$")
-GHOST_PAGE_DIRS = ["Projects/Tech/Ghost", "Projects/Ghost"]
+GHOST_PAGE_DIRS = ["Projects/Tech/Ghost"]
 
 @app.get("/{page}", response_class=HTMLResponse)
 async def ghost_feature_page(page: str):
