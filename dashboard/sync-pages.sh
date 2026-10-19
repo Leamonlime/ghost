@@ -6,7 +6,7 @@
 # dashboard-smoke.yml CI has something to test the data-role hook contract against. That copy does
 # NOT update itself — it's a snapshot.
 #
-# RE-RUN THIS whenever a session edits any of these five pages or ghost-common.css, and include the
+# RE-RUN THIS whenever a session edits any of these pages or ghost-common.css, and include the
 # result in the SAME commit, so the mirror never silently drifts from what's actually served.
 # (A future improvement could wire this into a pre-commit hook or serve the pages from the repo
 # directly to remove the mirror entirely — a 2.0 architecture decision, not done here.)
@@ -15,7 +15,7 @@ set -euo pipefail
 VAULT="${GHOST_VAULT_DIR:-$HOME/CentralVault/Projects/Tech/Ghost}"
 DEST="$(cd "$(dirname "$0")" && pwd)/pages"
 
-PAGES=(ghost-dashboard-live.html ghost-bills.html ghost-horoscope.html ghost-tarot.html ghost-quest-log.html ghost-habits.html)
+PAGES=(ghost-dashboard-live.html ghost-bills.html ghost-horoscope.html ghost-tarot.html ghost-habits.html)
 
 # Shared assets to mirror alongside the pages (S83 added the PWA files for ghost-habits.html).
 ASSETS=(ghost-common.css manifest.webmanifest sw.js ghost-icon-192.png ghost-icon-512.png)

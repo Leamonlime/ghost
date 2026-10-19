@@ -25,7 +25,6 @@ code uses this instead of re-inlining asyncpg.connect. bot.py and dashboard.py d
 """
 import os
 import re
-import random
 import logging
 import zoneinfo
 from datetime import datetime, timedelta, date
@@ -43,15 +42,6 @@ FIELD_TYPES = ("positive", "negative", "both", "tickbox", "checklist")
 FREQ_KINDS = ("weekdays", "monthly", "count")
 PRIORITIES = ("high", "med", "low")
 BUCKETS = ["Maintenance", "Habits", "Work", "Business", "Sidequests", "Creative/Relax", "unsorted"]
-
-# Session 76 currency economy. Base payout per completion: a routine habit/todo tap = 1 unit; a
-# full quest ("adventure") = 10 units — an order of magnitude more, a reasonable starting ratio
-# (revisit once real data suggests otherwise). Critical hit: CRIT_CHANCE per award, 2-3x, logged
-# as its own event so it reads as a distinct moment rather than folding silently into the total.
-CURRENCY_BASE = {"habit": 1, "todo": 1, "quest": 10}
-CURRENCY_CRIT_CHANCE = 0.10
-CURRENCY_CRIT_MULTIPLIERS = (2, 3)
-ARC_DEFAULT_DAYS = 14   # matches Lea's existing sprint cadence
 
 
 async def pg_conn():
@@ -127,8 +117,8 @@ CREATE TABLE IF NOT EXISTS todos (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE todos ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT FALSE;
--- S78: a todo can be flagged a "quest" — completing it awards currency at the quest tier (10)
--- instead of the routine todo tier (1), via the SAME _award_currency path (source 'quest').
+-- S78: a todo can be flagged a "quest" (a display flag; the quest currency tier it once set was
+-- removed with the currency economy, 19/10/2026).
 ALTER TABLE todos ADD COLUMN IF NOT EXISTS is_quest BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE TABLE IF NOT EXISTS todo_checklist (
     id BIGSERIAL PRIMARY KEY,
@@ -154,30 +144,6 @@ ALTER TABLE habits ADD COLUMN IF NOT EXISTS habitica_source_id TEXT;
 ALTER TABLE todos  ADD COLUMN IF NOT EXISTS habitica_source_id TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS habits_habitica_src_idx ON habits(habitica_source_id) WHERE habitica_source_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS todos_habitica_src_idx  ON todos(habitica_source_id)  WHERE habitica_source_id IS NOT NULL;
--- Session 76: the ONE currency economy (reward shop + future boss-battle currency both draw from
--- this). One row per award, written by the single shared _award_currency() from both native's
--- habit-tap/todo-complete path AND the Quest toggle — no parallel award functions to drift.
--- Balance = SUM(amount). event_type distinguishes a base award from a critical hit (visible as a
--- distinct feed moment) and reserves 'token' for later flavour drops.
-CREATE TABLE IF NOT EXISTS quest_currency_events (
-    id BIGSERIAL PRIMARY KEY,
-    source TEXT NOT NULL,                       -- habit | todo | quest
-    item_id TEXT NOT NULL,
-    amount INT NOT NULL,
-    event_type TEXT NOT NULL DEFAULT 'base',    -- base | critical | token
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS quest_currency_created_at_idx ON quest_currency_events (created_at);
--- Session 76: story arcs — a named date window only. "Progress" is a pure query over existing
--- tables (currency earned + completions in range); no per-arc completion tracker beyond this row.
-CREATE TABLE IF NOT EXISTS story_arcs (
-    id BIGSERIAL PRIMARY KEY,
-    user_id BIGINT NOT NULL,
-    name TEXT NOT NULL,
-    start_date DATE NOT NULL,
-    end_date DATE NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
 """
 
 
@@ -300,7 +266,7 @@ async def create_todo(text, kind="tickbox", priority="med", due_date=None,
                       is_quest=False):
     """Create a native todo. due_date may be a date or an ISO 'YYYY-MM-DD' string. Returns id.
     habitica_source_id records Session-75 import provenance (idempotency key). is_quest (S78) flags
-    it a quest → completion awards at the quest currency tier."""
+    it a quest (display flag only)."""
     text = (text or "").strip()
     if not text:
         return None
@@ -334,129 +300,6 @@ async def create_todo(text, kind="tickbox", priority="med", due_date=None,
         return tid
     finally:
         await conn.close()
-
-
-# ---------------------------------------------------------------------------
-# Session 76 — the single currency economy. _award_currency() is the ONE award path: native's
-# habit-tap/todo-complete calls it on an existing connection (coincident with the momentum write);
-# the dashboard Quest toggle calls award_currency() (opens its own conn). No parallel logic.
-# ---------------------------------------------------------------------------
-async def _award_currency(conn, source, item_id, base=None):
-    """Award currency for one completion on an existing conn. Rolls a critical hit
-    (CURRENCY_CRIT_CHANCE -> 2-3x, event_type='critical'), else a 'base' award. Never raises into
-    the caller — a currency miss must not break a real completion."""
-    try:
-        base = CURRENCY_BASE.get(source, 1) if base is None else int(base)
-        etype, amount = "base", base
-        if random.random() < CURRENCY_CRIT_CHANCE:
-            etype, amount = "critical", base * random.choice(CURRENCY_CRIT_MULTIPLIERS)
-        await conn.execute(
-            "INSERT INTO quest_currency_events (source, item_id, amount, event_type) VALUES ($1,$2,$3,$4)",
-            source, str(item_id), amount, etype)
-        return {"amount": amount, "event_type": etype, "base": base}
-    except Exception as e:
-        logger.error(f"_award_currency error ({source}/{item_id}): {e}")
-        return None
-
-
-async def award_currency(source, item_id, base=None):
-    """Connection-opening wrapper for callers that don't already hold one (the Quest toggle)."""
-    conn = await pg_conn()
-    try:
-        await ensure_schema(conn)
-        return await _award_currency(conn, source, item_id, base)
-    finally:
-        await conn.close()
-
-
-async def currency_summary(conn=None, recent=8):
-    """Running balance (sum of all events) + critical-hit count + the most recent events, for the
-    dashboard card. Read-only."""
-    own = conn is None
-    if own:
-        conn = await pg_conn()
-    try:
-        await ensure_schema(conn)
-        bal = await conn.fetchval("SELECT COALESCE(SUM(amount),0) FROM quest_currency_events") or 0
-        crit = await conn.fetchval(
-            "SELECT COUNT(*) FROM quest_currency_events WHERE event_type='critical'") or 0
-        rows = await conn.fetch(
-            "SELECT source, amount, event_type, "
-            "to_char(created_at AT TIME ZONE $2,'YYYY-MM-DD HH24:MI') ts "
-            "FROM quest_currency_events ORDER BY id DESC LIMIT $1", int(recent), str(LOCAL_TZ))
-        return {"balance": int(bal), "critical_hits": int(crit),
-                "recent": [{"source": r["source"], "amount": r["amount"],
-                            "event_type": r["event_type"], "ts": r["ts"]} for r in rows]}
-    finally:
-        if own:
-            await conn.close()
-
-
-# ---------------------------------------------------------------------------
-# Session 76 — story arcs. An arc is just a named date window; "progress" is a pure query over
-# tables that already exist (currency earned + completions in range). No per-arc tracker.
-# ---------------------------------------------------------------------------
-async def start_arc(name, days=ARC_DEFAULT_DAYS, start=None, user_id=None):
-    name = (name or "").strip()
-    if not name:
-        return None
-    uid = user_id if user_id is not None else DEFAULT_USER_ID
-    if isinstance(start, str) and start.strip():
-        try:
-            start = date.fromisoformat(start.strip()[:10])
-        except ValueError:
-            start = None
-    if not isinstance(start, date):
-        start = today_local()
-    try:
-        days = max(1, int(days))
-    except (TypeError, ValueError):
-        days = ARC_DEFAULT_DAYS
-    end = start + timedelta(days=days - 1)
-    conn = await pg_conn()
-    try:
-        await ensure_schema(conn)
-        return await conn.fetchval(
-            "INSERT INTO story_arcs (user_id, name, start_date, end_date) VALUES ($1,$2,$3,$4) RETURNING id",
-            uid, name, start, end)
-    finally:
-        await conn.close()
-
-
-async def active_arc(user_id=None, conn=None):
-    """The arc whose window includes today (else the most recent arc), with progress computed live:
-    currency earned in the window (the headline number) + completion count. None if no arcs yet."""
-    own = conn is None
-    if own:
-        conn = await pg_conn()
-    try:
-        await ensure_schema(conn)
-        uid = user_id if user_id is not None else DEFAULT_USER_ID
-        d = today_local()
-        row = await conn.fetchrow(
-            "SELECT * FROM story_arcs WHERE user_id=$1 AND start_date<=$2 AND end_date>=$2 "
-            "ORDER BY id DESC LIMIT 1", uid, d)
-        if not row:
-            row = await conn.fetchrow(
-                "SELECT * FROM story_arcs WHERE user_id=$1 ORDER BY id DESC LIMIT 1", uid)
-        if not row:
-            return None
-        s, e = row["start_date"], row["end_date"]
-        tz = str(LOCAL_TZ)
-        earned = await conn.fetchval(
-            "SELECT COALESCE(SUM(amount),0) FROM quest_currency_events "
-            "WHERE (created_at AT TIME ZONE $3)::date BETWEEN $1 AND $2", s, e, tz) or 0
-        comps = await conn.fetchval(
-            "SELECT COUNT(*) FROM momentum_events "
-            "WHERE (completed_at AT TIME ZONE $3)::date BETWEEN $1 AND $2", s, e, tz) or 0
-        return {"id": row["id"], "name": row["name"],
-                "start_date": s.isoformat(), "end_date": e.isoformat(),
-                "active": s <= d <= e, "days_total": (e - s).days + 1,
-                "day_index": ((min(d, e) - s).days + 1) if d >= s else 0,
-                "currency_earned": int(earned), "completions": int(comps)}
-    finally:
-        if own:
-            await conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -758,8 +601,8 @@ async def complete_todo(todo_id, done=True):
 
 async def set_todo_checklist_item(item_id, done=True):
     """Tick/untick one item of a checklist todo. S77: all items ticked -> the todo completes
-    (partial ticks do not), mirroring checklist habits — and it counts a momentum event + currency
-    award on the done transition, exactly like complete_todo. Un-ticking below full reverts it."""
+    (partial ticks do not), mirroring checklist habits — and it counts a momentum event on the done
+    transition, exactly like complete_todo. Un-ticking below full reverts it."""
     conn = await pg_conn()
     try:
         await ensure_schema(conn)
@@ -786,7 +629,7 @@ async def set_todo_checklist_item(item_id, done=True):
 
 async def set_todo_quest(todo_id, is_quest=True):
     """S78: flag/unflag an existing todo as a quest (the per-row 'edit' path — there's no todo edit
-    modal). Only affects the currency tier awarded on its next completion."""
+    modal). Display flag only."""
     conn = await pg_conn()
     try:
         await ensure_schema(conn)

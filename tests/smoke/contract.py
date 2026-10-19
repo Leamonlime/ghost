@@ -13,7 +13,6 @@ PAGE_HOOKS = {
         "momentum", "momentum-ratio", "momentum-sparkline", "momentum-counts", "decisions",
     ],
     "ghost-bills.html":     ["bills-table", "spending-summary", "spending-review", "category-manager", "bill-candidates"],
-    "ghost-quest-log.html": ["quest-list"],
     "ghost-horoscope.html": ["profile-select"],
     "ghost-tarot.html":     ["tarot-board"],
     # Ghost 2.0 Phase 1 — native Habits & Todos
@@ -26,7 +25,6 @@ API_ENDPOINTS = [
     "/api/momentum?window=60",
     "/api/data",
     "/api/feed",
-    "/api/quest-engine/state",
     "/api/bills",
     "/api/bill-meta",
     "/api/bill-settings",
@@ -39,8 +37,6 @@ API_ENDPOINTS = [
     "/api/bills/categories",
     "/api/bills/keyword-impact",
     "/api/bills/candidates",
-    "/api/currency",
-    "/api/arc",
     "/api/badguys",
 ]
 

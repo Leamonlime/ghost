@@ -743,49 +743,15 @@ async def api_decisions_answer(request: Request):
 # MOMENTUM SIGNAL (Session 57, 02/09/2026)
 # ---------------------------------------------------------------------------
 # "Am I actually moving, over time" — one number, not an analytics dashboard.
-# momentum_events captures one row per completion (from the Habitica sync and the
-# Quest toggle — the two write hooks). /api/momentum returns trailing-window
+# momentum_events captures one row per completion (written by native habit/todo completions
+# and the Habitica sync; the dashboard only reads it — its Quest-toggle writer went with the
+# Quest Log page, 19/10/2026). /api/momentum returns trailing-window
 # closed (completions) vs open (still-incomplete items due in the window), overall
 # and per bucket, plus a per-day sparkline. Bucket crosswalk approved by Lea (S57);
 # NB the routine/meal/habit board items aren't anchored in the sync files, so
-# Maintenance/Habits stay sparse — this reflects the two chosen hooks, by design.
-# `derive_bucket` is duplicated in scheduler/habitica_sync.py (no module both the
-# scheduler and dashboard import); keep the two copies in step.
+# Maintenance/Habits stay sparse — this reflects the chosen hooks, by design.
 # ===========================================================================
-_BUCKET_PROJECT = {
-    "sidequesting": "Sidequests",
-    "darkandwild": "Business", "website": "Business",
-    "writing": "Creative/Relax", "novel": "Creative/Relax",
-    "ghost": "Work", "hob": "Work", "rook": "Work", "cephalopod": "Work",
-    "offgoogle": "Work", "3dprinting": "Work", "vinylcutter": "Work",
-}
 MOMENTUM_BUCKETS = ["Maintenance", "Habits", "Work", "Business", "Sidequests", "Creative/Relax", "unsorted"]
-
-def derive_bucket(text: str, source: str = "", rel: str = "") -> str:
-    """Map a completion to one of the six buckets (+ 'unsorted'), per the S57 crosswalk.
-    An explicit #project/<tag> wins; then source/keyword/file heuristics."""
-    t = (text or "").lower()
-    m = re.search(r"#project/([a-z0-9_-]+)", t)
-    if m and m.group(1) in _BUCKET_PROJECT:
-        return _BUCKET_PROJECT[m.group(1)]
-    if source == "quest":
-        return "Sidequests"
-    if any(w in t for w in ("morning routine", "evening routine", "bedtime", "breakfast",
-                            "lunch", "dinner", "tidy", "skincare", "make bed", "supplements")):
-        return "Maintenance"
-    if any(w in t for w in ("exercise", "yoga", "weights", "handstand", "splits", "water", "workout", "habit")):
-        return "Habits"
-    if "career" in t or "job" in t or "resume" in t or "linkedin" in t:
-        return "Work"
-    if any(w in t for w in ("dark and wild", "tdaw", "lea the witch", "leathewitch", "shopify", "shop", "adsense", "substack")):
-        return "Business"
-    if any(w in t for w in ("witch", "spell", "ritual", "novel", "fanfic", "writing", "blog")):
-        return "Creative/Relax"
-    if "The Dark and Wild" in rel or "Website Index" in rel:
-        return "Business"
-    if "Money Moves" in rel:
-        return "Work"
-    return "unsorted"
 
 _MOMENTUM_SCHEMA_READY = False
 
@@ -804,21 +770,6 @@ async def _ensure_momentum_schema(conn):
         CREATE INDEX IF NOT EXISTS momentum_events_completed_at_idx ON momentum_events (completed_at);
     """)
     _MOMENTUM_SCHEMA_READY = True
-
-async def record_momentum(item_id: str, source: str, bucket: str):
-    """One completion -> one row. Never raises into the caller (a momentum miss must not
-    break a real completion write). Cheap idempotent schema-ensure on first call."""
-    try:
-        conn = await pg_conn()
-        try:
-            await _ensure_momentum_schema(conn)
-            await conn.execute(
-                "INSERT INTO momentum_events (item_id, source, bucket) VALUES ($1,$2,$3)",
-                str(item_id), source, bucket)
-        finally:
-            await conn.close()
-    except Exception as e:
-        logger.error(f"record_momentum error ({source}/{item_id}): {e}")
 
 @app.get("/api/momentum")
 async def api_momentum(request: Request, window: int = 60):
@@ -961,16 +912,6 @@ async def api_level(request: Request):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
-@app.get("/api/currency")
-async def api_currency(request: Request):
-    """S76: the running currency balance + recent events (criticals shown distinctly)."""
-    try:
-        return await native.currency_summary()
-    except Exception as e:
-        logger.error(f"/api/currency error: {e}")
-        return JSONResponse({"balance": 0, "error": str(e)}, status_code=500)
-
-
 @app.get("/api/badguys")
 async def api_badguys(request: Request):
     """S76: which 'bad guy' threshold checks are currently active (edge-state set by the scheduler
@@ -986,37 +927,6 @@ async def api_badguys(request: Request):
     except Exception as e:
         logger.error(f"/api/badguys error: {e}")
     return {"active": active}
-
-
-@app.get("/api/arc")
-async def api_arc(request: Request):
-    """S76: the active story arc + its live progress (currency earned + completions in range)."""
-    try:
-        return {"arc": await native.active_arc(_native_uid(request))}
-    except Exception as e:
-        logger.error(f"/api/arc error: {e}")
-        return JSONResponse({"arc": None, "error": str(e)}, status_code=500)
-
-
-@app.post("/api/arc")
-async def api_arc_start(request: Request):
-    """S76: start a story arc (name + optional length in days, default 14). Dashboard-driven."""
-    if is_demo(request):
-        return JSONResponse({"ok": False, "error": "demo mode is read-only"}, status_code=403)
-    data = await _json_body(request)
-    name = str(data.get("name", "")).strip()
-    if not name:
-        return {"ok": False, "error": "name required"}
-    try:
-        days = int(data.get("days") or native.ARC_DEFAULT_DAYS)
-    except (TypeError, ValueError):
-        days = native.ARC_DEFAULT_DAYS
-    try:
-        aid = await native.start_arc(name, days=days, user_id=_native_uid(request))
-        return {"ok": bool(aid), "id": aid}
-    except Exception as e:
-        logger.error(f"/api/arc start error: {e}")
-        return {"ok": False, "error": str(e)}
 
 
 async def _json_body(request: Request) -> dict:
@@ -1169,94 +1079,6 @@ async def api_todo_create(request: Request):
     except Exception as e:
         logger.error(f"/api/todos/create error: {e}")
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
-
-
-# ===========================================================================
-# QUEST ENGINE ↔ Obsidian sync (Session 54, 01/09/2026)
-# ---------------------------------------------------------------------------
-# ghost-quest-log.html reflects the checklists in `Areas/Quest Engine.md`, whose
-# lines carry hidden <!--quest:ID--> anchors (same pattern as the live Habitica sync
-# in Areas/Habitica — Goals & Habits.md). Two routes: read the checked-state map, and
-# flip a single line's checkbox. Read fresh on every toggle (never cached) — Lea may be
-# hand-editing the note in Obsidian concurrently; only the one anchored line is touched,
-# every other byte (incl. the anchor comment and line endings) preserved. The pod runs
-# as root, so a write's owner/mode is restored afterwards (reusing bot._preserve_vault_owner)
-# so Obsidian on Lea's uid can still save the note.
-# ===========================================================================
-QUEST_FILE_REL = "Areas/Quest Engine.md"
-QUEST_LINE_RE = re.compile(r"^- \[([ xX])\].*<!--quest:([a-zA-Z0-9\-]+)-->\s*$")
-QUEST_CHECKBOX_RE = re.compile(r"^(- \[)([ xX])(\])")
-
-@app.get("/api/quest-engine/state")
-async def quest_state():
-    """Read-only: {anchor_id: checked_bool} for every quest-anchored line. Non-200 on a
-    read failure so the page falls back to its per-browser localStorage rather than
-    treating an empty map as 'everything unchecked'."""
-    path = os.path.join(bot.VAULT_PATH, QUEST_FILE_REL)
-    try:
-        content = open(path, encoding="utf-8").read()
-    except OSError as e:
-        logger.error(f"quest state read error: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
-    out = {}
-    for line in content.split("\n"):
-        m = QUEST_LINE_RE.match(line)
-        if m:
-            out[m.group(2)] = m.group(1).lower() == "x"
-    return out
-
-@app.post("/api/quest-engine/toggle")
-async def quest_toggle(request: Request):
-    """Flip one anchored line's [ ]/[x] to match {id, checked}. Re-reads the file fresh
-    (no cache), touches only the matching line, preserves every other line + line endings +
-    the anchor comment. 404 if no line carries that anchor."""
-    try:
-        data = await request.json()
-    except Exception:
-        return JSONResponse({"ok": False, "error": "bad request"}, status_code=400)
-    if is_demo(request):
-        return JSONResponse({"ok": False, "error": "demo mode is read-only"}, status_code=403)
-    qid = str(data.get("id", "")).strip()
-    checked = bool(data.get("checked"))
-    if not qid:
-        return JSONResponse({"ok": False, "error": "no id"}, status_code=400)
-    path = os.path.join(bot.VAULT_PATH, QUEST_FILE_REL)
-    try:
-        content = open(path, encoding="utf-8").read()
-    except OSError as e:
-        logger.error(f"quest toggle read error: {e}")
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
-    newchar = "x" if checked else " "
-    lines = content.split("\n")
-    found = False
-    matched_raw = ""
-    for i, line in enumerate(lines):
-        m = QUEST_LINE_RE.match(line)
-        if m and m.group(2) == qid:
-            matched_raw = line  # capture before flip, for momentum bucket derivation
-            lines[i] = QUEST_CHECKBOX_RE.sub(lambda mm: mm.group(1) + newchar + mm.group(3), line, count=1)
-            found = True
-            break
-    if not found:
-        return JSONResponse({"ok": False, "error": f"no line with anchor {qid}"}, status_code=404)
-    try:
-        st = os.stat(path)
-        tmp = path + ".questtmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
-        os.replace(tmp, path)
-        try:
-            bot._preserve_vault_owner(path, st)  # pod is root; keep the note Lea-owned
-        except Exception as e:
-            logger.error(f"quest toggle chown-back failed: {e}")
-    except OSError as e:
-        logger.error(f"quest toggle write error: {e}")
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
-    if checked:  # a completion -> momentum event (never fires on un-tick)
-        await record_momentum(qid, "quest", derive_bucket(matched_raw, "quest"))
-        # S92: XP/currency retired — no award on completion (momentum unchanged).
-    logger.info(f"quest toggle: {qid} -> {'x' if checked else ' '}")
-    return {"ok": True, "id": qid, "checked": checked}
 
 
 # ===========================================================================
