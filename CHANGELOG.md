@@ -4,6 +4,7 @@ Auto-generated from the project build log; titles only. Newest session first.
 
 | Session | Date | Summary |
 | ------: | :--- | :------ |
+| 96 | 19/10/2026 | Audit and cuts: self-coding removed, Quest Log and currency gone, Redis standalone |
 | 95 | 16/10/2026 | Automatic GitHub publishing: deploy-key push, full history rewrite to Leamonlime, gitleaks + denylist guards, 06:30 timer |
 | 94 | 11/10/2026 | Decision loop: overnight-runner questions are stored in full, answered by button, and drive the next run |
 | 93 | 07/10/2026 | Ghost App push registration + food-log listing |
