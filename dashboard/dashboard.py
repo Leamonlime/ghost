@@ -1583,12 +1583,15 @@ async def _refresh_linked_bills(conn):
     if not bills:
         return {"usage_refreshed": 0, "fixed_flagged": 0}
     excluded = await load_excluded_categories(conn)        # S90: DB-driven transfers set
+    merchant_rules = await load_merchant_rules(conn)
     txns = await conn.fetch(
-        "SELECT to_char(txn_date,'YYYY-MM-DD') d, description, amount::float8 amount, category "
+        "SELECT to_char(txn_date,'YYYY-MM-DD') d, description, amount::float8 amount, category, manual "
         "FROM transactions WHERE amount < 0")
     latest = {}                                            # merchant_key -> (date, abs_amount)
     for t in txns:
-        if (t["category"] or "") in excluded:
+        # The RESOLVED category (manual pick / merchant rule), never the raw column: a transfer
+        # categorised by a merchant rule must be skipped too.
+        if resolve_category(t["description"], t["manual"], t["category"], merchant_rules) in excluded:
             continue
         k = _merchant_key(t["description"])
         if not k:
@@ -1968,13 +1971,17 @@ async def api_bills_candidates(request: Request):
                 "UNION SELECT source_pattern FROM subscriptions WHERE source_pattern IS NOT NULL AND source_pattern <> '' "
                 "UNION SELECT source_pattern FROM dismissed_bill_candidates")]
             excluded_cats = await load_excluded_categories(conn)
+            merchant_rules = await load_merchant_rules(conn)
             txns = await conn.fetch(
-                "SELECT to_char(txn_date,'YYYY-MM-DD') date, description, amount::float8 amount, category "
+                "SELECT to_char(txn_date,'YYYY-MM-DD') date, description, amount::float8 amount, category, manual "
                 "FROM transactions")
         finally:
             await conn.close()
-        rows = [{"date": t["date"], "description": t["description"],
-                 "amount": t["amount"], "category": t["category"]} for t in txns]
+        # Resolved category (manual pick / merchant rule) drives the transfer skip and the suggested
+        # category — the raw column is only meaningful for manual rows.
+        rows = [{"date": t["date"], "description": t["description"], "amount": t["amount"],
+                 "category": resolve_category(t["description"], t["manual"], t["category"], merchant_rules)}
+                for t in txns]
         candidates = detect_bill_candidates(rows, existing_patterns=existing, excluded=excluded_cats)
         return {"ok": True, "candidates": candidates, "count": len(candidates), "demo": False}
     except Exception as e:
@@ -2075,25 +2082,24 @@ async def api_bill_settings_set(request: Request):
 # request path NEVER touches the Claude/Anthropic API — financial data is local-only per the
 # money boundary (Session 52). ALL math is deterministic Python (pandas); the ONLY model call
 # is _ollama_narrate(), which posts already-computed NUMBERS to the local Ollama at bot.OLLAMA_URL
-# (never Anthropic). Categorisation rules live in the Lea-editable vault note (read live, cached).
+# (never Anthropic). Categorisation is manual picks + merchant rules (S85); see resolve_category.
 # ===========================================================================
-SPENDING_CATEGORIES_REL = os.environ.get(
-    "GHOST_SPENDING_CATEGORIES_REL", "Projects/Tech/Ghost/Ghost — Spending Categories.md")
-SPENDING_CACHE_SECONDS = 120
-_spending_rules_cache = {"ts": 0.0, "data": None}
 UNCATEGORISED = "uncategorised"
 # S68: categories that are money moving between Lea's OWN accounts (savings transfers etc.) —
 # real transactions, but not real external income or real spending, so they're kept OUT of the
-# headline income/spend totals and shown as a separate "Transfers" figure instead. This is the
-# NORMALISED form of a `## Transfers` heading in Ghost — Spending Categories.md (the note's own
-# heading→key rule lowercases + underscores), so the moment Lea adds a `## Transfers` section with
-# her transfer keywords, matching rows are categorised `transfers` and excluded automatically — no
-# code change needed. Defined ONCE here rather than sprinkled as a literal through the maths.
+# headline income/spend totals and shown as a separate "Transfers" figure instead. Since S90 the
+# live set comes from spending_categories.exclude_from_totals (load_excluded_categories); this
+# constant only seeds that flag and is the fallback for callers that pass no set.
 TRANSFERS_CATEGORY = os.environ.get("GHOST_TRANSFERS_CATEGORY", "transfers")
 # S85: "Savings & Transfers" is the new manual home for own-account money movement, kept out of the
 # income/spent headline the same way the legacy `transfers` category was.
 EXCLUDED_FROM_TOTALS = {TRANSFERS_CATEGORY, "savings_transfers"}
 _SPENDING_SCHEMA_READY = False
+# Budget caps: categories whose cap is OFF by default (fixed obligations / not spending) and the
+# ones marked Fixed by default. Keys are the stable category keys (labels can be renamed freely).
+CAP_OFF_DEFAULT = {"rent_mortgage", "utilities", "debt_loan_repayments", "savings_transfers", "income"}
+FIXED_DEFAULT = {"rent_mortgage", "utilities", "subscriptions", "debt_loan_repayments"}
+CAP_WARN_PCT_DEFAULT = 80
 
 # ===========================================================================
 # S85 — MANUAL categorisation model (replaces the keyword-note heuristic as what drives the
@@ -2165,9 +2171,11 @@ async def load_categories(conn) -> list:
     """S87: the DB-backed category list (the picker's source of truth), ordered.
     [{key,label,exclude_from_totals}]."""
     rows = await conn.fetch(
-        "SELECT key, label, exclude_from_totals FROM spending_categories ORDER BY sort_order, label")
+        "SELECT key, label, exclude_from_totals, monthly_cap::float8 monthly_cap, cap_enabled, fixed "
+        "FROM spending_categories ORDER BY sort_order, label")
     return [{"key": r["key"], "label": r["label"],
-             "exclude_from_totals": r["exclude_from_totals"]} for r in rows]
+             "exclude_from_totals": r["exclude_from_totals"], "monthly_cap": r["monthly_cap"],
+             "cap_enabled": r["cap_enabled"], "fixed": r["fixed"]} for r in rows]
 
 
 async def category_exists(conn, key) -> bool:
@@ -2182,47 +2190,6 @@ def resolve_category(description, manual, stored_category, merchant_rules) -> st
     mk = _merchant_key(description)
     if mk and mk in merchant_rules:
         return merchant_rules[mk]
-    return UNCATEGORISED
-
-
-def load_spending_categories() -> "dict":
-    """Ordered {category: [keywords]} from the vault note (## heading = category, backtick bullets
-    = keywords). Read live, cached SPENDING_CACHE_SECONDS. Fail-safe: unreadable note -> last cache
-    or empty (everything then lands 'uncategorised', flagged — never a wrong silent category)."""
-    now = time.monotonic()
-    cached = _spending_rules_cache["data"]
-    if cached is not None and now - _spending_rules_cache["ts"] < SPENDING_CACHE_SECONDS:
-        return cached
-    try:
-        rules = {}
-        path = os.path.join(bot.VAULT_PATH, SPENDING_CATEGORIES_REL)
-        cat = None
-        for line in open(path, encoding="utf-8").read().splitlines():
-            if line.startswith("## "):
-                name = line[3:].strip()
-                if name.lower() == "related":
-                    cat = None
-                    continue
-                cat = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
-                rules.setdefault(cat, [])
-                continue
-            if cat:
-                m = re.match(r"\s*-\s*`([^`]+)`", line)
-                if m:
-                    rules[cat].append(m.group(1).strip().lower())
-        _spending_rules_cache["ts"] = now
-        _spending_rules_cache["data"] = rules
-        return rules
-    except OSError as e:
-        logger.error(f"spending categories note unreadable ({e}) — nothing categorised this cycle")
-        return cached if cached is not None else {}
-
-
-def categorise_txn(description: str, rules: dict) -> str:
-    text = (description or "").lower()
-    for category, keywords in rules.items():
-        if any(kw and kw in text for kw in keywords):
-            return category
     return UNCATEGORISED
 
 
@@ -2299,6 +2266,32 @@ async def _ensure_spending_schema(conn):
             list(EXCLUDED_FROM_TOTALS))
         await conn.execute(
             "INSERT INTO spending_meta (k,v) VALUES ('exclude_flag_migrated','1') ON CONFLICT (k) DO NOTHING")
+    # Monthly caps + Fixed/Variable (budget caps, export for review). cap_enabled defaults TRUE so a
+    # new category prompts for a cap; the defaults below switch it off for fixed obligations and
+    # money that isn't spending, and mark the fixed ones. Lea can change all of it in the UI.
+    await conn.execute("""
+        ALTER TABLE spending_categories ADD COLUMN IF NOT EXISTS monthly_cap NUMERIC(10,2);
+        ALTER TABLE spending_categories ADD COLUMN IF NOT EXISTS cap_enabled BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE spending_categories ADD COLUMN IF NOT EXISTS fixed BOOLEAN NOT NULL DEFAULT FALSE;
+    """)
+    capdef = await conn.fetchval("SELECT v FROM spending_meta WHERE k='cap_defaults_seeded'")
+    if not capdef:
+        await conn.execute(
+            "UPDATE spending_categories SET cap_enabled=FALSE WHERE key = ANY($1::text[]) OR exclude_from_totals",
+            list(CAP_OFF_DEFAULT))
+        await conn.execute(
+            "UPDATE spending_categories SET fixed=TRUE WHERE key = ANY($1::text[])", list(FIXED_DEFAULT))
+        await conn.execute(
+            "INSERT INTO spending_meta (k,v) VALUES ('cap_defaults_seeded','1') ON CONFLICT (k) DO NOTHING")
+    # One-time: clear the category values the retired keyword matcher stamped on non-manual rows.
+    # Nothing reads them (resolve_category ignores a non-manual row's stored category), but a
+    # merge/delete matching on the raw column would otherwise sweep them up.
+    kwclear = await conn.fetchval("SELECT v FROM spending_meta WHERE k='keyword_categories_cleared'")
+    if not kwclear:
+        await conn.execute(
+            "UPDATE transactions SET category=$1 WHERE NOT manual AND category <> $1", UNCATEGORISED)
+        await conn.execute(
+            "INSERT INTO spending_meta (k,v) VALUES ('keyword_categories_cleared','1') ON CONFLICT (k) DO NOTHING")
     _SPENDING_SCHEMA_READY = True
 
 
@@ -2475,16 +2468,9 @@ def compute_spending_summary(rows, excluded=None):
 
 async def _live_spending_summary(conn):
     """Compute the spending summary FRESH from the current contents of the transactions table on
-    every read. S69 made the AGGREGATION live; S70 makes the CATEGORISATION live too — each row is
-    re-categorised against the CURRENT vault note here rather than trusting the `category` column
-    frozen at import time. That was the by_category bug: totals don't depend on WHICH non-transfer
-    category a row sits in (so they looked right), but by_category does — so a note edit after import
-    left the breakdown stale. Now a keyword change in Ghost — Spending Categories.md (incl. the S68
-    transfers exclusion) shows up on the next page load with no re-import. Deterministic; NO model."""
-    # S85: categorisation is now MANUAL pick (sticky) + merchant rules, resolved live per row.
-    # The keyword note (categorise_txn / load_spending_categories) no longer drives the summary —
-    # untouched rows without a matching merchant rule are uncategorised, so the review queue reflects
-    # exactly what still needs doing.
+    every read: each row's category is resolved live (manual pick, else merchant rule, else
+    uncategorised), so a rule or category change shows up on the next page load with no re-import.
+    Deterministic; NO model."""
     merchant_rules = await load_merchant_rules(conn)
     excluded = await load_excluded_categories(conn)      # S90: DB-driven transfers set
     all_rows = await conn.fetch(
@@ -2523,7 +2509,7 @@ async def _ollama_narrate(summary: dict) -> str:
 
 @app.post("/api/bills/import-csv")
 async def api_import_csv(file: UploadFile = File(...)):
-    """Upload a bank CSV -> parse (pandas) -> categorise (vault note) -> aggregate (Python) ->
+    """Upload a bank CSV -> parse (pandas) -> store (new rows uncategorised) -> aggregate (Python) ->
     narrate (LOCAL Ollama) -> store. Dedupes on (date, description, amount). NO Claude in this path."""
     try:
         import pandas as pd
@@ -2546,15 +2532,13 @@ async def api_import_csv(file: UploadFile = File(...)):
             return JSONResponse({"ok": False, "error": "no rows had a parseable date AND amount",
                                  "mapping": mapping}, status_code=422)
 
-        rules = load_spending_categories()
         fname = (file.filename or "upload.csv")
         rows = []
         for _, r in norm.iterrows():
             d = r["date"].date().isoformat()
             desc = str(r["description"])[:500]
             amt = round(float(r["amount"]), 2)
-            rows.append({"date": d, "description": desc, "amount": amt,
-                         "category": categorise_txn(desc, rules)})
+            rows.append({"date": d, "description": desc, "amount": amt})
 
         inserted = updated = 0
         conn = await pg_conn()
@@ -2563,20 +2547,17 @@ async def api_import_csv(file: UploadFile = File(...)):
             for row in rows:
                 # (xmax = 0) is TRUE for a fresh insert, FALSE when ON CONFLICT did an update —
                 # so we count new vs deduped rows precisely (the dedupe key is date+description+amount).
-                # S71: a re-import of the overlapping ~90-120 days must NOT clobber a category Lea
-                # hand-set on the dashboard. When the existing row is manual=TRUE we keep its category
-                # (and leave manual untouched); otherwise the freshly-computed category wins as before.
+                # A non-manual row's stored category is never read (resolve_category uses the merchant
+                # rules), so new rows go in uncategorised and a re-import leaves the existing category
+                # alone — which keeps a manual pick (S71) intact.
                 was_insert = await conn.fetchval(
                     """INSERT INTO transactions (txn_date, description, amount, category, source_file)
                        VALUES ($1,$2,$3,$4,$5)
                        ON CONFLICT (txn_date, description, amount)
-                       DO UPDATE SET category = CASE WHEN transactions.manual
-                                                     THEN transactions.category
-                                                     ELSE EXCLUDED.category END,
-                                     source_file = EXCLUDED.source_file,
+                       DO UPDATE SET source_file = EXCLUDED.source_file,
                                      imported_at = now()
                        RETURNING (xmax = 0)""",
-                    date.fromisoformat(row["date"]), row["description"], row["amount"], row["category"], fname)
+                    date.fromisoformat(row["date"]), row["description"], row["amount"], UNCATEGORISED, fname)
                 if was_insert:
                     inserted += 1
                 else:
@@ -2627,6 +2608,7 @@ async def api_spending(request: Request):
         try:
             await _ensure_spending_schema(conn)
             summary, n_rows = await _live_spending_summary(conn)
+            caps = await _cap_status(conn, summary)
             stored = await conn.fetchrow("SELECT narration, generated_at FROM spending_summary WHERE id=1")
         finally:
             await conn.close()
@@ -2646,6 +2628,7 @@ async def api_spending(request: Request):
                             "transfers": summary.get("transfers", {}),
                             "by_category": summary.get("by_category", {})},
                 "data_quality": summary.get("data_quality", {}),
+                "caps": caps,
                 "narration": narration or "",
                 "generated_at": generated_at.isoformat() if generated_at else None}
     except Exception as e:
@@ -2653,21 +2636,450 @@ async def api_spending(request: Request):
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
+# ---------------------------------------------------------------------------
+# Budget caps: an optional monthly $ cap per category, month-to-date spend against it, and the
+# status the scheduler's Telegram heads-up reads (/api/bills/caps-status). Spend is whatever the
+# last CSV import holds, so the picture is only as current as the latest upload. Deterministic.
+# ---------------------------------------------------------------------------
+async def _cap_warn_pct(conn) -> int:
+    v = await conn.fetchval("SELECT v FROM spending_meta WHERE k='cap_warn_pct'")
+    try:
+        return int(v) if v else CAP_WARN_PCT_DEFAULT
+    except ValueError:
+        return CAP_WARN_PCT_DEFAULT
+
+
+def compute_cap_status(month_categories, cats, warn_pct):
+    """Pure: [{key,label,cap,spent,pct,status}] for every cap-enabled category. status is 'unset'
+    (no amount yet), 'ok', 'warn' (>= warn_pct) or 'over' (>= 100%)."""
+    out = []
+    for c in cats:
+        if not c["cap_enabled"]:
+            continue
+        spent = round(float(month_categories.get(c["key"], 0.0)), 2)
+        cap = c["monthly_cap"]
+        if not cap:
+            out.append({"key": c["key"], "label": c["label"], "cap": None, "spent": spent,
+                        "pct": None, "status": "unset"})
+            continue
+        pct = round(spent / cap * 100, 1)
+        status = "over" if pct >= 100 else "warn" if pct >= warn_pct else "ok"
+        out.append({"key": c["key"], "label": c["label"], "cap": round(float(cap), 2), "spent": spent,
+                    "pct": pct, "status": status})
+    return out
+
+
+async def _cap_status(conn, summary=None):
+    if summary is None:
+        summary, _ = await _live_spending_summary(conn)
+    month = datetime.now(LOCAL_TZ).strftime("%Y-%m")
+    month_cats = ((summary.get("by_month") or {}).get(month) or {}).get("categories") or {}
+    warn = await _cap_warn_pct(conn)
+    latest = await conn.fetchval("SELECT max(txn_date) FROM transactions")
+    return {"month": month, "warn_pct": warn,
+            "data_through": latest.isoformat() if latest else None,
+            "items": compute_cap_status(month_cats, await load_categories(conn), warn)}
+
+
+@app.get("/api/bills/caps-status")
+async def api_caps_status(request: Request):
+    """Month-to-date spend vs cap per capped category (scheduler heads-up + dashboard). Read-only."""
+    if is_demo(request):
+        return {"ok": True, "demo": True, "items": []}
+    try:
+        conn = await pg_conn()
+        try:
+            await _ensure_spending_schema(conn)
+            return {"ok": True, **(await _cap_status(conn))}
+        finally:
+            await conn.close()
+    except Exception as e:
+        logger.error(f"/api/bills/caps-status error: {e}")
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+async def _match_category(conn, name):
+    """Category for a key or a loosely-typed name ('groceries', 'food purchases'). -> (key, None) on a
+    single match, (None, [labels]) when ambiguous, (None, []) when nothing matches."""
+    want = _norm_category_key(name)
+    if not want:
+        return None, []
+    cats = await load_categories(conn)
+    for c in cats:
+        if c["key"] == want or _norm_category_key(c["label"]) == want:
+            return c["key"], None
+    hits = [c for c in cats if _norm_category_key(c["label"]).startswith(want) or c["key"].startswith(want)]
+    if not hits:
+        hits = [c for c in cats if want in _norm_category_key(c["label"])]
+    if len(hits) == 1:
+        return hits[0]["key"], None
+    return None, [c["label"] for c in hits]
+
+
+@app.post("/api/bills/category/cap")
+async def api_bills_category_cap(request: Request):
+    """Set or clear a category's monthly cap, and/or switch capping on/off for it. Body
+    {category | name, monthly_cap?: number|null, enabled?: bool}. `name` is matched loosely (the
+    Telegram command path); an ambiguous name returns 409 with the candidate labels."""
+    if is_demo(request):
+        return JSONResponse({"ok": False, "error": "demo mode is read-only"}, status_code=403)
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "bad request"}, status_code=400)
+    has_cap = "monthly_cap" in data
+    cap = data.get("monthly_cap")
+    if has_cap and cap not in (None, ""):
+        try:
+            cap = round(float(cap), 2)
+        except (TypeError, ValueError):
+            return JSONResponse({"ok": False, "error": "monthly_cap must be a number"}, status_code=400)
+        if not (0 < cap < 1_000_000):
+            return JSONResponse({"ok": False, "error": "monthly_cap must be above 0"}, status_code=400)
+    else:
+        cap = None
+    try:
+        conn = await pg_conn()
+        try:
+            await _ensure_spending_schema(conn)
+            key, ambiguous = await _match_category(conn, str(data.get("category") or data.get("name") or ""))
+            if key is None:
+                if ambiguous:
+                    return JSONResponse({"ok": False, "error": "ambiguous", "candidates": ambiguous}, status_code=409)
+                return JSONResponse({"ok": False, "error": "no such category"}, status_code=404)
+            if has_cap:
+                # Setting an amount implies capping is wanted for it, even on an off-by-default category.
+                await conn.execute(
+                    "UPDATE spending_categories SET monthly_cap=$2::numeric, cap_enabled = cap_enabled OR ($2::numeric IS NOT NULL) "
+                    "WHERE key=$1", key, cap)
+            if "enabled" in data:
+                await conn.execute("UPDATE spending_categories SET cap_enabled=$2 WHERE key=$1",
+                                   key, bool(data.get("enabled")))
+            row = await conn.fetchrow(
+                "SELECT label, monthly_cap::float8 monthly_cap, cap_enabled FROM spending_categories WHERE key=$1", key)
+        finally:
+            await conn.close()
+        return {"ok": True, "category": key, "label": row["label"], "monthly_cap": row["monthly_cap"],
+                "cap_enabled": row["cap_enabled"]}
+    except Exception as e:
+        logger.error(f"/api/bills/category/cap error: {e}")
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.post("/api/bills/cap-settings")
+async def api_bills_cap_settings(request: Request):
+    """Warning threshold for the cap heads-up. Body {warn_pct: 1..99}."""
+    if is_demo(request):
+        return JSONResponse({"ok": False, "error": "demo mode is read-only"}, status_code=403)
+    try:
+        pct = int((await request.json()).get("warn_pct"))
+    except Exception:
+        return JSONResponse({"ok": False, "error": "warn_pct must be a whole number"}, status_code=400)
+    if not (1 <= pct <= 99):
+        return JSONResponse({"ok": False, "error": "warn_pct must be between 1 and 99"}, status_code=400)
+    conn = await pg_conn()
+    try:
+        await _ensure_spending_schema(conn)
+        await conn.execute(
+            "INSERT INTO spending_meta (k,v) VALUES ('cap_warn_pct',$1) ON CONFLICT (k) DO UPDATE SET v=EXCLUDED.v",
+            str(pct))
+    finally:
+        await conn.close()
+    return {"ok": True, "warn_pct": pct}
+
+
+@app.post("/api/bills/category/fixed")
+async def api_bills_category_fixed(request: Request):
+    """Mark a category Fixed or Variable (used by Export for review). Body {category, fixed:bool}."""
+    if is_demo(request):
+        return JSONResponse({"ok": False, "error": "demo mode is read-only"}, status_code=403)
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "bad request"}, status_code=400)
+    key = _norm_category_key(str(data.get("category") or ""))
+    conn = await pg_conn()
+    try:
+        await _ensure_spending_schema(conn)
+        updated = await conn.fetchval(
+            "UPDATE spending_categories SET fixed=$2 WHERE key=$1 RETURNING key", key, bool(data.get("fixed")))
+    finally:
+        await conn.close()
+    if updated is None:
+        return JSONResponse({"ok": False, "error": f"no category '{key}'"}, status_code=404)
+    return {"ok": True, "category": key, "fixed": bool(data.get("fixed"))}
+
+
+# ---------------------------------------------------------------------------
+# Export for review: a small, anonymised markdown summary Lea can paste into an outside AI chat for
+# budgeting help. Built and shown LOCALLY only — nothing here sends it anywhere. Every stripping rule
+# is plain code: the builder only ever receives (month, category label, amount, count) aggregates and
+# planned-cost rows without their notes, so merchant names, descriptions, notes, payees and IDs have
+# no path into the output. A final regex scan blocks the export if anything ID-like slipped through.
+# ---------------------------------------------------------------------------
+REVIEW_MONTHS = 6
+REVIEW_MIN_TXNS = 2               # fewer transactions than this in a month -> merged into Other
+REVIEW_LARGE_BILL_MIN = 200       # quarterly/annual bills at or above this count as "large"
+REVIEW_UPCOMING_MONTHS = 6
+REVIEW_MAX_UPCOMING = 10
+PLANNED_TAGS = ("move", "wedding", "business", "other")
+_REVIEW_SCAN = (
+    ("6+ digit run", re.compile(r"\d{6,}")),
+    ("BSB-like (NNN-NNN)", re.compile(r"\b\d{3}-\d{3}\b")),
+    ("email address", re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")),
+    ("phone number", re.compile(r"(?:\+?61[ -]?|\b0)[2-478](?:[ -]?\d){8}\b")),
+    ("phone number", re.compile(r"\b(?:1300|1800)[ -]?\d{3}[ -]?\d{3}\b|\b13[ -]?\d{2}[ -]?\d{2}\b")),
+    ("phone number", re.compile(r"\+\d{1,3}[ -]?\d(?:[ -]?\d){6,}")),
+)
+
+
+def review_round(x) -> int:
+    """Nearest $10, or nearest $50 above $1,000 (half up)."""
+    a = abs(float(x))
+    step = 50 if a > 1000 else 10
+    return int((a + step / 2) // step * step)
+
+
+def _rv_money(x) -> str:
+    return f"${review_round(x):,}"
+
+
+def review_scan(text):
+    """[{what, match, line}] for anything that looks like an ID, BSB, email or phone number."""
+    hits = []
+    for n, line in enumerate(text.splitlines(), 1):
+        for what, rx in _REVIEW_SCAN:
+            for m in rx.finditer(line):
+                hits.append({"what": what, "match": m.group(0), "line": n})
+    return hits
+
+
+def _rv_cell(v):
+    if v is None:
+        return "—"
+    if v == "<2":
+        return "<2"
+    return _rv_money(v)
+
+
+def build_review_export(months, cells, cats, income, planned, generated):
+    """Pure. months: ['YYYY-MM', ...] oldest first. cells: {(month, cat_key): (spent, count)} for
+    outflows in categories that count towards spending (Money Movement already left out). cats:
+    {key: {"label", "fixed"}}. income: {month: total}. planned: [{"month": date, "label", "amount",
+    "tag"}]. -> markdown string."""
+    have = [m for m in months if any(k[0] == m for k in cells) or income.get(m)]
+    mlabel = {m: date(int(m[:4]), int(m[5:]), 1).strftime("%b %y") for m in months}
+    rows, other = {}, {m: [0.0, 0] for m in months}
+    for (m, key), (spent, count) in cells.items():
+        if count < REVIEW_MIN_TXNS:
+            other[m][0] += spent
+            other[m][1] += count
+        else:
+            rows.setdefault(key, {})[m] = spent
+    def avg(vals):
+        vals = [v for v in vals if v is not None]
+        return sum(vals) / len(have) if have else 0.0
+    order = sorted(rows, key=lambda k: -sum(rows[k].values()))
+    out = ["# Spending summary for budgeting review", "",
+           f"Generated {generated}. AUD, rounded to $10 ($50 above $1,000). Category totals only: no "
+           "transactions, merchants, accounts or people.", "",
+           f"## Categories (monthly spend, last {len(months)} full months)", "",
+           "| Category | Type | " + " | ".join(mlabel[m] for m in months) + " | Avg |",
+           "|---|---|" + "---:|" * (len(months) + 1)]
+    for k in order:
+        c = cats.get(k, {"label": "Uncategorised" if k == UNCATEGORISED else k, "fixed": False})
+        vals = [rows[k].get(m) if m in have else None for m in months]
+        out.append(f"| {c['label']} | {'Fixed' if c.get('fixed') else 'Variable'} | "
+                   + " | ".join(_rv_cell(v) for v in vals) + f" | {_rv_money(avg(vals))} |")
+    if any(other[m][1] for m in months):
+        ocells = []
+        for m in months:
+            amt, n = other[m]
+            ocells.append(None if not n else ("<2" if n < REVIEW_MIN_TXNS else amt))
+        # Average only what is shown: a "<2" cell's amount must not be recoverable from the average.
+        avg_other = avg([v if v != "<2" else None for v in ocells])
+        out.append("| Other | Variable | " + " | ".join(_rv_cell(v) for v in ocells)
+                   + f" | {_rv_money(avg_other)} |")
+    totals = [sum(v[0] for (mm, _), v in cells.items() if mm == m) if m in have else None for m in months]
+    out.append("| **Total** | | " + " | ".join(_rv_cell(v) for v in totals) + f" | {_rv_money(avg(totals))} |")
+    out += ["", f"— = nothing that month. Categories with fewer than {REVIEW_MIN_TXNS} transactions in a "
+                "month are folded into Other; \"<2\" = a single transaction, counted in the total only.",
+            f"Averages are over the {len(have)} month(s) with data."]
+    out += ["", "## Income and savings", ""]
+    inc_months = [m for m in have if income.get(m)]
+    if not inc_months:
+        out.append("No income is recorded in Ghost for these months.")
+    else:
+        inc = sum(income[m] for m in inc_months) / len(have)
+        spend = avg(totals)
+        rate = round((inc - spend) / inc * 100) if inc else 0
+        out += ["| | Avg per month |", "|---|---:|", f"| Income | {_rv_money(inc)} |",
+                f"| Spending | {_rv_money(spend)} |", f"| Savings rate | {rate}% |"]
+    out += ["", f"## Upcoming known costs (next {REVIEW_UPCOMING_MONTHS} months)", ""]
+    if not planned:
+        out.append("None recorded.")
+    else:
+        out += ["| Month | Category | Amount | Tag |", "|---|---|---:|---|"]
+        for p in sorted(planned, key=lambda x: x["month"])[:REVIEW_MAX_UPCOMING]:
+            out.append(f"| {p['month'].strftime('%b %y')} | {p['label']} | {_rv_money(p['amount'])} | "
+                       f"{p['tag'].title()} |")
+    return "\n".join(out) + "\n"
+
+
+async def _ensure_planned_costs_schema(conn):
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS planned_costs (
+            id          SERIAL PRIMARY KEY,
+            month       DATE NOT NULL,                       -- first of the month it falls in
+            category    TEXT NOT NULL,                       -- spending_categories key
+            amount      NUMERIC(10,2) NOT NULL CHECK (amount > 0),
+            tag         TEXT NOT NULL DEFAULT 'other' CHECK (tag IN ('move','wedding','business','other')),
+            note        TEXT,                                -- private: never exported
+            created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+    """)
+
+
+async def _review_inputs(conn, today):
+    """Aggregate the DB into the builder's inputs. Descriptions are read only to resolve each row's
+    category and are dropped here; nothing but sums and counts leaves this function."""
+    first_this = today.replace(day=1)
+    months = [_add_months(first_this, -i).strftime("%Y-%m") for i in range(REVIEW_MONTHS, 0, -1)]
+    start = _add_months(first_this, -REVIEW_MONTHS)
+    merchant_rules = await load_merchant_rules(conn)
+    excluded = await load_excluded_categories(conn)
+    cat_rows = await load_categories(conn)
+    cats = {c["key"]: {"label": c["label"], "fixed": c["fixed"]} for c in cat_rows}
+    txns = await conn.fetch(
+        "SELECT to_char(txn_date,'YYYY-MM') m, description, amount::float8 amount, category, manual "
+        "FROM transactions WHERE txn_date >= $1 AND txn_date < $2", start, first_this)
+    cells, income = {}, {}
+    for t in txns:
+        key = resolve_category(t["description"], t["manual"], t["category"], merchant_rules)
+        if key in excluded:
+            continue
+        if t["amount"] < 0:
+            s_, n_ = cells.get((t["m"], key), (0.0, 0))
+            cells[(t["m"], key)] = (s_ + abs(t["amount"]), n_ + 1)
+        elif t["amount"] > 0:
+            income[t["m"]] = income.get(t["m"], 0.0) + t["amount"]
+    horizon = _add_months(first_this, REVIEW_UPCOMING_MONTHS)
+    planned = []
+    await _ensure_planned_costs_schema(conn)
+    for r in await conn.fetch(
+            "SELECT month, category, amount::float8 amount, tag FROM planned_costs "
+            "WHERE month >= $1 AND month < $2", first_this, horizon):
+        planned.append({"month": r["month"], "label": cats.get(r["category"], {}).get("label", "Other"),
+                        "amount": r["amount"], "tag": r["tag"]})
+    await _ensure_bills_schema(conn)
+    for b in await conn.fetch(
+            "SELECT * FROM bills WHERE frequency IN ('quarterly','annual') AND amount >= $1", REVIEW_LARGE_BILL_MIN):
+        d = _next_due(_bill_anchor(b["due_date"], b["day_of_month"], today), b["frequency"], today)
+        while d is not None and d < horizon:
+            planned.append({"month": d.replace(day=1), "label": _bill_cat_label(b["category"]),
+                            "amount": float(b["amount"]), "tag": "other"})
+            d = _step_occurrence(d, b["frequency"], 1)
+    return months, cells, cats, income, planned
+
+
+@app.get("/api/bills/export-review")
+async def api_bills_export_review(request: Request):
+    """Generate the review export. Local only: returns the markdown to the page and nothing else.
+    Blocked (no markdown returned) if the safety scan finds anything ID-like."""
+    if is_demo(request):
+        return JSONResponse({"ok": False, "error": "not available in demo mode"}, status_code=403)
+    try:
+        today = datetime.now(LOCAL_TZ).date()
+        conn = await pg_conn()
+        try:
+            await _ensure_spending_schema(conn)
+            months, cells, cats, income, planned = await _review_inputs(conn, today)
+        finally:
+            await conn.close()
+        md = build_review_export(months, cells, cats, income, planned, today.strftime("%B %Y"))
+        hits = review_scan(md)
+        if hits:
+            logger.warning(f"export-review BLOCKED by safety scan ({len(hits)} match(es))")  # never the text
+            return {"ok": False, "blocked": True, "matches": hits}
+        return {"ok": True, "markdown": md, "lines": md.count("\n")}
+    except Exception as e:
+        logger.error(f"/api/bills/export-review error: {e}")
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.get("/api/bills/planned-costs")
+async def api_planned_costs(request: Request):
+    if is_demo(request):
+        return {"ok": True, "items": [], "demo": True}
+    conn = await pg_conn()
+    try:
+        await _ensure_planned_costs_schema(conn)
+        rows = await conn.fetch(
+            "SELECT id, to_char(month,'YYYY-MM') month, category, amount::float8 amount, tag, note "
+            "FROM planned_costs ORDER BY month, id")
+    finally:
+        await conn.close()
+    return {"ok": True, "items": [dict(r) for r in rows], "tags": list(PLANNED_TAGS)}
+
+
+@app.post("/api/bills/planned-costs")
+async def api_planned_cost_add(request: Request):
+    """Body {month:'YYYY-MM', category, amount, tag, note?}. The note is private (never exported)."""
+    if is_demo(request):
+        return JSONResponse({"ok": False, "error": "demo mode is read-only"}, status_code=403)
+    try:
+        data = await request.json()
+        y, m = (int(x) for x in str(data.get("month") or "").split("-")[:2])
+        month = date(y, m, 1)
+        amount = round(float(data.get("amount")), 2)
+    except Exception:
+        return JSONResponse({"ok": False, "error": "month (YYYY-MM) and amount are required"}, status_code=400)
+    tag = str(data.get("tag") or "other").lower()
+    if tag not in PLANNED_TAGS or amount <= 0:
+        return JSONResponse({"ok": False, "error": "bad tag or amount"}, status_code=400)
+    key = _norm_category_key(str(data.get("category") or ""))
+    conn = await pg_conn()
+    try:
+        await _ensure_spending_schema(conn)
+        await _ensure_planned_costs_schema(conn)
+        if not await category_exists(conn, key):
+            return JSONResponse({"ok": False, "error": "unknown category"}, status_code=400)
+        pid = await conn.fetchval(
+            "INSERT INTO planned_costs (month, category, amount, tag, note) VALUES ($1,$2,$3,$4,$5) RETURNING id",
+            month, key, amount, tag, (str(data.get("note") or "").strip() or None))
+    finally:
+        await conn.close()
+    return {"ok": True, "id": pid}
+
+
+@app.post("/api/bills/planned-costs/delete")
+async def api_planned_cost_delete(request: Request):
+    if is_demo(request):
+        return JSONResponse({"ok": False, "error": "demo mode is read-only"}, status_code=403)
+    try:
+        pid = int((await request.json()).get("id"))
+    except Exception:
+        return JSONResponse({"ok": False, "error": "missing id"}, status_code=400)
+    conn = await pg_conn()
+    try:
+        await _ensure_planned_costs_schema(conn)
+        gone = await conn.fetchval("DELETE FROM planned_costs WHERE id=$1 RETURNING id", pid)
+    finally:
+        await conn.close()
+    return {"ok": bool(gone)}
+
+
 # ===========================================================================
 # S71 — manual category review / correction (the "some transactions are wrong" fix)
 # ---------------------------------------------------------------------------
-# Keyword auto-categorisation (Ghost — Spending Categories.md) mislabels or misses some rows, which
-# threw the Income/Transfers figures. Rather than hand-editing a CSV Category column every month (the
-# bank re-includes ~120 overlapping days each export, so that never stops), Lea corrects a row IN THE
-# DASHBOARD: a review list surfaces uncategorised (and, on request, all) transactions with an inline
-# picker; one Save sets that row's category and marks it manual=TRUE (sticky — see _live_spending_summary
-# and the import ON CONFLICT). An optional "teach" flag also appends the keyword to the note so every
-# future transaction from that merchant auto-categorises. No CSV, no re-upload, no Claude — a UPDATE
-# plus a note append, both against Lea's own local Postgres/vault.
+# Lea corrects a row IN THE DASHBOARD: a review list surfaces uncategorised (and, on request, all)
+# transactions with an inline picker; one Save sets that row's category and marks it manual=TRUE
+# (sticky — survives re-import). "Always categorise this merchant" stores a merchant rule (S85).
+# No CSV, no re-upload, no Claude — UPDATEs against Lea's own local Postgres.
 # ===========================================================================
 
 def _norm_category_key(text: str) -> str:
-    """Normalise a category name to the note's heading→key form (lowercase, non-alnum→underscore)."""
+    """Normalise a category name to its key form (lowercase, non-alnum→underscore)."""
     return re.sub(r"[^a-z0-9]+", "_", (text or "").lower()).strip("_")
 
 
@@ -2693,7 +3105,7 @@ async def api_bills_categories():
 async def api_bills_transactions(request: Request, filter: str = "uncategorized", limit: int = 5000):
     """Rows for the categorise screen. filter=uncategorized (default) returns only rows whose EFFECTIVE
     category is uncategorised — the queue to clear; filter=all returns every row so a category can be
-    corrected too. Effective category (S85) = manual pick, else a matching merchant rule, else
+    corrected too; filter=cat:<key> returns one category's rows (the re-sort view). Effective category (S85) = manual pick, else a matching merchant rule, else
     uncategorised — exactly what the summary counts. Each row also carries `merchant` (the normalised
     identifier a rule keys on) and whether a merchant rule currently covers it, so the UI can show what
     'always categorise this merchant' would match. Returns ALL matching rows (full backfill), capped."""
@@ -2713,6 +3125,8 @@ async def api_bills_transactions(request: Request, filter: str = "uncategorized"
             eff = resolve_category(r["description"], r["manual"], r["category"], merchant_rules)
             if filter == "uncategorized" and eff != UNCATEGORISED:
                 continue
+            if filter.startswith("cat:") and eff != filter[4:]:
+                continue
             mk = _merchant_key(r["description"])
             out.append({"id": r["id"], "date": r["d"], "description": r["description"],
                         "amount": r["amount"], "category": eff, "manual": r["manual"],
@@ -2723,180 +3137,6 @@ async def api_bills_transactions(request: Request, filter: str = "uncategorized"
     except Exception as e:
         logger.error(f"/api/bills/transactions error: {e}")
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
-
-
-# ---------------------------------------------------------------------------
-# S73 — Manage Categories: edit the note's keyword RULES themselves from the dashboard.
-# The note (Ghost — Spending Categories.md) is markdown: a preamble, `## Heading` sections whose
-# backtick bullets are keywords, some sections carry explanatory prose (e.g. Transfers), and a final
-# `## Related`. Every edit here is a minimal, structure-preserving line transform — the transforms are
-# PURE (lines in, lines out) so they're unit-testable against a synthetic note with no real file, and
-# the single write path (_write_spending_note_lines) does the atomic replace + owner restore (pod runs
-# as root) + rules-cache bust that the live recompute depends on. No CSV, no chat, no Claude.
-# ---------------------------------------------------------------------------
-_KW_RE = re.compile(r"\s*-\s*`([^`]+)`")
-
-
-def _read_spending_note_lines():
-    path = os.path.join(bot.VAULT_PATH, SPENDING_CATEGORIES_REL)
-    return open(path, encoding="utf-8").read().split("\n")
-
-
-def _write_spending_note_lines(lines):
-    """Atomic write of the categories note, owner/mode restored, rules cache busted so the live
-    recompute (_live_spending_summary) reflects the edit on the very next read."""
-    path = os.path.join(bot.VAULT_PATH, SPENDING_CATEGORIES_REL)
-    st = os.stat(path)
-    tmp = path + ".spendtmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
-    os.replace(tmp, path)
-    try:
-        bot._preserve_vault_owner(path, st)
-    except Exception as e:
-        logger.error(f"spending note chown-back failed: {e}")
-    _spending_rules_cache["ts"] = 0.0
-
-
-def _section_span(lines, category_key):
-    """Return (head_idx, end) for the `## heading` whose normalised text == category_key; the section
-    body is lines[head_idx+1:end], end being the next `## ` line or EOF. (-1, -1) if not found."""
-    head_idx = -1
-    for i, ln in enumerate(lines):
-        if ln.startswith("## ") and _norm_category_key(ln[3:].strip()) == category_key:
-            head_idx = i
-            break
-    if head_idx < 0:
-        return -1, -1
-    end = len(lines)
-    for j in range(head_idx + 1, len(lines)):
-        if lines[j].startswith("## "):
-            end = j
-            break
-    return head_idx, end
-
-
-def _parse_spending_categories(lines):
-    """Ordered [{key, label, keywords:[...]}] for every `## heading` except Related — preserving the
-    heading's exact label text (which load_spending_categories throws away)."""
-    out, cur = [], None
-    for ln in lines:
-        if ln.startswith("## "):
-            label = ln[3:].strip()
-            if label.lower() == "related":
-                cur = None
-                continue
-            cur = {"key": _norm_category_key(label), "label": label, "keywords": []}
-            out.append(cur)
-            continue
-        if cur is not None:
-            m = _KW_RE.match(ln)
-            if m:
-                cur["keywords"].append(m.group(1).strip().lower())
-    return out
-
-
-def _lines_add_keyword(lines, category_key, keyword, category_label=""):
-    """Insert `- `keyword`` under category_key, creating a `## label` section before Related if the
-    category is new. Idempotent. Returns (lines, status)."""
-    keyword = (keyword or "").strip().lower()
-    if not keyword:
-        return lines, "no keyword"
-    head_idx, end = _section_span(lines, category_key)
-    bullet = f"- `{keyword}`"
-    if head_idx >= 0:
-        for s in lines[head_idx + 1:end]:
-            m = _KW_RE.match(s)
-            if m and m.group(1).strip().lower() == keyword:
-                return lines, "already present"
-        last_bullet = head_idx
-        for j in range(head_idx + 1, end):
-            if _KW_RE.match(lines[j]):
-                last_bullet = j
-        insert_at = (last_bullet + 1) if last_bullet != head_idx else (head_idx + 1)
-        lines = lines[:insert_at] + [bullet] + lines[insert_at:]
-        return lines, "appended"
-    label = (category_label or "").strip() or category_key.replace("_", " ").title()
-    block = [f"## {label}", bullet, ""]
-    rel_idx = next((i for i, ln in enumerate(lines)
-                    if ln.startswith("## ") and ln[3:].strip().lower() == "related"), -1)
-    if rel_idx >= 0:
-        lines = lines[:rel_idx] + block + lines[rel_idx:]
-    else:
-        if lines and lines[-1].strip():
-            lines = lines + [""]
-        lines = lines + block
-    return lines, "created"
-
-
-def _lines_remove_keyword(lines, category_key, keyword):
-    """Delete the single bullet line for `keyword` within category_key. Returns (lines, status)."""
-    keyword = (keyword or "").strip().lower()
-    head_idx, end = _section_span(lines, category_key)
-    if head_idx < 0:
-        return lines, "category not found"
-    for j in range(head_idx + 1, end):
-        m = _KW_RE.match(lines[j])
-        if m and m.group(1).strip().lower() == keyword:
-            return lines[:j] + lines[j + 1:], "removed"
-    return lines, "keyword not present"
-
-
-def _lines_rename_category(lines, category_key, new_label):
-    """Rewrite only the `## heading` label text. Returns (lines, status, new_key)."""
-    new_label = (new_label or "").strip()
-    new_key = _norm_category_key(new_label)
-    if not new_key:
-        return lines, "empty name", ""
-    head_idx, _ = _section_span(lines, category_key)
-    if head_idx < 0:
-        return lines, "category not found", ""
-    if new_key != category_key and _section_span(lines, new_key)[0] >= 0:
-        return lines, "target name already exists", ""
-    lines = list(lines)
-    lines[head_idx] = f"## {new_label}"
-    return lines, "renamed", new_key
-
-
-def _lines_add_category(lines, label):
-    """Create an empty `## label` section before Related. Returns (lines, status, key)."""
-    label = (label or "").strip()
-    key = _norm_category_key(label)
-    if not key:
-        return lines, "empty name", ""
-    if _section_span(lines, key)[0] >= 0:
-        return lines, "already exists", key
-    block = [f"## {label}", ""]
-    rel_idx = next((i for i, ln in enumerate(lines)
-                    if ln.startswith("## ") and ln[3:].strip().lower() == "related"), -1)
-    if rel_idx >= 0:
-        lines = lines[:rel_idx] + block + lines[rel_idx:]
-    else:
-        if lines and lines[-1].strip():
-            lines = lines + [""]
-        lines = lines + block
-    return lines, "created", key
-
-
-def _lines_delete_category(lines, category_key):
-    """Remove the whole `## heading` section (heading + prose + bullets + trailing blanks up to the
-    next heading). The preceding separator blank stays, so spacing between the surviving sections is
-    preserved. Returns (lines, status)."""
-    head_idx, end = _section_span(lines, category_key)
-    if head_idx < 0:
-        return lines, "category not found"
-    return lines[:head_idx] + lines[end:], "deleted"
-
-
-def _append_spending_keyword(category_key: str, keyword: str, category_label: str = "") -> str:
-    """Back-compat wrapper used by /api/bills/categorize's teach path: read → add keyword → write."""
-    keyword = (keyword or "").strip().lower()
-    if not keyword:
-        return "no keyword"
-    lines, status = _lines_add_keyword(_read_spending_note_lines(), category_key, keyword, category_label)
-    if status in ("appended", "created"):
-        _write_spending_note_lines(lines)
-    return status
 
 
 @app.post("/api/bills/categorize")
@@ -2923,6 +3163,9 @@ async def api_bills_categorize(request: Request):
     if not category_key or category_key == UNCATEGORISED:
         return JSONResponse({"ok": False, "error": "no category"}, status_code=400)
     repeat_merchant = bool(data.get("repeat_merchant") or data.get("teach"))
+    # Re-sort view: with repeat_merchant, also move this merchant's OTHER manual picks that still sit
+    # in the category being re-sorted (a manual pick outranks the rule, so they'd otherwise stay put).
+    resort_from = _norm_category_key(str(data.get("resort_from") or ""))
 
     conn = await pg_conn()
     try:
@@ -2943,6 +3186,14 @@ async def api_bills_categorize(request: Request):
                        ON CONFLICT (merchant_key) DO UPDATE SET category=EXCLUDED.category,
                                                                created_at=now()""",
                     rule_merchant, category_key)
+                if resort_from and resort_from != category_key:
+                    rows = await conn.fetch(
+                        "SELECT id, description FROM transactions WHERE manual AND category=$1 AND id<>$2",
+                        resort_from, txn_id)
+                    ids = [r["id"] for r in rows if _merchant_key(r["description"]) == rule_merchant]
+                    if ids:
+                        await conn.execute(
+                            "UPDATE transactions SET category=$1 WHERE id = ANY($2::bigint[])", category_key, ids)
     finally:
         await conn.close()
     return {"ok": True, "id": txn_id, "category": category_key, "manual": True,
@@ -2996,59 +3247,6 @@ async def api_merchant_rules_delete(request: Request):
     return {"ok": bool(deleted), "deleted": deleted or ""}
 
 
-# --- S73: manage the note's rules + preview a change's blast radius ---------
-
-@app.get("/api/bills/keyword-impact")
-async def api_bills_keyword_impact(request: Request, keyword: str = ""):
-    """Blast-radius preview for a keyword BEFORE committing it: how many current transactions its
-    substring would match and how they're categorised right now. AGGREGATE COUNTS ONLY — never any
-    transaction-level detail. MANUAL (sticky) rows are EXCLUDED from the match count (their category
-    won't change) and reported separately so it's clear why an already-fixed row doesn't move."""
-    kw = (keyword or "").strip().lower()
-    if not kw:
-        return {"ok": True, "keyword": "", "matches": 0, "by_current_category": {}, "manual_excluded": 0}
-    try:
-        rules = load_spending_categories()
-        conn = await pg_conn()
-        try:
-            await _ensure_spending_schema(conn)
-            rows = await conn.fetch("SELECT description, category, manual FROM transactions")
-        finally:
-            await conn.close()
-        by_cat = {}
-        matches = manual_excluded = 0
-        for r in rows:
-            if kw not in (r["description"] or "").lower():
-                continue
-            if r["manual"]:
-                manual_excluded += 1
-                continue
-            matches += 1
-            eff = categorise_txn(r["description"], rules)   # current (pre-change) category
-            by_cat[eff] = by_cat.get(eff, 0) + 1
-        return {"ok": True, "keyword": kw, "matches": matches,
-                "by_current_category": dict(sorted(by_cat.items(), key=lambda x: -x[1])),
-                "manual_excluded": manual_excluded}
-    except Exception as e:
-        logger.error(f"/api/bills/keyword-impact error: {e}")
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
-
-
-async def _migrate_category_rows(old_key, new_key):
-    """Sticky-row bookkeeping when a category is renamed: carry manual rows from old_key to new_key so
-    a fixed transaction follows the rename instead of orphaning under a heading that no longer exists.
-    (Non-manual rows re-derive live from the note, so they need no DB touch.) Returns rows changed."""
-    conn = await pg_conn()
-    try:
-        await _ensure_spending_schema(conn)
-        n = await conn.fetchval(
-            "WITH u AS (UPDATE transactions SET category=$2 WHERE category=$1 RETURNING 1) "
-            "SELECT count(*) FROM u", old_key, new_key)
-    finally:
-        await conn.close()
-    return n or 0
-
-
 async def _unstick_category_rows(category_key):
     """When a category is DELETED, its sticky rows can't keep pointing at a gone heading — clear
     manual so they re-derive against the remaining rules (landing on the next match or Uncategorised),
@@ -3062,56 +3260,6 @@ async def _unstick_category_rows(category_key):
     finally:
         await conn.close()
     return n or 0
-
-
-@app.post("/api/bills/category/keyword/add")
-async def api_bills_keyword_add(request: Request):
-    """Add a keyword to a category (creating the category if new). Body {category, keyword, category_label?}."""
-    if is_demo(request):
-        return JSONResponse({"ok": False, "error": "demo mode is read-only"}, status_code=403)
-    try:
-        data = await request.json()
-    except Exception:
-        return JSONResponse({"ok": False, "error": "bad request"}, status_code=400)
-    key = _norm_category_key(str(data.get("category") or ""))
-    keyword = str(data.get("keyword") or "").strip().lower()
-    label = str(data.get("category_label") or data.get("category") or "").strip()
-    if not key or key == "related":
-        return JSONResponse({"ok": False, "error": "invalid category"}, status_code=400)
-    if not keyword:
-        return JSONResponse({"ok": False, "error": "no keyword"}, status_code=400)
-    try:
-        lines, status = _lines_add_keyword(_read_spending_note_lines(), key, keyword, label)
-        if status in ("appended", "created"):
-            _write_spending_note_lines(lines)
-        return {"ok": True, "status": status, "category": key, "keyword": keyword}
-    except OSError as e:
-        logger.error(f"/api/bills/category/keyword/add error: {e}")
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
-
-
-@app.post("/api/bills/category/keyword/remove")
-async def api_bills_keyword_remove(request: Request):
-    """Remove one keyword from a category. Body {category, keyword}. Non-manual transactions that only
-    matched via this keyword re-derive live to their next matching rule (or Uncategorised) on next read."""
-    if is_demo(request):
-        return JSONResponse({"ok": False, "error": "demo mode is read-only"}, status_code=403)
-    try:
-        data = await request.json()
-    except Exception:
-        return JSONResponse({"ok": False, "error": "bad request"}, status_code=400)
-    key = _norm_category_key(str(data.get("category") or ""))
-    keyword = str(data.get("keyword") or "").strip().lower()
-    if not key or not keyword:
-        return JSONResponse({"ok": False, "error": "category and keyword required"}, status_code=400)
-    try:
-        lines, status = _lines_remove_keyword(_read_spending_note_lines(), key, keyword)
-        if status == "removed":
-            _write_spending_note_lines(lines)
-        return {"ok": True, "status": status, "category": key, "keyword": keyword}
-    except OSError as e:
-        logger.error(f"/api/bills/category/keyword/remove error: {e}")
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
 @app.post("/api/bills/category/rename")
@@ -3182,11 +3330,21 @@ async def api_bills_category_merge(request: Request):
                 rules_moved = await conn.fetchval(
                     "WITH u AS (UPDATE merchant_category_rules SET category=$2 WHERE category=$1 RETURNING 1) "
                     "SELECT count(*) FROM u", source, target) or 0
+                await _ensure_bills_schema(conn)
+                subs_moved = await conn.fetchval(
+                    "WITH u AS (UPDATE subscriptions SET category=$2 WHERE category=$1 RETURNING 1) "
+                    "SELECT count(*) FROM u", source, target) or 0
+                await _ensure_planned_costs_schema(conn)
+                await conn.execute("UPDATE planned_costs SET category=$2 WHERE category=$1", source, target)
+                await conn.execute(
+                    "UPDATE spending_categories t SET monthly_cap = s.monthly_cap FROM spending_categories s "
+                    "WHERE t.key=$2 AND s.key=$1 AND t.monthly_cap IS NULL", source, target)
                 await conn.execute("DELETE FROM spending_categories WHERE key=$1", source)
         finally:
             await conn.close()
         return {"ok": True, "source": source, "target": target,
-                "transactions_moved": txns_moved, "rules_moved": rules_moved}
+                "transactions_moved": txns_moved, "rules_moved": rules_moved,
+                "subscriptions_moved": subs_moved}
     except Exception as e:
         logger.error(f"/api/bills/category/merge error: {e}")
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)

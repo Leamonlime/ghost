@@ -12,7 +12,7 @@ PAGE_HOOKS = {
         "nav-item", "habits", "todos", "budget",
         "momentum", "momentum-ratio", "momentum-sparkline", "momentum-counts", "decisions",
     ],
-    "ghost-bills.html":     ["bills-table", "spending-summary", "spending-review", "category-manager", "bill-candidates"],
+    "ghost-bills.html":     ["bills-table", "spending-summary", "spending-review", "category-manager", "bill-candidates", "budget-caps", "planned-costs", "export-review"],
     "ghost-horoscope.html": ["profile-select"],
     "ghost-tarot.html":     ["tarot-board"],
     # Ghost 2.0 Phase 1 — native Habits & Todos
@@ -35,8 +35,9 @@ API_ENDPOINTS = [
     "/api/level",
     "/api/bills/spending",
     "/api/bills/categories",
-    "/api/bills/keyword-impact",
     "/api/bills/candidates",
+    "/api/bills/caps-status",
+    "/api/bills/planned-costs",
     "/api/badguys",
 ]
 

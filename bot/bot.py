@@ -2143,6 +2143,84 @@ SCROLL_SUPPRESS_KEY = "scroll_suppressed_until"
 SCROLL_SUPPRESS_DEFAULT_MIN = 45
 SCROLL_SUPPRESS_MAX_MIN = 180
 
+# Budget caps over chat ("set groceries cap to 400", "remove the travel cap", "my caps", "cap warning
+# at 75"). Strict patterns that all need the word "cap", so ordinary chat never matches. Handled here
+# with no model: the dashboard owns the caps (POST /api/bills/category/cap), this only parses and
+# relays. process_message does NOT write these to the messages table, which feeds Claude context.
+DASHBOARD_INTERNAL_URL = os.environ.get("DASHBOARD_INTERNAL_URL", "http://ghost-dashboard.ghost.svc.cluster.local:8080")
+_AMT = r"\$?\s*(\d[\d,]*(?:\.\d{1,2})?)"
+_CAP_SET_RES = (
+    re.compile(r"^(?:please\s+)?(?:set\s+)?(?:my\s+|the\s+)?(.+?)\s+(?:budget\s+|monthly\s+)?cap\s*(?:to|at|=|of|:)?\s*" + _AMT + r"(?:\s*(?:a|per|/)\s*month)?$", re.I),
+    re.compile(r"^(?:please\s+)?cap\s+(?:my\s+|the\s+)?(.+?)\s+(?:at|to)\s+" + _AMT + r"(?:\s*(?:a|per|/)\s*month)?$", re.I),
+    re.compile(r"^(?:please\s+)?set\s+(?:my\s+|the\s+)?(?:budget\s+|monthly\s+)?cap\s+(?:for|on)\s+(?:my\s+|the\s+)?(.+?)\s+(?:to|at)\s+" + _AMT + r"(?:\s*(?:a|per|/)\s*month)?$", re.I),
+)
+_CAP_CLEAR_RE = re.compile(r"^(?:please\s+)?(?:remove|clear|delete|drop|turn\s+off)\s+(?:my\s+|the\s+)?(.+?)\s+(?:budget\s+)?cap$", re.I)
+_CAP_LIST_RE = re.compile(r"^(?:show\s+)?(?:my\s+)?(?:budget\s+)?caps\??$|^how\s+are\s+my\s+(?:budget\s+)?caps(?:\s+going)?\??$", re.I)
+_CAP_WARN_RE = re.compile(r"^(?:set\s+)?(?:the\s+)?cap\s+warning\s*(?:to|at|=)?\s*(\d{1,2})\s*%?$", re.I)
+
+
+def parse_cap_command(text: str):
+    """-> ('set', name, amount) | ('clear', name) | ('list',) | ('warn', pct) | None."""
+    t = re.sub(r"[.!]+$", "", (text or "").strip())
+    if len(t) > 80 or "cap" not in t.lower():
+        return None
+    m = _CAP_WARN_RE.match(t)
+    if m:
+        return ("warn", int(m.group(1)))
+    if _CAP_LIST_RE.match(t):
+        return ("list",)
+    m = _CAP_CLEAR_RE.match(t)
+    if m:
+        return ("clear", m.group(1).strip())
+    for rx in _CAP_SET_RES:
+        m = rx.match(t)
+        if m:
+            return ("set", m.group(1).strip(), float(m.group(2).replace(",", "")))
+    return None
+
+
+async def handle_budget_cap_command(user_message: str) -> str | None:
+    cmd = parse_cap_command(user_message)
+    if cmd is None:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            if cmd[0] == "list":
+                d = (await client.get(f"{DASHBOARD_INTERNAL_URL}/api/bills/caps-status")).json()
+                items = d.get("items") or []
+                if not items:
+                    return "No categories have capping switched on."
+                lines = []
+                for it in items:
+                    if it["status"] == "unset":
+                        lines.append(f"- {it['label']}: no cap set yet")
+                    else:
+                        lines.append(f"- {it['label']}: {round(it['pct'])}% of ${it['cap']:,.0f}")
+                through = f" (spending up to {d['data_through']})" if d.get("data_through") else ""
+                return "Caps this month" + through + ":\n" + "\n".join(lines)
+            if cmd[0] == "warn":
+                d = (await client.post(f"{DASHBOARD_INTERNAL_URL}/api/bills/cap-settings",
+                                       json={"warn_pct": cmd[1]})).json()
+                return (f"Cap heads-up now fires at {cmd[1]}%, and again at 100%." if d.get("ok")
+                        else f"Couldn't change that: {d.get('error', 'unknown error')}.")
+            amount = cmd[2] if cmd[0] == "set" else None
+            resp = await client.post(f"{DASHBOARD_INTERNAL_URL}/api/bills/category/cap",
+                                     json={"name": cmd[1], "monthly_cap": amount})
+            d = resp.json()
+    except Exception as e:
+        logger.error(f"budget cap command failed: {e}")
+        return "Couldn't reach the Bills service to change that cap, so nothing changed. Try the Bills page."
+    if resp.status_code == 409:
+        return f"Which one did you mean: {', '.join(d.get('candidates') or [])}?"
+    if resp.status_code == 404:
+        return f"There's no category called \"{cmd[1]}\". Check the names on the Bills page."
+    if not d.get("ok"):
+        return f"Couldn't change that cap: {d.get('error', 'unknown error')}."
+    if cmd[0] == "clear":
+        return f"Cap removed for {d['label']}."
+    return f"Cap set: {d['label']}, ${d['monthly_cap']:,.2f} a month. You'll get a heads-up as it gets close."
+
+
 async def handle_scroll_suppression(user_message: str) -> str | None:
     """Let the user mute scrolling-interrupt nudges for a bounded window when she's doing
     something that LOOKS like scrolling but isn't (messaging, researching, posting).
@@ -2743,6 +2821,12 @@ async def process_message(user_id: int, user_message: str, source: str = "telegr
         await save_to_postgres(user_id, "user", user_message)
         await save_to_postgres(user_id, "assistant", cephalopod_reply)
         return cephalopod_reply
+
+    # Budget caps: answered without a model and deliberately NOT saved to the messages table, which
+    # feeds Claude context (get_yesterday_summary) — cap amounts stay out of anything Claude reads.
+    cap_reply = await handle_budget_cap_command(user_message)
+    if cap_reply is not None:
+        return cap_reply
 
     scroll_reply = await handle_scroll_suppression(user_message)
     if scroll_reply is not None:

@@ -1297,6 +1297,64 @@ async def monthly_csv_upload_nudge():
     await send_telegram(msg, msg_type="nudge")
     logger.info("Monthly CSV-upload nudge sent")
 
+DASHBOARD_INTERNAL_URL = os.environ.get("DASHBOARD_INTERNAL_URL", "http://ghost-dashboard.ghost.svc.cluster.local:8080")
+
+
+def budget_cap_message(hits, warn_pct, data_through=None):
+    """Deterministic heads-up text for categories that newly crossed a threshold. Names the category
+    and which threshold only — never a dollar figure (Telegram is outside the money boundary)."""
+    if not hits:
+        return ""
+    def phrase(h):
+        return ("is at or over its monthly cap" if h["level"] == "over"
+                else f"has passed {warn_pct}% of its monthly cap")
+    if len(hits) == 1:
+        body = f"Heads-up: {hits[0]['label']} {phrase(hits[0])}."
+    else:
+        body = "Budget caps heads-up:\n" + "\n".join(f"- {h['label']} {phrase(h)}" for h in hits)
+    if data_through:
+        body += f"\n(Based on spending up to your last import, {data_through}. Details on the Bills page.)"
+    return body
+
+
+async def check_budget_caps():
+    """Telegram heads-up when a capped category crosses the warning threshold, and again at 100%.
+    One message per threshold per category per month (Redis-guarded), combined when several cross
+    in the same tick. Not a block, no escalation. Spend comes from the dashboard's live summary, so
+    it only moves when a CSV is imported. Quiet hours respected."""
+    if is_quiet_hours():
+        return
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{DASHBOARD_INTERNAL_URL}/api/bills/caps-status", timeout=30.0)
+        data = resp.json()
+    except Exception as e:
+        logger.error(f"budget caps status unavailable: {e}")
+        return
+    if not data.get("ok"):
+        return
+    month = data.get("month")
+    hits = []
+    r = await get_redis()
+    try:
+        for it in data.get("items") or []:
+            if it.get("status") not in ("warn", "over"):
+                continue
+            base = f"cap_nudge:{month}:{it['key']}"
+            if it["status"] == "over":
+                if await r.set(f"{base}:over", "1", nx=True, ex=40 * 86400):
+                    await r.set(f"{base}:warn", "1", ex=40 * 86400)   # don't send a late 80% after 100%
+                    hits.append({"label": it["label"], "level": "over"})
+            elif await r.set(f"{base}:warn", "1", nx=True, ex=40 * 86400):
+                hits.append({"label": it["label"], "level": "warn"})
+    finally:
+        await r.aclose()
+    msg = budget_cap_message(hits, data.get("warn_pct", 80), data.get("data_through"))
+    if msg:
+        await send_telegram(msg, msg_type="nudge")
+        logger.info(f"Budget cap heads-up sent ({len(hits)} categor{'y' if len(hits) == 1 else 'ies'})")
+
+
 async def run_habitica_sync():
     """Session 23: Habitica<->vault sync on its own jittered 15-30 min cadence
     (separate from this 300s loop). Ships DRY-RUN (writes nothing) until the flip
@@ -1432,6 +1490,7 @@ async def main():
             await dinner_catchup()
             await _anchor_silence_followup()
             await monthly_csv_upload_nudge()
+            await check_budget_caps()
             await check_missed_meals()
             await check_food_tracked()
             await expire_commitments()

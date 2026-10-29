@@ -231,6 +231,29 @@
     </div><!-- /sec-subs -->
   </div>
 
+  <!-- Planned costs: known one-off/large costs ahead (move, wedding, business, other). Feeds the
+       "Upcoming known costs" table of Export for review; the note stays private (never exported). -->
+  <div class="table-card panel" id="plannedCard" data-role="planned-costs" style="margin-top:16px;">
+    <div class="table-head">
+      <button class="ctoggle" data-sec="planned" onclick="toggleSec('planned')" style="background:transparent;border:none;color:var(--gc-ink-dim);cursor:pointer;font-size:13px;line-height:1;padding:0 6px 0 0;">▾</button>
+      <span class="title">Planned costs</span>
+    </div>
+    <div id="sec-planned" style="padding:4px 2px 2px;">
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:6px 0 10px;font-size:11px;">
+        <input id="pcMonth" type="month" style="font-size:12px;padding:3px 6px;border:1px solid var(--gc-hairline);border-radius:5px;background:transparent;color:var(--gc-ink);">
+        <select id="pcCat" style="font-size:12px;padding:3px 6px;border:1px solid var(--gc-hairline);border-radius:5px;background:transparent;color:var(--gc-ink);"></select>
+        <input id="pcAmount" inputmode="decimal" placeholder="$ amount" style="font-size:12px;padding:3px 6px;border:1px solid var(--gc-hairline);border-radius:5px;background:transparent;color:var(--gc-ink);width:90px;">
+        <select id="pcTag" style="font-size:12px;padding:3px 6px;border:1px solid var(--gc-hairline);border-radius:5px;background:transparent;color:var(--gc-ink);">
+          <option value="move">Move</option><option value="wedding">Wedding</option><option value="business">Business</option><option value="other" selected>Other</option></select>
+        <input id="pcNote" placeholder="private note (never exported)" style="font-size:12px;padding:3px 6px;border:1px solid var(--gc-hairline);border-radius:5px;background:transparent;color:var(--gc-ink);width:190px;">
+        <button class="btn" style="font-size:11px;padding:4px 12px;" onclick="addPlanned()">Add</button>
+        <span id="pcStatus" style="font-size:10.5px;color:var(--gc-ink-faint);"></span>
+      </div>
+      <div id="pcList"></div>
+      <div style="font-size:9.5px;color:var(--gc-ink-faint);margin-top:6px;">Quarterly and annual bills of $200+ due in the next 6 months are added to the export automatically (tagged Other).</div>
+    </div>
+  </div>
+
   <!-- Spending — Current picture. Upload a bank CSV -> deterministic parse/categorise/aggregate
        (Python, no model) -> LOCAL Ollama narration. Financial data never reaches the Claude API. -->
   <div class="table-card panel" id="spendingCard" data-role="spending-summary" style="margin-top:16px;">
@@ -239,6 +262,7 @@
       <span class="title">Current picture — spending</span>
       <span class="spacer"></span>
       <input type="file" id="csvFile" accept=".csv,text/csv" style="display:none" onchange="importCsv()">
+      <button class="btn" id="exportReviewBtn" data-role="export-review" onclick="openReviewExport()" title="anonymised category summary you can paste into an outside AI chat — generated here, sent nowhere">Export for review</button>
       <button class="btn primary" id="importBtn" onclick="document.getElementById('csvFile').click()">⬆ Import bank CSV</button>
     </div>
     <div id="importMsg" style="font-size:11.5px;margin:6px 2px 0;min-height:1em;color:var(--gc-ink-dim);"></div>
@@ -246,6 +270,7 @@
     <div class="empty" id="spendingEmpty">No spending imported yet. Import a bank CSV export to see your monthly picture.</div>
     <div id="spendingContent" style="display:none;padding:4px 2px 2px;">
       <div id="spendNarr" style="font-size:12.5px;line-height:1.55;color:var(--gc-ink);border-left:2px solid var(--bills-title);padding:6px 0 6px 12px;margin:4px 0 12px;white-space:pre-wrap;"></div>
+      <div id="capsBox" data-role="budget-caps" style="margin:0 0 14px;"></div>
       <div id="spendMonths"></div>
       <button id="spendToggle" onclick="toggleAllMonths()" style="display:none;margin-top:6px;font-family:var(--gc-serif);font-variant:small-caps;letter-spacing:.05em;font-size:10.5px;color:var(--gc-ink-dim);background:transparent;border:1px solid var(--gc-hairline);border-radius:5px;padding:4px 12px;cursor:pointer;"></button>
       <div id="spendMeta" style="font-size:9.5px;color:var(--gc-ink-faint);margin-top:8px;"></div>
@@ -260,12 +285,13 @@
           <span style="flex:1"></span>
           <button id="revFilterUncategorized" class="revfilter" onclick="setReviewFilter('uncategorized')">Uncategorised</button>
           <button id="revFilterAll" class="revfilter" onclick="setReviewFilter('all')">All transactions</button>
+          <select id="revFilterCat" title="re-sort one category merchant by merchant" onchange="setReviewFilter(this.value ? 'cat:'+this.value : 'uncategorized')" style="font-size:10.5px;padding:3px 6px;border:1px solid var(--gc-hairline);border-radius:5px;background:transparent;color:var(--gc-ink-dim);"></select>
         </div>
         <div id="sec-review">
         <div id="reviewHint" style="font-size:10.5px;color:var(--gc-ink-faint);margin-bottom:8px;"></div>
         <div id="merchantRules" style="margin-bottom:10px;"></div>
         <!-- S87/S90: add / rename / merge / remove categories -->
-        <details id="manageCatsDetails" style="margin-bottom:10px;" ontoggle="try{localStorage.setItem('billsCollapse_managecats', this.open?'0':'1');}catch(e){}">
+        <details id="manageCatsDetails" data-role="category-manager" style="margin-bottom:10px;" ontoggle="try{localStorage.setItem('billsCollapse_managecats', this.open?'0':'1');}catch(e){}">
           <summary style="cursor:pointer;font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--gc-ink-faint);">Manage categories</summary>
           <div style="display:flex;gap:6px;align-items:center;margin:8px 0;">
             <input id="newCatInput" placeholder="new category name" style="font-size:12px;padding:4px 8px;border:1px solid var(--gc-hairline);border-radius:5px;background:transparent;color:var(--gc-ink);width:170px;">
@@ -279,27 +305,29 @@
         </div><!-- /sec-review -->
       </div>
 
-      <!-- S73 keyword "Manage categories" — SUPERSEDED by S85's manual + merchant-rule model, which no
-           longer uses the keyword note to drive the summary. Hidden so it isn't a control that does
-           nothing; the note code remains in the backend but is unwired from categorisation. -->
-      <div id="categoryManager" data-role="category-manager" style="display:none;margin-top:18px;border-top:1px solid var(--gc-hairline);padding-top:12px;">
-        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px;">
-          <span style="font-family:var(--gc-serif);font-variant:small-caps;letter-spacing:.06em;color:var(--bills-title);font-size:13px;">Manage categories</span>
-          <span style="flex:1"></span>
-          <button id="mgrToggle" class="btn" style="font-size:11px;padding:4px 12px;" onclick="toggleManager()">Show</button>
-        </div>
-        <div id="mgrBody" style="display:none;">
-          <div style="font-size:10.5px;color:var(--gc-ink-faint);margin:4px 0 10px;">Edit the keyword rules that auto-categorise transactions. Changes write straight to <em>Ghost — Spending Categories.md</em> and re-derive all non-manual transactions live. Manually-fixed (sticky) transactions are unaffected.</div>
-          <div id="mgrList"></div>
-          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:10px;padding-top:10px;border-top:1px dashed var(--gc-hairline);">
-            <input id="newCatNameLegacy" placeholder="new category name" style="font-size:12px;padding:4px 8px;border:1px solid var(--gc-hairline);border-radius:5px;background:transparent;color:var(--gc-ink);width:170px;">
-            <button class="btn" style="font-size:11px;padding:4px 12px;" onclick="addCategoryLegacy()">Add category</button>
-            <span id="newCatStatusLegacy" style="font-size:10.5px;color:var(--gc-ink-faint);"></span>
-          </div>
-        </div>
-      </div>
     </div><!-- /spendingContent -->
     </div><!-- /sec-spending -->
+  </div>
+</div>
+
+<!-- Export for review: shown here to read + copy; nothing is sent anywhere -->
+<div class="modal-bg" id="reviewBg" onclick="if(event.target===this)closeReviewExport()">
+  <div class="modal panel" style="width:760px;">
+    <h2>Export for review</h2>
+    <div id="reviewNote" style="font-size:11px;line-height:1.5;color:var(--gc-ink-dim);border-left:2px solid var(--bills-title);padding:4px 0 4px 10px;margin-bottom:10px;">
+      <strong>What's in this export:</strong> monthly spend per category for the last 6 full months with a 6-month average,
+      Fixed/Variable per category, average income and savings rate, and upcoming known costs (category, month, amount, tag).
+      Amounts are rounded ($10; $50 above $1,000). <strong>Not included:</strong> transactions, merchants, descriptions,
+      notes, accounts, IDs or anyone's name. A category with fewer than 2 transactions in a month is folded into Other.
+      Category names are yours, so check them before pasting. Generated on Ghost; nothing has been sent anywhere.</div>
+    <div id="reviewBlocked" style="display:none;font-size:11.5px;color:#d97a8c;margin-bottom:10px;"></div>
+    <textarea id="reviewText" readonly style="width:100%;height:46vh;font-family:ui-monospace,monospace;font-size:11.5px;line-height:1.45;padding:8px;border:1px solid var(--gc-hairline);border-radius:6px;background:transparent;color:var(--gc-ink);resize:vertical;"></textarea>
+    <div class="modal-actions">
+      <span id="reviewStatus" style="flex:1;font-size:10.5px;color:var(--gc-ink-faint);align-self:center;"></span>
+      <button class="btn" onclick="copyReviewExport()">Copy</button>
+      <button class="btn" onclick="downloadReviewExport()">Download .md</button>
+      <button class="btn primary" onclick="closeReviewExport()">Close</button>
+    </div>
   </div>
 </div>
 
@@ -732,12 +760,71 @@ function renderMonths(){
 }
 function toggleAllMonths(){ showAllMonths = !showAllMonths; renderMonths(); }
 
+// --- Budget caps: month-to-date spend vs each capped category's monthly cap ---
+function renderCaps(c){
+  const box = document.getElementById("capsBox"); if(!box) return;
+  if(!c || !c.items || !c.items.length){ box.innerHTML = ""; return; }
+  const colors = {ok:"var(--ok,#8fc9a3)", warn:"#e0b25a", over:"#d97a8c"};
+  const inp = "font-size:11px;padding:2px 6px;border:1px solid var(--gc-hairline);border-radius:4px;background:transparent;color:var(--gc-ink);width:70px;";
+  const rows = c.items.map(it=>{
+    if(it.status==="unset"){
+      return `<tr style="border-bottom:1px solid var(--gc-hairline);"><td style="padding:4px 0;color:var(--gc-ink);">${esc(it.label)}</td>
+        <td colspan="2" style="padding:4px 0;text-align:right;color:var(--gc-ink-faint);font-size:11px;">
+          ${money(it.spent)} so far · cap <input id="capin_${esc(it.key)}" inputmode="decimal" placeholder="$ / month" style="${inp}">
+          <button onclick="saveCap('${esc(it.key)}')" style="font-size:10px;background:transparent;border:1px solid var(--gc-hairline);border-radius:4px;padding:1px 7px;cursor:pointer;color:var(--gc-ink-dim);">set</button></td></tr>`;
+    }
+    const w = Math.min(100, it.pct);
+    return `<tr style="border-bottom:1px solid var(--gc-hairline);"><td style="padding:4px 0;color:var(--gc-ink);">${esc(it.label)}</td>
+      <td style="padding:4px 8px;width:40%;"><div style="height:6px;border-radius:3px;background:var(--gc-hairline);overflow:hidden;"><div style="height:100%;width:${w}%;background:${colors[it.status]};"></div></div></td>
+      <td style="padding:4px 0;text-align:right;font-variant-numeric:tabular-nums;color:${it.status==='ok'?'var(--gc-ink)':colors[it.status]};white-space:nowrap;">${money(it.spent)} / ${money(it.cap)} · ${Math.round(it.pct)}%</td></tr>`;
+  }).join("");
+  const through = c.data_through ? ` · spend as of your last import (${esc(c.data_through)})` : "";
+  box.innerHTML = `<div style="font-family:var(--gc-serif);font-variant:small-caps;letter-spacing:.06em;color:var(--bills-title);font-size:13px;margin-bottom:4px;">This month vs caps</div>
+    <div style="font-size:9.5px;color:var(--gc-ink-faint);margin-bottom:6px;">Heads-up on Telegram at
+      <input id="capWarnPct" value="${esc(c.warn_pct)}" inputmode="numeric" style="${inp}width:38px;" onchange="saveWarnPct(this.value)">% and again at 100%. Not a block${through}.</div>
+    <table style="width:100%;border-collapse:collapse;font-size:12px;"><tbody>${rows}</tbody></table>`;
+}
+async function saveCap(key, val){
+  if(val===undefined){ const el = document.getElementById("capin_"+key); val = el ? el.value : ""; }
+  const v = String(val||"").replace(/[$,\s]/g,"");
+  try{
+    const r = await (await fetch("/api/bills/category/cap",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({category:key, monthly_cap: v===""?null:Number(v)})})).json();
+    if(!r.ok){ alert(r.error||"couldn't save the cap"); return; }
+    await loadCategories(); await loadSpending();
+  }catch(e){ console.error("cap save failed", e); }
+}
+async function saveCapEnabled(key, on){
+  try{
+    const r = await (await fetch("/api/bills/category/cap",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({category:key, enabled:on})})).json();
+    if(!r.ok){ alert(r.error||"failed"); }
+    await loadCategories(); await loadSpending();
+  }catch(e){ console.error("cap toggle failed", e); }
+}
+async function saveWarnPct(v){
+  try{
+    const r = await (await fetch("/api/bills/cap-settings",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({warn_pct: parseInt(v,10)})})).json();
+    if(!r.ok){ alert(r.error||"failed"); }
+    await loadSpending();
+  }catch(e){ console.error("warn pct save failed", e); }
+}
+async function saveFixed(key, on){
+  try{
+    const r = await (await fetch("/api/bills/category/fixed",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({category:key, fixed:on})})).json();
+    if(!r.ok){ alert(r.error||"failed"); }
+    await loadCategories();
+  }catch(e){ console.error("fixed toggle failed", e); }
+}
+
 // --- S85: manual categorise screen (fixed categories + merchant rules) ---
-var CATS = [], CATDETAILS = [], reviewFilter = "uncategorized", mgrOpen = false;
+var CATS = [], CATDETAILS = [], reviewFilter = "uncategorized";
 async function loadCategories(){
   try{ const r = await (await fetch("/api/bills/categories",{cache:"no-store"})).json();
        if(r && r.ok){ CATS = r.categories||[]; CATDETAILS = r.details||[];
-         CATLABELS = {}; CATDETAILS.forEach(d=>{ CATLABELS[d.key]=d.label; }); renderCatList(); } }
+         CATLABELS = {}; CATDETAILS.forEach(d=>{ CATLABELS[d.key]=d.label; }); renderCatList(); renderResortPicker(); } }
   catch(e){ console.error("categories load failed", e); }
 }
 // S87/S90: add / rename / merge / remove categories + transfer flag (all DB-backed)
@@ -751,6 +838,11 @@ function renderCatList(){
       <span style="flex:1;min-width:120px;color:var(--gc-ink);">${esc(d.label)}${d.exclude_from_totals?' <span title="excluded from income/spent totals" style="color:var(--gc-ink-faint);font-size:9px;">↔ transfer</span>':''}</span>
       <label style="font-size:9.5px;color:var(--gc-ink-faint);display:flex;gap:3px;align-items:center;" title="own-account transfer — exclude from income/spent totals">
         <input type="checkbox" ${d.exclude_from_totals?"checked":""} onchange="catToggleExclude('${esc(d.key)}',this.checked)">transfer</label>
+      <label style="font-size:9.5px;color:var(--gc-ink-faint);display:flex;gap:3px;align-items:center;" title="fixed cost (same every month) — used by Export for review">
+        <input type="checkbox" ${d.fixed?"checked":""} onchange="saveFixed('${esc(d.key)}',this.checked)">fixed</label>
+      <label style="font-size:9.5px;color:var(--gc-ink-faint);display:flex;gap:3px;align-items:center;" title="track a monthly cap for this category">
+        <input type="checkbox" ${d.cap_enabled?"checked":""} onchange="saveCapEnabled('${esc(d.key)}',this.checked)">cap</label>
+      ${d.cap_enabled?`<input value="${d.monthly_cap==null?"":esc(d.monthly_cap)}" placeholder="$/mo" inputmode="decimal" title="monthly cap (blank = none)" onchange="saveCap('${esc(d.key)}',this.value)" style="${mini}width:58px;cursor:text;">`:""}
       <button onclick="catRename('${esc(d.key)}',${JSON.stringify(d.label)})" style="${mini}">rename</button>
       <select id="merge_${esc(d.key)}" style="${mini}">${opts}</select>
       <button onclick="catMerge('${esc(d.key)}',${JSON.stringify(d.label)})" style="${mini}">merge</button>
@@ -840,23 +932,33 @@ function reviewRow(t){
   </div>`;
 }
 function setReviewFilter(f){ reviewFilter = f; loadReview(); }
+function renderResortPicker(){
+  const sel = document.getElementById("revFilterCat"); if(!sel) return;
+  const cur = reviewFilter.startsWith("cat:") ? reviewFilter.slice(4) : "";
+  sel.innerHTML = `<option value="">Re-sort a category…</option>` + (CATDETAILS||[]).map(d=>
+    `<option value="${esc(d.key)}"${d.key===cur?" selected":""}>${esc(d.label)}</option>`).join("");
+}
 async function loadReview(){
   for(const f of ["uncategorized","all"]){
     const b = document.getElementById("revFilter"+f[0].toUpperCase()+f.slice(1));
     if(b){ b.style.cssText = "font-family:var(--gc-serif);font-variant:small-caps;letter-spacing:.05em;font-size:10.5px;border-radius:5px;padding:4px 12px;cursor:pointer;border:1px solid var(--gc-hairline);"
       + (f===reviewFilter ? "background:var(--bills-title);color:#fff;" : "background:transparent;color:var(--gc-ink-dim);"); }
   }
+  renderResortPicker();
+  const resort = reviewFilter.startsWith("cat:") ? reviewFilter.slice(4) : "";
   try{
-    const r = await (await fetch("/api/bills/transactions?filter="+reviewFilter,{cache:"no-store"})).json();
+    const r = await (await fetch("/api/bills/transactions?filter="+encodeURIComponent(reviewFilter),{cache:"no-store"})).json();
     const list = document.getElementById("reviewList"), hint = document.getElementById("reviewHint");
     if(!r || !r.ok){ list.innerHTML=""; hint.textContent="Couldn't load transactions."; return; }
     if(!r.transactions.length){
       list.innerHTML="";
-      hint.textContent = reviewFilter==="uncategorized" ? "Nothing uncategorised — every transaction has a category." : "No transactions yet.";
+      hint.textContent = reviewFilter==="uncategorized" ? "Nothing uncategorised — every transaction has a category."
+        : resort ? "Nothing left in "+catLabel(resort)+" — it can be removed under Manage categories." : "No transactions yet.";
       return;
     }
     hint.textContent = reviewFilter==="uncategorized"
       ? r.count+" transaction"+(r.count===1?"":"s")+" need a category. Assign one — it sticks, even after re-importing."
+      : resort ? r.count+" transaction"+(r.count===1?"":"s")+" in "+catLabel(resort)+". Pick a new category per merchant; with “always categorise this merchant” ticked, all of that merchant's rows here move together."
       : "Showing "+r.count+" transaction"+(r.count===1?"":"s")+". Correct any wrong category; a manual set is kept on re-import.";
     list.innerHTML = r.transactions.map(reviewRow).join("");
   }catch(e){ console.error("review load failed", e); }
@@ -870,14 +972,15 @@ async function saveRow(id){
   st.style.color="var(--gc-ink-dim)"; st.textContent="saving…";
   try{
     const r = await (await fetch("/api/bills/categorize",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({id, category, repeat_merchant})})).json();
+      body:JSON.stringify({id, category, repeat_merchant,
+        resort_from: reviewFilter.startsWith("cat:") ? reviewFilter.slice(4) : ""})})).json();
     if(!r.ok){ st.style.color="#d97a8c"; st.textContent=r.error||"failed"; return; }
     st.style.color="var(--ok,#8fc9a3)";
     st.textContent = "saved" + (r.rule_created ? " + rule for "+r.merchant : "");
     const row = document.querySelector('.revrow[data-id="'+id+'"]');
     // A merchant rule may clear several rows at once — reload the queue to reflect it.
     if(repeat_merchant){ await loadReview(); }
-    else if(reviewFilter==="uncategorized" && row){ setTimeout(()=>{ row.remove(); if(!document.querySelectorAll('.revrow').length) loadReview(); }, 700); }
+    else if((reviewFilter==="uncategorized" || (reviewFilter.startsWith("cat:") && category!==reviewFilter.slice(4))) && row){ setTimeout(()=>{ row.remove(); if(!document.querySelectorAll('.revrow').length) loadReview(); }, 700); }
     await loadMerchantRules();
     await loadSpending();   // refresh the top spending summary so the change shows in the numbers
   }catch(e){ st.style.color="#d97a8c"; st.textContent="error: "+e; }
@@ -994,115 +1097,6 @@ async function delSub(id){
   }catch(e){ console.error("sub delete failed", e); }
 }
 
-// --- S73: Manage categories (edit the note's keyword rules) ---
-function toggleManager(){
-  mgrOpen = !mgrOpen;
-  document.getElementById("mgrBody").style.display = mgrOpen ? "" : "none";
-  document.getElementById("mgrToggle").textContent = mgrOpen ? "Hide" : "Show";
-  if(mgrOpen) renderManager();
-}
-function renderManager(){
-  if(!mgrOpen) return;
-  const host = document.getElementById("mgrList");
-  if(!host) return;
-  if(!CATDETAILS.length){ host.innerHTML = '<div style="color:var(--gc-ink-faint);font-size:11px;">No categories in the note yet.</div>'; return; }
-  host.innerHTML = CATDETAILS.map(c=>{
-    const chips = (c.keywords||[]).map(kw=>`<span style="display:inline-flex;align-items:center;gap:4px;border:1px solid var(--gc-hairline);border-radius:12px;padding:1px 4px 1px 8px;margin:2px;font-size:11px;font-variant-numeric:tabular-nums;">${esc(kw)}<button title="remove keyword" onclick="removeKeyword('${esc(c.key)}','${esc(kw)}')" style="border:none;background:transparent;color:#d97a8c;cursor:pointer;font-size:13px;line-height:1;padding:0 2px;">×</button></span>`).join("") || '<span style="color:var(--gc-ink-faint);font-size:10.5px;">(no keywords yet)</span>';
-    return `<div class="mgrcat" style="border:1px solid var(--gc-hairline);border-radius:6px;padding:8px 10px;margin-bottom:8px;">
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px;">
-        <span style="font-family:var(--gc-serif);font-size:12.5px;color:var(--bills-title);flex:1;min-width:120px;">${esc(c.label)}</span>
-        <button class="btn" style="font-size:10.5px;padding:3px 9px;" onclick="renameCategory('${esc(c.key)}','${esc(c.label)}')">Rename</button>
-        <button class="btn" style="font-size:10.5px;padding:3px 9px;color:#d97a8c;" onclick="deleteCategory('${esc(c.key)}','${esc(c.label)}')">Delete</button>
-      </div>
-      <div style="margin-bottom:6px;">${chips}</div>
-      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
-        <input id="addkw_${esc(c.key)}" placeholder="add keyword" style="font-size:11px;padding:3px 7px;border:1px solid var(--gc-hairline);border-radius:5px;background:transparent;color:var(--gc-ink);width:130px;">
-        <button class="btn" style="font-size:10.5px;padding:3px 9px;" onclick="previewThenAdd('${esc(c.key)}','${esc(c.label)}')">Preview + add</button>
-        <span id="imp_${esc(c.key)}" style="font-size:10.5px;color:var(--gc-ink-dim);"></span>
-      </div>
-    </div>`;
-  }).join("");
-}
-async function previewThenAdd(key, label){
-  const inp = document.getElementById("addkw_"+key), out = document.getElementById("imp_"+key);
-  const kw = (inp.value||"").trim().toLowerCase();
-  if(!kw){ out.style.color="#d97a8c"; out.textContent="type a keyword"; return; }
-  // Stage 1: show the blast-radius preview and turn the button into a confirm.
-  if(inp.dataset.pending !== kw){
-    out.style.color="var(--gc-ink-dim)"; out.textContent="checking…";
-    try{
-      const r = await (await fetch("/api/bills/keyword-impact?keyword="+encodeURIComponent(kw),{cache:"no-store"})).json();
-      if(!r.ok){ out.style.color="#d97a8c"; out.textContent=r.error||"preview failed"; return; }
-      const split = Object.entries(r.by_current_category||{}).map(([k,n])=>n+" "+catLabel(k)).join(", ") || "none";
-      const manualNote = r.manual_excluded ? ` · ${r.manual_excluded} manually-set row${r.manual_excluded===1?"":"s"} unaffected (excluded)` : "";
-      out.style.color="var(--gc-ink)";
-      out.textContent = `${r.matches} match${r.matches===1?"":"es"} — currently ${split}${manualNote}. Click again to confirm.`;
-      inp.dataset.pending = kw;
-      return;
-    }catch(e){ out.style.color="#d97a8c"; out.textContent="preview error: "+e; return; }
-  }
-  // Stage 2: same keyword clicked again -> commit.
-  out.style.color="var(--gc-ink-dim)"; out.textContent="adding…";
-  try{
-    const r = await (await fetch("/api/bills/category/keyword/add",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({category:key, category_label:label, keyword:kw})})).json();
-    if(!r.ok){ out.style.color="#d97a8c"; out.textContent=r.error||"failed"; return; }
-    inp.value=""; delete inp.dataset.pending;
-    await afterRuleChange();
-  }catch(e){ out.style.color="#d97a8c"; out.textContent="error: "+e; }
-}
-async function removeKeyword(key, kw){
-  if(!confirm(`Remove keyword “${kw}” from ${catLabel(key)}? Non-manual transactions that only matched via it will re-derive to their next matching rule (or Uncategorised).`)) return;
-  try{
-    const r = await (await fetch("/api/bills/category/keyword/remove",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({category:key, keyword:kw})})).json();
-    if(!r.ok){ alert(r.error||"failed"); return; }
-    await afterRuleChange();
-  }catch(e){ alert("error: "+e); }
-}
-async function renameCategory(key, label){
-  const name = prompt("Rename category — new name:", label);
-  if(name===null) return;
-  if(!name.trim()){ return; }
-  try{
-    const r = await (await fetch("/api/bills/category/rename",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({category:key, new_name:name.trim()})})).json();
-    if(!r.ok){ alert(r.error||"failed"); return; }
-    await afterRuleChange();
-  }catch(e){ alert("error: "+e); }
-}
-async function deleteCategory(key, label){
-  if(!confirm(`Delete category “${label}” and all its keywords? Any transactions you'd manually pinned to it will be un-stuck and re-derive against the remaining rules.`)) return;
-  try{
-    const r = await (await fetch("/api/bills/category/delete",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({category:key})})).json();
-    if(!r.ok){ alert(r.error||"failed"); return; }
-    await afterRuleChange();
-  }catch(e){ alert("error: "+e); }
-}
-// S88: legacy S73 keyword-manager add (hidden UI). Renamed from addCategory to stop it OVERRIDING
-// the S87 DB-backed addCategory above (JS keeps the last same-named function) — that name collision
-// was why "save new category" did nothing.
-async function addCategoryLegacy(){
-  const inp = document.getElementById("newCatNameLegacy"), out = document.getElementById("newCatStatusLegacy");
-  const name = (inp.value||"").trim();
-  if(!name){ out.style.color="#d97a8c"; out.textContent="type a name"; return; }
-  out.style.color="var(--gc-ink-dim)"; out.textContent="adding…";
-  try{
-    const r = await (await fetch("/api/bills/category/add",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({name})})).json();
-    if(!r.ok){ out.style.color="#d97a8c"; out.textContent=r.error||"failed"; return; }
-    inp.value=""; out.style.color="var(--ok,#8fc9a3)"; out.textContent="added";
-    await afterRuleChange();
-  }catch(e){ out.style.color="#d97a8c"; out.textContent="error: "+e; }
-}
-// after any rule edit: reload categories (re-render manager) + review list + month totals (live re-derive)
-async function afterRuleChange(){
-  await loadCategories();
-  await loadReview();
-  await loadSpending();
-}
-
 async function loadSpending(){
   try{
     const r = await (await fetch("/api/bills/spending"+Q,{cache:"no-store"})).json();
@@ -1110,7 +1104,7 @@ async function loadSpending(){
     document.getElementById("spendingEmpty").style.display="none";
     document.getElementById("spendingContent").style.display="";
     document.getElementById("spendNarr").textContent = r.narration || "(no narration generated)";
-    SPEND = r; renderMonths();
+    SPEND = r; renderMonths(); renderCaps(r.caps);
     document.getElementById("spendMeta").textContent = "Generated "+(r.generated_at? new Date(r.generated_at).toLocaleString("en-AU") : "—")+" · numbers computed live from your imports, narration by local Ollama (never Claude).";
   }catch(e){ console.error("spending load failed", e); }
 }
@@ -1147,7 +1141,75 @@ async function importCsv(){
   }
 }
 
-document.addEventListener("keydown", e=>{ if(e.key==="Escape"){ closeForm(); closeSubForm(); } });
+// --- Export for review (local only) + planned costs ---
+async function openReviewExport(){
+  const bg = document.getElementById("reviewBg"), ta = document.getElementById("reviewText"),
+        bl = document.getElementById("reviewBlocked"), st = document.getElementById("reviewStatus");
+  ta.value = ""; bl.style.display = "none"; st.textContent = "generating…"; bg.style.display = "flex";
+  try{
+    const r = await (await fetch("/api/bills/export-review",{cache:"no-store"})).json();
+    if(r.blocked){
+      bl.style.display = ""; st.textContent = "";
+      bl.innerHTML = "<strong>Export blocked</strong> — the safety scan found something that looks like an ID or contact detail, so nothing is shown:<br>"
+        + (r.matches||[]).map(m=>`line ${m.line}: ${esc(m.what)} — “${esc(m.match)}”`).join("<br>")
+        + "<br>Usually a category name or planned cost holds a number like this. Rename it and try again.";
+      return;
+    }
+    if(!r.ok){ st.textContent = r.error || "couldn't generate the export"; return; }
+    ta.value = r.markdown; st.textContent = r.lines+" lines · safety scan passed";
+  }catch(e){ st.textContent = "error: "+e; }
+}
+function closeReviewExport(){ document.getElementById("reviewBg").style.display = "none"; }
+async function copyReviewExport(){
+  const ta = document.getElementById("reviewText"); if(!ta.value) return;
+  try{ await navigator.clipboard.writeText(ta.value); }
+  catch(e){ ta.select(); document.execCommand("copy"); }
+  document.getElementById("reviewStatus").textContent = "copied";
+}
+function downloadReviewExport(){
+  const t = document.getElementById("reviewText").value; if(!t) return;
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([t],{type:"text/markdown"}));
+  a.download = "spending-review-"+new Date().toISOString().slice(0,7)+".md";
+  a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+}
+async function loadPlanned(){
+  const box = document.getElementById("pcList"), sel = document.getElementById("pcCat");
+  if(sel) sel.innerHTML = (CATDETAILS||[]).filter(d=>!d.exclude_from_totals).map(d=>`<option value="${esc(d.key)}">${esc(d.label)}</option>`).join("");
+  if(!box) return;
+  try{
+    const r = await (await fetch("/api/bills/planned-costs"+Q,{cache:"no-store"})).json();
+    const items = (r && r.items) || [];
+    box.innerHTML = items.length ? `<table style="width:100%;border-collapse:collapse;font-size:12px;"><tbody>` + items.map(p=>
+      `<tr style="border-bottom:1px solid var(--gc-hairline);"><td style="padding:4px 0;color:var(--gc-ink-dim);">${esc(monthLabel(p.month))}</td>
+        <td>${esc(catLabel(p.category))}</td><td style="text-align:right;font-variant-numeric:tabular-nums;">${money(p.amount)}</td>
+        <td style="padding-left:8px;color:var(--gc-ink-dim);">${esc(cap(p.tag))}</td>
+        <td style="color:var(--gc-ink-faint);font-size:10.5px;">${esc(p.note||"")}</td>
+        <td style="text-align:right;"><button onclick="deletePlanned(${p.id})" style="font-size:10px;background:transparent;border:1px solid var(--gc-hairline);border-radius:4px;padding:1px 7px;cursor:pointer;color:#d97a8c;">remove</button></td></tr>`).join("") + `</tbody></table>`
+      : `<div class="empty" style="padding:6px 0;">No planned costs yet.</div>`;
+  }catch(e){ console.error("planned load failed", e); }
+}
+async function addPlanned(){
+  const st = document.getElementById("pcStatus");
+  const body = {month: document.getElementById("pcMonth").value, category: document.getElementById("pcCat").value,
+    amount: Number(String(document.getElementById("pcAmount").value).replace(/[$,\s]/g,"")),
+    tag: document.getElementById("pcTag").value, note: document.getElementById("pcNote").value};
+  if(!body.month || !body.amount){ st.style.color="#d97a8c"; st.textContent="month and amount needed"; return; }
+  try{
+    const r = await (await fetch("/api/bills/planned-costs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})).json();
+    if(!r.ok){ st.style.color="#d97a8c"; st.textContent=r.error||"failed"; return; }
+    st.style.color="var(--ok,#8fc9a3)"; st.textContent="added";
+    ["pcAmount","pcNote"].forEach(id=>document.getElementById(id).value="");
+    await loadPlanned();
+  }catch(e){ st.style.color="#d97a8c"; st.textContent="error: "+e; }
+}
+async function deletePlanned(id){
+  if(!confirm("Remove this planned cost?")) return;
+  try{ await fetch("/api/bills/planned-costs/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})}); await loadPlanned(); }
+  catch(e){ console.error("planned delete failed", e); }
+}
+
+document.addEventListener("keydown", e=>{ if(e.key==="Escape"){ closeForm(); closeSubForm(); closeReviewExport(); } });
 
 (async function init(){
   if(DEMO) document.getElementById("demoBadge").style.display="inline-block";
@@ -1159,6 +1221,7 @@ document.addEventListener("keydown", e=>{ if(e.key==="Escape"){ closeForm(); clo
   await loadReview();
   await loadMerchantRules();
   await loadSubscriptions();
+  await loadPlanned();
   restoreSections();   // S90: apply remembered collapse state
 })();
 </script>
