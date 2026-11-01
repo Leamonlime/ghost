@@ -1091,6 +1091,7 @@ SERVICE_HINTS = {
     "postgres": "database unreachable — check the pod or the password secret",
     "redis": "redis unreachable — check the pod or the password secret",
     "anthropic": "the Claude API is refusing calls — Ghost's brain is down",
+    "gcal": "Google Calendar access is failing, so calendar answers and event changes will not work",
 }
 
 async def check_ntfy_health():
@@ -1130,6 +1131,28 @@ async def check_redis_health():
         await r.aclose()
     return None
 
+async def check_gcal_health():
+    """Google Calendar: do a real refresh-token grant (no cache) so a dead refresh token shows up as
+    a failure instead of silently returning no events. 'REAUTH:' details alert on the FIRST
+    occurrence (a revoked or expired token never heals by itself). OAuth apps left in 'Testing'
+    mode have their refresh tokens expire after 7 days."""
+    import gcal
+    if not gcal.is_configured():
+        return "unconfigured"
+    async with httpx.AsyncClient() as client:
+        r = await client.post(gcal.TOKEN_URL, data={
+            "client_id": gcal.CLIENT_ID, "client_secret": gcal.CLIENT_SECRET,
+            "refresh_token": gcal.REFRESH_TOKEN, "grant_type": "refresh_token"}, timeout=20)
+    if r.status_code == 200:
+        return None
+    try:
+        err = r.json().get("error", "")
+    except Exception:
+        err = ""
+    if err in ("invalid_grant", "invalid_client", "unauthorized_client"):
+        return f"REAUTH: Google rejected the refresh token ({err})"
+    return f"token refresh HTTP {r.status_code} {err}".strip()
+
 async def check_anthropic_health():
     """Anthropic has no balance endpoint for a standard API key (the usage/cost
     reports need an Admin key), so we probe with the cheapest possible call and
@@ -1167,6 +1190,7 @@ HEALTH_CHECKS = [
     ("postgres", check_postgres_health),
     ("redis", check_redis_health),
     ("anthropic", check_anthropic_health),
+    ("gcal", check_gcal_health),
 ]
 
 async def run_health_checks() -> dict:
@@ -1252,11 +1276,16 @@ async def health_check():
                 # Running out of credit is a full outage, not a blip — alert on the
                 # first occurrence. Everything else waits for 2 in a row.
                 is_billing = bool(detail and detail.startswith("BILLING:"))
-                if is_billing and streak == 1:
+                is_reauth = bool(detail and detail.startswith("REAUTH:"))
+                if is_reauth and streak == 1:
+                    alerts.append(
+                        f"{service} needs re-authorising — {detail[7:].strip()}. Calendar reads and event "
+                        f"changes will fail until you re-authorise Google access.")
+                elif is_billing and streak == 1:
                     alerts.append(
                         f"Claude API is out of credit — Ghost's brain is down until you top it up. "
                         f"Nudges and chat will fail. Detail: {detail[9:]}")
-                elif streak == 2 and not is_billing:  # confirmed failure — once per episode
+                elif streak == 2 and not is_billing and not is_reauth:  # confirmed failure — once per episode
                     alerts.append(
                         f"{service} has been failing since {_fmt(prev_fail_run[0]['checked_at'])} — "
                         f"{SERVICE_HINTS.get(service, 'check the pod')}. Latest error: {detail}")
