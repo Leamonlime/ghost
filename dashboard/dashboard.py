@@ -180,6 +180,68 @@ async def send_telegram(message: str, silent: bool = False):
             logger.error(f"Telegram send FAILED ({response.status_code}): {response.text[:200]}")
             raise RuntimeError(f"telegram send failed: {response.status_code}")
 
+NTFY_URL = os.environ.get("NTFY_URL", "")
+NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
+NTFY_TOKEN = os.environ.get("NTFY_TOKEN", "")
+
+
+def _ascii_header(value: str) -> str:
+    """HTTP header values must be ASCII; fold dashes/quotes, drop the rest (same rule as the scheduler)."""
+    v = str(value or "")
+    for src, dst in (("\u2014", "-"), ("\u2013", "-"), ("\u2018", "'"), ("\u2019", "'"),
+                     ("\u201c", '"'), ("\u201d", '"'), ("\u2026", "...")):
+        v = v.replace(src, dst)
+    return " ".join(v.encode("ascii", "ignore").decode("ascii").split()) or "Ghost"
+
+
+async def push_ntfy(message: str, title: str = "Ghost") -> bool:
+    """Push to Lea's private ntfy topic and to every UnifiedPush endpoint the Ghost app registered
+    (the same two deliveries the scheduler makes). Best-effort; True if at least one succeeded."""
+    if not NTFY_TOKEN:
+        return False
+    delivered = False
+    auth = {"Authorization": f"Bearer {NTFY_TOKEN}"}
+    base = NTFY_URL.rstrip("/")
+    try:
+        conn = await pg_conn()
+        try:
+            rows = await conn.fetch("SELECT endpoint FROM app_push_endpoints")
+            body = json.dumps({"title": title, "message": message}).encode("utf-8")
+            async with httpx.AsyncClient() as client:
+                for r in rows:
+                    ep = r["endpoint"]
+                    from urllib.parse import urlsplit
+                    u = urlsplit(ep)
+                    # tailnet endpoints are not resolvable in-pod; same ntfy server, in-cluster URL
+                    url = f"{base}{u.path}" if (base and (u.hostname or "").endswith(".ts.net") and u.port == 10443) else ep
+                    try:
+                        resp = await client.post(url, content=body, headers=auth, timeout=10.0)
+                        if resp.status_code < 300:
+                            delivered = True
+                            await conn.execute("UPDATE app_push_endpoints SET last_ok_at=now() WHERE endpoint=$1", ep)
+                        elif resp.status_code in (404, 410):
+                            await conn.execute("DELETE FROM app_push_endpoints WHERE endpoint=$1", ep)
+                        else:
+                            logger.error(f"app push FAILED ({resp.status_code}): {resp.text[:160]}")
+                    except Exception as e:
+                        logger.error(f"app push error: {e}")
+        finally:
+            await conn.close()
+    except Exception as e:
+        logger.error(f"app push: db error: {e}")
+    if NTFY_URL and NTFY_TOPIC:
+        try:
+            async with httpx.AsyncClient() as client:
+                r = await client.post(f"{base}/{NTFY_TOPIC}", content=message.encode("utf-8"),
+                                      headers={**auth, "Title": _ascii_header(title)}, timeout=10.0)
+            if r.status_code == 200:
+                delivered = True
+            else:
+                logger.error(f"ntfy publish FAILED ({r.status_code}): {r.text[:160]}")
+        except Exception as e:
+            logger.error(f"ntfy publish error: {e}")
+    return delivered
+
 async def claude_line(prompt: str) -> str:
     """One-line Ghost message via Claude, with recent-phrase avoidance."""
     system = ("You are Ghost. Dry, blunt, minimal. One line only. "
@@ -3540,11 +3602,14 @@ async def scrolling_webhook(request: Request):
         logger.error(f"webhook claude error: {e}")
         message = fallback
 
+    # ntfy / app push first: it is the delivery path that survives Telegram's retirement.
+    pushed = await push_ntfy(message, "Ghost")
     try:
         await send_telegram(message)
     except Exception as e:
         logger.error(f"webhook telegram error: {e}")
-        return {"ok": False, "error": "telegram send failed"}
+        if not pushed:
+            return {"ok": False, "error": "send failed"}
     try:
         # source 'webhook' (a sixth source beyond the original five) — these are real
         # Telegram sends and belong in the unified feed, but attributing them to

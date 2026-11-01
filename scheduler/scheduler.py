@@ -236,8 +236,18 @@ async def log_message(source: str, msg_type: str, content: str):
 NTFY_URL = os.environ.get("NTFY_URL", "")          # internal svc, e.g. http://ntfy.ghost.svc.cluster.local
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
 NTFY_TOKEN = os.environ.get("NTFY_TOKEN", "")
-_NTFY_TITLES = {"briefing": "Ghost — morning", "summary": "Ghost — day's end",
-                "nudge": "Ghost", "alert": "Ghost — heads up"}
+_NTFY_TITLES = {"briefing": "Ghost - morning", "summary": "Ghost - day's end",
+                "nudge": "Ghost", "alert": "Ghost - heads up"}
+
+
+def _ascii_header(value: str) -> str:
+    """HTTP header values must be ASCII (an em dash in a Title made every briefing/summary topic
+    publish raise). Fold dashes/quotes to plain ASCII, drop anything else, strip newlines."""
+    v = str(value or "")
+    for src, dst in (("\u2014", "-"), ("\u2013", "-"), ("\u2018", "'"), ("\u2019", "'"),
+                     ("\u201c", '"'), ("\u201d", '"'), ("\u2026", "...")):
+        v = v.replace(src, dst)
+    return " ".join(v.encode("ascii", "ignore").decode("ascii").split()) or "Ghost"
 
 
 def _internal_push_url(endpoint: str) -> str:
@@ -292,26 +302,31 @@ async def push_app_endpoints(message: str, title: str = "Ghost") -> int:
     return ok
 
 
-async def publish_ntfy(message: str, msg_type: str = "nudge"):
+async def publish_ntfy(message: str, msg_type: str = "nudge") -> bool:
     """S92: push Ghost's proactive message to Lea's private ntfy topic (app push), IN ADDITION to
     Telegram for now. Best-effort — a push failure never blocks the Telegram send. No-op if unset.
-    S93: also delivers to the Ghost app's UnifiedPush endpoints."""
+    S93: also delivers to the Ghost app's UnifiedPush endpoints.
+    Returns True if at least one delivery (topic or app endpoint) succeeded."""
+    title = _NTFY_TITLES.get(msg_type, "Ghost")
+    delivered = False
     try:
-        await push_app_endpoints(message, _NTFY_TITLES.get(msg_type, "Ghost"))
+        delivered = (await push_app_endpoints(message, title)) > 0
     except Exception as e:
         logger.error(f"app push error: {e}")
     if not (NTFY_URL and NTFY_TOPIC and NTFY_TOKEN):
-        return
+        return delivered
     try:
         async with httpx.AsyncClient() as client:
             r = await client.post(f"{NTFY_URL.rstrip('/')}/{NTFY_TOPIC}", content=message.encode("utf-8"),
                                   headers={"Authorization": f"Bearer {NTFY_TOKEN}",
-                                           "Title": _NTFY_TITLES.get(msg_type, "Ghost")}, timeout=10.0)
+                                           "Title": _ascii_header(title)}, timeout=10.0)
         if r.status_code != 200:
             logger.error(f"ntfy publish FAILED ({r.status_code}): {r.text[:160]}")
+        else:
+            delivered = True
     except Exception as e:
         logger.error(f"ntfy publish error: {e}")
-
+    return delivered
 
 async def send_telegram(message: str, msg_type: str = "nudge"):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -1166,8 +1181,12 @@ async def run_health_checks() -> dict:
     return results
 
 async def send_alert(text: str, reply_markup: dict | None = None) -> bool:
-    """Telegram send that reports success instead of assuming it. `reply_markup` (an inline
-    keyboard dict) is used by the ghost-runner's decision cards; the bot handles the taps."""
+    """Alert send that reports success instead of assuming it. Goes to Telegram AND to ntfy / the
+    Ghost app push (health alerts, Postgres-down, the runner's morning report, decision cards).
+    `reply_markup` (an inline keyboard dict) is used by the ghost-runner's decision cards; the
+    Telegram buttons are handled by the bot, and the push body points at the app's Decisions screen
+    where the same card can be answered. True if either channel delivered."""
+    tg_ok = False
     try:
         payload = {"chat_id": TELEGRAM_USER_ID, "text": text}
         if reply_markup:
@@ -1177,12 +1196,18 @@ async def send_alert(text: str, reply_markup: dict | None = None) -> bool:
                 f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
                 json=payload, timeout=15
             )
-            if r.status_code == 200:
+            tg_ok = r.status_code == 200
+            if tg_ok:
                 await log_message("scheduler", "alert", text)
-            return r.status_code == 200
     except Exception as e:
-        logger.error(f"send_alert error: {e}")
-        return False
+        logger.error(f"send_alert telegram error: {e}")
+    push_text = text
+    if reply_markup:
+        push_text = text.rstrip() + "\n\nOpen the Ghost app > Decisions to answer."
+    pushed = await publish_ntfy(push_text, "alert")
+    if pushed and not tg_ok:
+        await log_message("scheduler", "alert", text)   # the unified feed should show what was actually delivered
+    return tg_ok or pushed
 
 def _fmt(ts) -> str:
     local = ts.astimezone(LOCAL_TZ)
