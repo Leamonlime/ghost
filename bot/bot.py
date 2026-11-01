@@ -7,36 +7,31 @@ import re
 import time
 import asyncpg
 from redis.asyncio import Redis
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters, ContextTypes
 import httpx
 import zoneinfo
 from datetime import datetime, timedelta
 
 import native  # Ghost 2.0 native Habits & Todos (Phase 1) — shared by bot + dashboard
-import decisions  # decision loop: questions the overnight runner needs answered (Telegram buttons + app API)
 
-# Source of the message currently being handled (telegram | dashboard). Set once at
+# Source of the message currently being handled (app | dashboard). Set once at
 # the top of process_message; read by call_claude when it writes the routing_log row,
 # so the many call_claude call sites don't each need a source argument threaded through.
-_msg_source = contextvars.ContextVar("msg_source", default="telegram")
+_msg_source = contextvars.ContextVar("msg_source", default="app")
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+for _noisy in ("httpx", "httpcore"):   # their INFO lines put full request URLs (tokens, topics) in the logs
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 REDIS_HOST = os.environ.get("REDIS_HOST", "ghost-redis-master.ghost.svc.cluster.local")
 REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
 POSTGRES_HOST = os.environ.get("POSTGRES_HOST", "ghost-postgres-postgresql.ghost.svc.cluster.local")
 POSTGRES_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "")
 USER_NAME = os.environ.get("GHOST_USER_NAME", "the user")
-# Decision-button authorisation: only the owner's Telegram id may answer. Deliberately NOT
-# TELEGRAM_USER_ID, which would also change native.DEFAULT_USER_ID in this pod. Unset = fail closed.
-OWNER_ID = int(os.environ.get("GHOST_OWNER_ID") or "0")
 BRAND_PRIMARY = os.environ.get("GHOST_BRAND_PRIMARY", "Personal Blog")
 BRAND_SECONDARY = os.environ.get("GHOST_BRAND_SECONDARY", "Second Brand")
 BRAND_DOMAIN = os.environ.get("GHOST_BRAND_DOMAIN", "example.com")
@@ -66,7 +61,7 @@ WHAT YOU CAN DO:
 - Google Calendar: on request you READ her calendar ("what's on today/tomorrow", "when's my next dentist", "am I free Friday") and WRITE it — create, move or delete events ("schedule X on Friday at 3pm", "move my dentist appointment to Tuesday", "cancel my 2pm meeting"). Every write is confirm-first, exactly like Obsidian: you read back precisely what will change (title, date, time) and only touch the calendar after she says yes that same turn; you NEVER create/move/delete on an assumption, and if which event she means is unclear you ask rather than guessing. Use the title/detail she actually gives — don't add vagueness or specificity she didn't ask for. If the calendar isn't connected yet, say so plainly; never claim an event was added/moved/deleted unless your context confirms it happened.
 - Long-term memory: when {USER_NAME} says "remember ..." (or "don't forget ..."), you save it durably — it is shown back to you as LONG-TERM MEMORY in every later chat, so rely on it and never claim you can't recall something listed there. She can ask "what do you remember" or say "forget ...". If she shares something clearly worth keeping and doesn't say "remember", you can offer to.
 - Track water, meals, movement and exercise day to day, and notice multi-day patterns
-- Overnight build decisions: when the overnight build runner stops on a question, it arrives as a Telegram card with answer buttons (and /decisions re-sends pending ones). Answers are recorded by the buttons themselves, deterministically — you do NOT record or apply them from chat, and you never claim a decision was answered or applied unless your context says so.
+- Overnight build decisions: when the overnight build runner stops on a question, it arrives as a card on the Decisions screen of the Ghost app (with a push notification). Answers are recorded by the app itself, deterministically — you do NOT record or apply them from chat, and you never claim a decision was answered or applied unless your context says so.
 - Proactive check-ins arrive via a scheduler; scrolling interrupts arrive from her phone
 - Remember today's conversation (Redis) and store everything permanently (Postgres)
 
@@ -101,14 +96,14 @@ UNCERTAINTY — NON-NEGOTIABLE (both directions):
 - NEVER CLAIM AN ACTION YOU DID NOT TAKE. Every real write (note, Habitica, FatSecret, handoff) happens in code before you reply, and the context tells you when it did. If no confirmation is in your context, the action did not happen — say you can't do it or ask, never reply as if it's done. "Sent", "logged", "deleted", "told Cephalopod" are claims about reality, not conversational filler.
 - NEVER PROMISE A LATER FOLLOW-UP. You act only within the single turn you're replying in — there is no background job that checks something and messages her afterwards. So never say "I'll have a look and get back to you", "let me check and circle back", "I'll keep an eye on it", or anything that defers a result to a future message: that follow-up will never come, and the thread just goes silent. Either do the lookup NOW (you can read her calendar, search/read the vault, and read the live Habitica/board context this turn) and answer in this reply, or say plainly you can't and ask her to prompt you again. Answer in the present, never in the future.
 - NEVER CLAIM — OR AGREE — THAT A SYSTEM FAILED, PRESENT OR PAST, without an actual error in your context: a real exception, a non-200 response, or a live status result IN THIS TURN. This covers present tense ("Habitica's out", "the writes aren't going through"), PAST tense ("Redis dumped my data last night", "the DB crashed earlier", "it went down this morning"), and DATA-LOSS claims — all are factual claims needing evidence. If SHE volunteers one and the SYSTEM TRUTH block shows that system healthy, the block wins: it shows OK/connected NOW and you have NO record of any failure — say exactly that and offer a live check, do NOT agree, do NOT accept the premise, and do NOT start acting on it (planning a rebuild, "that explains it", etc.). "OK now" is not agreement that it broke earlier, but absence of evidence means you don't confirm a failure either — you have no record of one. (On 20/08 you told her "Habitica's out" while it returned 200 the whole time — do not do that, in any tense.)
-- CEPHALOPOD is a separate system. The ONLY path to it is the dashboard chat command "send to cephalopod: <text>" (or "send <note name> to cephalopod"). From Telegram you cannot send anything to Cephalopod, instruct it, or delete from it — if she asks via Telegram, say it has to be done from the dashboard chat, in those words.
+- CEPHALOPOD is a separate system. The ONLY path to it is the dashboard chat command "send to cephalopod: <text>" (or "send <note name> to cephalopod"). From any chat except the dashboard chat you cannot send anything to Cephalopod, instruct it, or delete from it — if she asks from the app, say it has to be done from the dashboard chat, in those words.
 
 WHEN CONFIRMING A HABIT: one line, no praise — "noted." / "good." / "about time." / "logged."
 WHEN HANDLING EXCUSES: weak excuse — call it out in one line. Legitimate — acknowledge briefly, move on. Never lecture.
 WHEN ASKED WHAT YOU CAN DO: tell her plainly what's listed above. Don't pretend you can't do things you can.
 
 CURRENT TIMEZONE: {TZ_NAME}
-CURRENT INTEGRATIONS: Telegram (text + voice notes), Habitica (read/write), Postgres, Redis, Obsidian vault (read/write), desk dashboard with chat, Tasker scrolling interrupts, FatSecret food diary (READ AND WRITE — voice food notes log to it automatically, and a typed message containing "fatsecret" plus the food logs it too, e.g. "log to fatsecret: crackers and pate". If TODAY SO FAR shows no food logged, that means the diary is empty so far today — NOT that FatSecret is disconnected or read-only; never claim either)."""
+CURRENT INTEGRATIONS: Ghost app chat and push notifications (ntfy; Telegram and voice notes were removed 01/11/2026 — never offer or claim them), Habitica (read/write), Postgres, Redis, Obsidian vault (read/write), desk dashboard with chat, Tasker scrolling interrupts, FatSecret food diary (READ AND WRITE — voice food notes log to it automatically, and a typed message containing "fatsecret" plus the food logs it too, e.g. "log to fatsecret: crackers and pate". If TODAY SO FAR shows no food logged, that means the diary is empty so far today — NOT that FatSecret is disconnected or read-only; never claim either)."""
 
 async def get_history(user_id: int) -> list:
     try:
@@ -488,7 +483,7 @@ async def get_system_truth_context() -> str:
         "SYSTEM TRUTH (live, cached ~45s — the source of truth for system state right now. Anything "
         "NOT in this block you do NOT know: say you'd have to check, never infer it):\n"
         "Integrations:\n" + integ + "\n"
-        "- Cephalopod: a separate system. From here (Telegram) there is NO path to it and no live "
+        "- Cephalopod: a separate system. From here (app chat) there is NO path to it and no live "
         "status — it's reachable only from the dashboard chat. Never say you sent/told it anything from here.\n"
         "If she says something here is down/broken/applied/sent and this block says otherwise, trust THIS "
         "block: tell her what it actually shows and offer to re-check. Only call something down if it shows "
@@ -809,7 +804,7 @@ async def handle_cephalopod_query(user_message: str, source: str):
         return None
     if source != "dashboard":
         return ("I can't send anything to Cephalopod from here — that only works from the dashboard "
-                "chat ('send to cephalopod: ...'). So from this Telegram conversation I haven't sent it "
+                "chat ('send to cephalopod: ...'). So from this conversation I haven't sent it "
                 "anything, and I can't. If you want it handed over, do it from the dashboard.")
     # Dashboard: answer from the real handoff table (Cephalopod's own database).
     try:
@@ -1011,7 +1006,7 @@ def create_vault_note(relpath: str, content: str) -> str:
         logger.error(f"create_vault_note error: {e}")
         return ""
 
-async def log_vault_write(note_path: str, mode: str, content: str, source: str = "telegram"):
+async def log_vault_write(note_path: str, mode: str, content: str, source: str = "app"):
     """Durable, Obsidian-independent record of every committed vault write (Task 4). ghost_db,
     NOT the financial schema. Never fatal to the write it records."""
     try:
@@ -2136,9 +2131,6 @@ async def call_claude(user_id: int, message: str, route_text: str = None) -> str
 
     return await _finish(await call_claude_api(user_id, message), "claude", False)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Ghost online. I'm watching.")
-
 SCROLL_SUPPRESS_KEY = "scroll_suppressed_until"
 SCROLL_SUPPRESS_DEFAULT_MIN = 45
 SCROLL_SUPPRESS_MAX_MIN = 180
@@ -2542,7 +2534,7 @@ async def handle_integration_status(user_id: int, user_message: str) -> str | No
         results.append("FatSecret = " + ("configured/connected" if fatsecret.is_configured()
                                          else "NOT configured"))
     if "cephalopod" in targets:
-        results.append("Cephalopod = a separate system; from Telegram you cannot reach or query it "
+        results.append("Cephalopod = a separate system; from here you cannot reach or query it "
                        "(dashboard chat only), so you have no live status for it here")
     ctx = ("[Integration status — LIVE check just now: " + "; ".join(results) +
            ". Report exactly these results; do NOT call anything down/working beyond what's here.]")
@@ -2684,7 +2676,7 @@ _MEM_LIST_RE = re.compile(
     r"(what\s+do\s+you\s+(?:remember|know)(?:\s+about\s+me)?|what\s+have\s+i\s+told\s+you\s+to\s+remember|"
     r"list\s+(?:your|my)\s+memor|show\s+(?:me\s+)?(?:your|my)\s+memor)", re.IGNORECASE)
 
-async def handle_memory(user_id: int, user_message: str, source: str = "telegram") -> str | None:
+async def handle_memory(user_id: int, user_message: str, source: str = "app") -> str | None:
     """Explicit long-term memory: store / forget / list. Returns a reply, or None to let
     the message route normally. Financial + sensitive content returns None (never stored),
     so the money-stays-on-Ollama boundary is preserved."""
@@ -2783,7 +2775,7 @@ def _join_list(items):
     return ", ".join(items[:-1]) + " and " + items[-1]
 
 
-async def process_message(user_id: int, user_message: str, source: str = "telegram") -> str:
+async def process_message(user_id: int, user_message: str, source: str = "app") -> str:
     """Full Ghost pipeline — confirmation flags, daily events, write commands, routing.
     Shared by the Telegram handler and the dashboard chat."""
     _msg_source.set(source)
@@ -3298,74 +3290,6 @@ async def process_message(user_id: int, user_message: str, source: str = "telegr
             logger.error(f"water sync-fail surface error: {e}")
     return await call_claude(user_id, user_message)
 
-# --- Voice notes: transcribe locally (faster-whisper, base/int8) and route by intent ---
-# Load-on-demand: the model is loaded when a voice note arrives and unloaded after
-# WHISPER_IDLE_SECONDS of no voice notes, so it isn't holding ~380Mi resident (which
-# was squeezing Ollama's RAM and slowing token generation). Cost: a one-off cold-start
-# reload (~13s) on the first voice note after an idle stretch.
-import gc
-import threading
-_whisper_model = None
-_whisper_last_used = 0.0
-_whisper_lock = threading.Lock()
-WHISPER_IDLE_SECONDS = 300  # unload 5 min after the last voice note
-
-# Whisper confidence gates. avg_logprob is per-token log likelihood (0 = perfect,
-# below about -1.0 means the model was guessing); no_speech_prob is how likely the
-# audio is not speech at all. Acting on a garbled transcript is how invented
-# content gets in, so below these we ask for a repeat instead.
-WHISPER_MIN_LOGPROB = -1.0
-WHISPER_MAX_NO_SPEECH = 0.6
-
-def _maybe_unload_whisper():
-    """Drop the model + free memory if it's been idle. Runs on a background loop.
-    Non-blocking on the lock so it never stalls a transcription in progress."""
-    global _whisper_model
-    if _whisper_model is None or (time.time() - _whisper_last_used) < WHISPER_IDLE_SECONDS:
-        return
-    if _whisper_lock.acquire(blocking=False):
-        try:
-            if _whisper_model is not None and (time.time() - _whisper_last_used) >= WHISPER_IDLE_SECONDS:
-                _whisper_model = None
-                gc.collect()
-                # CTranslate2 frees its C++ buffers, but glibc keeps them in its arena
-                # rather than returning to the OS — malloc_trim pushes them back so the
-                # RAM is actually available to Ollama.
-                try:
-                    import ctypes
-                    ctypes.CDLL("libc.so.6").malloc_trim(0)
-                except Exception:
-                    pass
-                logger.info(f"Whisper unloaded after {WHISPER_IDLE_SECONDS}s idle — RAM freed")
-        finally:
-            _whisper_lock.release()
-
-def transcribe_audio(path: str) -> tuple:
-    """Blocking Whisper transcription — call via asyncio.to_thread.
-    Returns (text, confident: bool, detail: str). Loads the model on demand and
-    holds the lock across load+transcribe so the idle unloader can't null it mid-use."""
-    global _whisper_model, _whisper_last_used
-    from faster_whisper import WhisperModel
-    with _whisper_lock:
-        if _whisper_model is None:
-            logger.info("Loading Whisper model on demand (cold start)...")
-            _whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
-        segments, _info = _whisper_model.transcribe(path, language="en", vad_filter=True)
-        # segments is a lazy generator — consuming it here (inside the lock) is where
-        # the model actually runs, so the unloader can't drop the model mid-transcription.
-        segs = list(segments)
-        _whisper_last_used = time.time()
-    text = " ".join(s.text.strip() for s in segs).strip()
-    if not segs:
-        return text, False, "no speech segments"
-    # weight by segment length so one short mumble doesn't sink a good long note
-    total = sum(max(s.end - s.start, 0.01) for s in segs)
-    avg_logprob = sum(s.avg_logprob * max(s.end - s.start, 0.01) for s in segs) / total
-    worst_no_speech = max(s.no_speech_prob for s in segs)
-    confident = avg_logprob >= WHISPER_MIN_LOGPROB and worst_no_speech <= WHISPER_MAX_NO_SPEECH
-    detail = f"avg_logprob={avg_logprob:.2f} no_speech={worst_no_speech:.2f}"
-    return text, confident, detail
-
 async def extract_food_items(transcript: str) -> list:
     """Pull searchable food names out of a spoken sentence via Claude; regex fallback."""
     try:
@@ -3610,213 +3534,16 @@ def has_content_intent(text: str, strict: bool = False) -> bool:
     starters = ("blog", "new blog", "content note", "this is", "for cephalopod", "cephalopod")
     return cleaned.startswith(starters)
 
-def voice_intent(transcript: str) -> str:
-    if has_content_intent(transcript):
-        return "blog"
-    t = transcript.lower()
-    if any(p in t for p in FOOD_VOICE_PATTERNS):
-        return "food"
-    return "generic"
-
-async def process_voice(user_id: int, transcript: str) -> str:
-    intent = voice_intent(transcript)
-    logger.info(f"Voice note intent: {intent} — {transcript[:80]}")
-    if intent == "blog":
-        return await process_blog_note(user_id, transcript)
-    if intent == "food":
-        return await process_food_note(user_id, transcript)
-    # generic voice → the normal pipeline (finance still routes to Ollama there)
-    return await process_message(user_id, transcript)
-
-async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        voice = update.message.voice
-        tg_file = await context.bot.get_file(voice.file_id)
-        path = f"/tmp/voice_{voice.file_unique_id}.oga"
-        await tg_file.download_to_drive(path)
-        try:
-            transcript, confident, detail = await asyncio.to_thread(transcribe_audio, path)
-        finally:
-            try:
-                os.remove(path)
-            except OSError:
-                pass
-        if not transcript:
-            await update.message.reply_text("Couldn't make out a word of that. Try again or type it.")
-            return
-        if not confident:
-            # Never act on a transcript Whisper wasn't sure of — that's how invented
-            # detail gets in. Ask, don't guess.
-            logger.info(f"Voice note LOW CONFIDENCE ({detail}) — asking for a repeat: {transcript[:60]!r}")
-            await update.message.reply_text(
-                f"I didn't catch that clearly. What I think I heard: \"{transcript[:150]}\"\n"
-                "Say it again, or type it, and I'll act on it properly.")
-            return
-        logger.info(f"Voice note confidence OK ({detail})")
-        await log_message("telegram_in", "chat", f"[voice] {transcript}")
-        response = await process_voice(update.message.from_user.id, transcript)
-        await update.message.reply_text(response)
-        await log_message("telegram_out", "chat", response)
-    except Exception as e:
-        logger.error(f"Voice handling error: {e}")
-        await update.message.reply_text("Voice note didn't process. Type it instead.")
-
-
-# ---------------------------------------------------------------------------------------------
-# Decision loop (Telegram front end for bot/decisions.py). Callback handling is deterministic:
-# matched on decision id + option key, never interpreted by an LLM. Double taps are idempotent
-# because decisions.answer() only ever flips a 'pending' row.
-# ---------------------------------------------------------------------------------------------
-DECISION_OTHER_TTL = 3600
-
-def _decision_markup(row):
-    return InlineKeyboardMarkup([[InlineKeyboardButton(b["text"], callback_data=b["callback_data"]) for b in line]
-                                 for line in decisions.button_rows(row)])
-
-async def _edit_decision_msg(q, text, markup=None):
-    try:
-        await q.edit_message_text(text[:4000], reply_markup=markup)
-    except Exception as e:  # "message is not modified" on a double tap is expected
-        logger.info(f"decision edit skipped: {e}")
-
-async def handle_decision_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    if q is None:
-        return
-    async def toast(text=None, alert=False):
-        try:
-            await q.answer(text, show_alert=alert)
-        except Exception as e:
-            logger.info(f"decision callback answer skipped: {e}")
-    parsed = decisions.parse_callback(q.data)
-    if not parsed:
-        return await toast()
-    if not OWNER_ID or q.from_user.id != OWNER_ID:
-        logger.warning(f"decision callback from non-owner {q.from_user.id} refused")
-        return await toast("Not authorised.", True)
-    did, key = parsed
-    conn = await pg_conn()
-    try:
-        row = await decisions.get_decision(conn, did)
-        if row is None:
-            return await toast("That decision no longer exists.", True)
-        if key == decisions.OTHER_KEY and row["status"] == "pending":
-            r = Redis(host=REDIS_HOST, port=6379, password=REDIS_PASSWORD, decode_responses=True)
-            await r.set(f"decision_other:{q.from_user.id}",
-                        json.dumps({"id": did, "chat_id": q.message.chat_id, "message_id": q.message.message_id}),
-                        ex=DECISION_OTHER_TTL)
-            await r.aclose()
-            await _edit_decision_msg(q, decisions.waiting_other_text(row), _decision_markup(row))
-            return await toast("Type your answer as your next message.")
-        outcome, row = await decisions.answer(conn, did, key, via="telegram")
-    finally:
-        await conn.close()
-    if outcome == "invalid":
-        return await toast("That option isn't valid for this decision.", True)
-    if outcome == "answered":
-        logger.info(f"decision #{did} answered via telegram: {row['answer_key']}")
-        try:
-            r = Redis(host=REDIS_HOST, port=6379, password=REDIS_PASSWORD, decode_responses=True)
-            await r.delete(f"decision_other:{q.from_user.id}")
-            await r.aclose()
-        except Exception:
-            pass
-        await toast("Recorded.")
-    else:  # already answered: same tap twice, or a different tap after the first
-        await toast("Already recorded." if row["answer_key"] == key
-                    else f"Already answered: {row['answer_text'] or row['answer_key']}", row["answer_key"] != key)
-    await _edit_decision_msg(q, decisions.answered_text(row))
-
-async def maybe_handle_decision_other(update: Update) -> str | None:
-    """If the previous tap was 'Other…', this text message IS that decision's answer."""
-    uid = update.message.from_user.id
-    if not OWNER_ID or uid != OWNER_ID:
-        return None
-    r = Redis(host=REDIS_HOST, port=6379, password=REDIS_PASSWORD, decode_responses=True)
-    try:
-        raw = await r.get(f"decision_other:{uid}")
-        if not raw:
-            return None
-        bound = json.loads(raw)
-        text = (update.message.text or "").strip()
-        if text.lower() in ("cancel", "/cancel"):
-            await r.delete(f"decision_other:{uid}")
-            return f"Okay, decision #{bound['id']} is still pending. /decisions shows it again."
-        conn = await pg_conn()
-        try:
-            outcome, row = await decisions.answer(conn, bound["id"], decisions.OTHER_KEY, text, via="telegram")
-        finally:
-            await conn.close()
-        await r.delete(f"decision_other:{uid}")
-    finally:
-        await r.aclose()
-    if outcome == "missing":
-        return "That decision no longer exists."
-    if outcome == "invalid":
-        return "I couldn't use that as an answer — tap Other… again and type it."
-    try:  # update the original card so it doesn't keep offering buttons
-        await update.get_bot().edit_message_text(decisions.answered_text(row)[:4000],
-                                                 chat_id=bound["chat_id"], message_id=bound["message_id"])
-    except Exception as e:
-        logger.info(f"decision card edit skipped: {e}")
-    if outcome == "already":
-        return f"Decision #{row['id']} was already answered ({row['answer_text'] or row['answer_key']}); nothing changed."
-    return decisions.answered_text(row)
-
-async def cmd_decisions(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Re-send every pending decision as a card with buttons."""
-    if not OWNER_ID or update.message.from_user.id != OWNER_ID:
-        return
-    conn = await pg_conn()
-    try:
-        rows = await decisions.list_decisions(conn, "pending")
-    finally:
-        await conn.close()
-    if not rows:
-        await update.message.reply_text("No decisions waiting on you.")
-        return
-    for row in rows:
-        await update.message.reply_text(decisions.render_card(row)[:4000], reply_markup=_decision_markup(row))
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        await log_message("telegram_in", "chat", update.message.text)
-        bound_reply = await maybe_handle_decision_other(update)
-        if bound_reply is not None:
-            await update.message.reply_text(bound_reply)
-            await log_message("telegram_out", "chat", bound_reply)
-            return
-        response = await process_message(update.message.from_user.id, update.message.text)
-        await update.message.reply_text(response)
-        await log_message("telegram_out", "chat", response)
-    except Exception as e:
-        logger.error(f"Error: {e}")
-        await update.message.reply_text(".")
-
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    logger.error(f"Telegram error: {context.error}")
-
-async def _whisper_idle_loop():
-    """Background loop: unload Whisper once it's been idle, freeing RAM for Ollama."""
-    while True:
-        await asyncio.sleep(60)
-        try:
-            await asyncio.to_thread(_maybe_unload_whisper)
-        except Exception as e:
-            logger.error(f"Whisper idle loop error: {e}")
-
-async def _post_init(app):
-    app.create_task(_whisper_idle_loop())
-
 def main():
-    app = Application.builder().token(BOT_TOKEN).post_init(_post_init).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("decisions", cmd_decisions))
-    app.add_handler(CallbackQueryHandler(handle_decision_callback, pattern=r"^dec:"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
-    app.add_error_handler(error_handler)
-    app.run_polling()
+    """The Telegram layer (message/voice handlers, decision-card callbacks) was removed 01/11/2026.
+    bot.py now lives on as the shared brain: the dashboard imports it from /botcode and serves
+    app + dashboard chat through process_message. This process only stays up so the deployment
+    (and ghost-test, which runs inside this pod) remain available."""
+    logger.info("Ghost bot pod: no Telegram layer (removed 01/11/2026); idle, library mode")
+
+    async def _idle():
+        await asyncio.Event().wait()
+    asyncio.run(_idle())
 
 if __name__ == '__main__':
     main()

@@ -36,7 +36,7 @@ logger = logging.getLogger("native")
 POSTGRES_HOST = os.environ.get("POSTGRES_HOST", "ghost-postgres-postgresql.ghost.svc.cluster.local")
 POSTGRES_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "")
 LOCAL_TZ = zoneinfo.ZoneInfo(os.environ.get("GHOST_TZ", "UTC"))
-DEFAULT_USER_ID = int(os.environ.get("TELEGRAM_USER_ID") or "0")
+DEFAULT_USER_ID = int(os.environ.get("GHOST_USER_ID") or os.environ.get("TELEGRAM_USER_ID") or "0")
 
 FIELD_TYPES = ("positive", "negative", "both", "tickbox", "checklist")
 FREQ_KINDS = ("weekdays", "monthly", "count")

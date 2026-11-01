@@ -19,9 +19,9 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+for _noisy in ("httpx", "httpcore"):   # their INFO lines put full request URLs (tokens, topics) in the logs
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-TELEGRAM_USER_ID = os.environ.get("TELEGRAM_USER_ID", "")
 REDIS_HOST = os.environ.get("REDIS_HOST", "ghost-redis-master.ghost.svc.cluster.local")
 REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
 POSTGRES_HOST = os.environ.get("POSTGRES_HOST", "ghost-postgres-postgresql.ghost.svc.cluster.local")
@@ -304,7 +304,7 @@ async def push_app_endpoints(message: str, title: str = "Ghost") -> int:
 
 async def publish_ntfy(message: str, msg_type: str = "nudge") -> bool:
     """S92: push Ghost's proactive message to Lea's private ntfy topic (app push), IN ADDITION to
-    Telegram for now. Best-effort — a push failure never blocks the Telegram send. No-op if unset.
+    the only delivery channel since 01/11/2026. Best-effort, no-op if unset.
     S93: also delivers to the Ghost app's UnifiedPush endpoints.
     Returns True if at least one delivery (topic or app endpoint) succeeded."""
     title = _NTFY_TITLES.get(msg_type, "Ghost")
@@ -328,18 +328,16 @@ async def publish_ntfy(message: str, msg_type: str = "nudge") -> bool:
         logger.error(f"ntfy publish error: {e}")
     return delivered
 
-async def send_telegram(message: str, msg_type: str = "nudge"):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    async with httpx.AsyncClient() as client:
-        response = await client.post(url, json={
-            "chat_id": TELEGRAM_USER_ID,
-            "text": message
-        })
-        if response.status_code != 200:
-            logger.error(f"Telegram send FAILED ({response.status_code}): {response.text[:200]}")
-        else:
-            await log_message("scheduler", msg_type, message)
-    await publish_ntfy(message, msg_type)   # S92: also push to the app (best-effort)
+async def send_push(message: str, msg_type: str = "nudge") -> bool:
+    """Deliver a proactive message to the Ghost app (UnifiedPush endpoints) and the private ntfy
+    topic, and record it in message_log only when something was actually delivered. (Replaced
+    send_telegram on 01/11/2026 when the Telegram layer was removed.)"""
+    delivered = await publish_ntfy(message, msg_type)
+    if delivered:
+        await log_message("scheduler", msg_type, message)
+    else:
+        logger.error(f"push FAILED: nothing delivered ({msg_type})")
+    return delivered
 
 async def get_redis():
     return Redis(host=REDIS_HOST, port=6379, password=REDIS_PASSWORD, decode_responses=True)
@@ -429,7 +427,7 @@ async def call_ollama(prompt: str) -> str:
 # RETIRED. Ghost's proactive job is now three structured, two-way touchpoints a day —
 # morning debrief, lunch check-in, dinner catch-up+summary — plus at most ONE follow-up
 # per anchor if it goes unanswered. Quiet hours (10pm-6:30am, is_quiet_hours) still
-# suppress everything. Lea replies via Telegram at any point (handled in
+# suppress everything. Lea replies in the app chat at any point (handled in
 # bot.process_message: done / swap / edit -> native items), so the anchors only SEND;
 # reply-detection is `last_user_activity` (stamped by the bot on every inbound message)
 # vs the anchor's send time. Voice: sharp, sassy assistant who's got her back — dry,
@@ -634,7 +632,7 @@ async def _anchor_silence_followup():
                   "chase again after this. Ask, never assume what she has or hasn't done. No "
                   "exclamation marks.")
         msg = await call_claude(prompt)
-        await send_telegram(msg, msg_type="nudge")
+        await send_push(msg, msg_type="nudge")
         cur["followed_up"] = 1
         await r.set("anchor:current", json.dumps(cur), ex=16 * 3600)
         logger.info(f"Anchor silence follow-up sent for {cur['name']}")
@@ -756,7 +754,7 @@ async def morning_debrief():
               "a drill sergeant, never a cheerleader, no exclamation marks. Under 5 lines. Use only these "
               "facts, invent nothing; phrase anything unlogged as 'nothing logged', not as a failure.")
     message = await call_claude(prompt, max_tokens=240)
-    await send_telegram(message, msg_type="briefing")
+    await send_push(message, msg_type="briefing")
     r = await get_redis()
     try:
         await r.set("morning_debrief_sent", "1", ex=seconds_to_midnight())
@@ -819,7 +817,7 @@ async def lunch_checkin():
               "motivational-poster energy, never claim she did or didn't do something you can't see. "
               "Under 4 lines. She can reply to redirect or mark things done.")
     message = await call_claude(prompt, max_tokens=200)
-    await send_telegram(message, msg_type="nudge")
+    await send_push(message, msg_type="nudge")
     r = await get_redis()
     try:
         await r.set("lunch_checkin_sent", "1", ex=seconds_to_midnight())
@@ -957,7 +955,7 @@ async def dinner_catchup():
     if send_summary:
         message = await _build_daily_summary(now)
         message += await _pending_decisions_footer()
-        await send_telegram(message, msg_type="summary")
+        await send_push(message, msg_type="summary")
         logger.info("Dinner summary (step 2) sent")
         return
 
@@ -986,7 +984,7 @@ async def dinner_catchup():
               "assistant on her side, dry, no exclamation marks. Two to three lines. She replies to set "
               "the record straight and the summary follows.")
     message = await call_claude(prompt, max_tokens=200)
-    await send_telegram(message, msg_type="summary")
+    await send_push(message, msg_type="summary")
     rr = await get_redis()
     try:
         await rr.set("dinner_step", "asked", ex=seconds_to_midnight())
@@ -1075,7 +1073,7 @@ _last_health_run = 0.0
 _pg_down_alerted = False
 
 SERVICE_HINTS = {
-    "telegram": "the bot token may have been revoked or rotated",
+    "ntfy": "the push server or its token is failing, so alerts and nudges will not reach the phone",
     "habitica": "the API token may be stale",
     "postgres": "database unreachable — check the pod or the password secret",
     "redis": "redis unreachable — check the pod or the password secret",
@@ -1083,10 +1081,14 @@ SERVICE_HINTS = {
     "anthropic": "the Claude API is refusing calls — Ghost's brain is down",
 }
 
-async def check_telegram_health():
+async def check_ntfy_health():
+    if not (NTFY_URL and NTFY_TOKEN):
+        return "ntfy is not configured (NTFY_URL / NTFY_TOKEN missing)"
     async with httpx.AsyncClient() as client:
-        r = await client.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe", timeout=15)
-        return None if r.status_code == 200 else f"getMe HTTP {r.status_code}"
+        r = await client.get(f"{NTFY_URL.rstrip('/')}/v1/health", timeout=15)
+    if r.status_code != 200:
+        return f"/v1/health HTTP {r.status_code}"
+    return None if r.json().get("healthy") else "ntfy reports unhealthy"
 
 async def check_habitica_health():
     user_id = os.environ.get("HABITICA_USER_ID", "")
@@ -1155,7 +1157,7 @@ async def check_anthropic_health():
     return f"HTTP {r.status_code} {etype}: {emsg[:100]}"
 
 HEALTH_CHECKS = [
-    ("telegram", check_telegram_health),
+    ("ntfy", check_ntfy_health),
     ("habitica", check_habitica_health),
     ("postgres", check_postgres_health),
     ("redis", check_redis_health),
@@ -1181,33 +1183,19 @@ async def run_health_checks() -> dict:
     return results
 
 async def send_alert(text: str, reply_markup: dict | None = None) -> bool:
-    """Alert send that reports success instead of assuming it. Goes to Telegram AND to ntfy / the
-    Ghost app push (health alerts, Postgres-down, the runner's morning report, decision cards).
-    `reply_markup` (an inline keyboard dict) is used by the ghost-runner's decision cards; the
-    Telegram buttons are handled by the bot, and the push body points at the app's Decisions screen
-    where the same card can be answered. True if either channel delivered."""
-    tg_ok = False
-    try:
-        payload = {"chat_id": TELEGRAM_USER_ID, "text": text}
-        if reply_markup:
-            payload["reply_markup"] = reply_markup
-        async with httpx.AsyncClient() as client:
-            r = await client.post(
-                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                json=payload, timeout=15
-            )
-            tg_ok = r.status_code == 200
-            if tg_ok:
-                await log_message("scheduler", "alert", text)
-    except Exception as e:
-        logger.error(f"send_alert telegram error: {e}")
+    """Alert send that reports success instead of assuming it: health alerts, Postgres-down, the
+    runner's morning report and decision cards, all via ntfy / the Ghost app push. `reply_markup`
+    (the runner's decision-card keyboard) is ignored; the push points at the app's Decisions
+    screen, where the same card is answered. True if at least one delivery succeeded."""
     push_text = text
     if reply_markup:
         push_text = text.rstrip() + "\n\nOpen the Ghost app > Decisions to answer."
     pushed = await publish_ntfy(push_text, "alert")
-    if pushed and not tg_ok:
-        await log_message("scheduler", "alert", text)   # the unified feed should show what was actually delivered
-    return tg_ok or pushed
+    if pushed:
+        await log_message("scheduler", "alert", text)
+    else:
+        logger.error("send_alert FAILED: nothing delivered")
+    return pushed
 
 def _fmt(ts) -> str:
     local = ts.astimezone(LOCAL_TZ)
@@ -1221,7 +1209,7 @@ async def health_check():
     _last_health_run = time.time()
 
     results = await run_health_checks()
-    telegram_ok = results["telegram"][0] == "ok"
+    ntfy_ok = results["ntfy"][0] == "ok"
     bad = {s: d for s, (st, d) in results.items() if st == "fail"}
     logger.info(f"Health check: {'all ok' if not bad else 'FAILING: ' + ', '.join(bad)}"
                 + (" (fatsecret unconfigured)" if results["fatsecret"][0] == "unconfigured" else ""))
@@ -1232,9 +1220,9 @@ async def health_check():
             password=POSTGRES_PASSWORD, database="ghost_db", timeout=15
         )
     except Exception as e:
-        # Can't record state. Alert directly (deduped in-process) if Telegram works.
+        # Can't record state. Alert directly (deduped in-process) if the push channel works.
         logger.error(f"Health check: postgres unreachable, state not recorded: {e}")
-        if telegram_ok and not _pg_down_alerted:
+        if ntfy_ok and not _pg_down_alerted:
             if await send_alert("Postgres is unreachable — I can't record health state. "
                                 "Check the pod or the password secret."):
                 _pg_down_alerted = True
@@ -1278,24 +1266,12 @@ async def health_check():
                     first_fail = row["checked_at"]
                 alerts.append(f"{service} recovered — had been failing since {_fmt(first_fail)}.")
 
-        if telegram_ok:
-            pending = await conn.fetch(
-                "SELECT id, message FROM pending_alerts WHERE sent_at IS NULL ORDER BY created_at")
-            if pending:
-                summary = "While Telegram was unreachable:\n" + "\n".join(
-                    f"- {p['message']}" for p in pending)
-                if await send_alert(summary):
-                    await conn.execute(
-                        "UPDATE pending_alerts SET sent_at = NOW() WHERE id = ANY($1)",
-                        [p["id"] for p in pending])
-                    logger.info(f"Health: flushed {len(pending)} pending alert(s)")
-
         for alert in alerts:
-            if telegram_ok and await send_alert(alert):
+            if ntfy_ok and await send_alert(alert):
                 logger.info(f"Health alert sent: {alert}")
             else:
-                await conn.execute("INSERT INTO pending_alerts (message) VALUES ($1)", alert)
-                logger.warning(f"Health alert queued (telegram down): {alert}")
+                # no catch-up queue any more (the pending_alerts table is kept, unused)
+                logger.error(f"Health alert NOT delivered (push channel down): {alert}")
     finally:
         await conn.close()
 
@@ -1304,7 +1280,7 @@ async def monthly_csv_upload_nudge():
     so the spending picture stays current (her bank export caps at ~120 days with no custom range, so
     a monthly upload keeps it from missing transactions). Deliberately a SINGLE plain reminder, not an
     escalating nag — housekeeping, not a tracked habit with streaks. Fires on the 1st ~10:00 local,
-    once per calendar month (Redis-guarded). Uses the normal Telegram nudge channel."""
+    once per calendar month (Redis-guarded). Uses the normal push channel."""
     now = datetime.now(LOCAL_TZ)
     if not (now.day == 1 and now.hour == 10 and now.minute < 10):
         return
@@ -1319,7 +1295,7 @@ async def monthly_csv_upload_nudge():
     msg = ("Start-of-month check: export your latest bank CSV and upload it on the Bills dashboard so "
            "your spending picture stays current. Your bank export only goes back about 120 days, so a "
            "monthly upload keeps it from missing anything.")
-    await send_telegram(msg, msg_type="nudge")
+    await send_push(msg, msg_type="nudge")
     logger.info("Monthly CSV-upload nudge sent")
 
 DASHBOARD_INTERNAL_URL = os.environ.get("DASHBOARD_INTERNAL_URL", "http://ghost-dashboard.ghost.svc.cluster.local:8080")
@@ -1327,7 +1303,7 @@ DASHBOARD_INTERNAL_URL = os.environ.get("DASHBOARD_INTERNAL_URL", "http://ghost-
 
 def budget_cap_message(hits, warn_pct, data_through=None):
     """Deterministic heads-up text for categories that newly crossed a threshold. Names the category
-    and which threshold only — never a dollar figure (Telegram is outside the money boundary)."""
+    and which threshold only — never a dollar figure (a push notification is outside the money boundary)."""
     if not hits:
         return ""
     def phrase(h):
@@ -1343,7 +1319,7 @@ def budget_cap_message(hits, warn_pct, data_through=None):
 
 
 async def check_budget_caps():
-    """Telegram heads-up when a capped category crosses the warning threshold, and again at 100%.
+    """Push heads-up when a capped category crosses the warning threshold, and again at 100%.
     One message per threshold per category per month (Redis-guarded), combined when several cross
     in the same tick. Not a block, no escalation. Spend comes from the dashboard's live summary, so
     it only moves when a CSV is imported. Quiet hours respected."""
@@ -1376,7 +1352,7 @@ async def check_budget_caps():
         await r.aclose()
     msg = budget_cap_message(hits, data.get("warn_pct", 80), data.get("data_through"))
     if msg:
-        await send_telegram(msg, msg_type="nudge")
+        await send_push(msg, msg_type="nudge")
         logger.info(f"Budget cap heads-up sent ({len(hits)} categor{'y' if len(hits) == 1 else 'ies'})")
 
 
@@ -1497,7 +1473,7 @@ async def check_bad_guys():
                 names = ", ".join(BADGUY_LABELS[n] for n in newly)
                 msg = (f"A few obstacles showing up at once — {names}. One mention, not a nag: "
                        "worth a pause and a small reset when you can.")
-            await send_telegram(msg, msg_type="nudge")
+            await send_push(msg, msg_type="nudge")
             logger.info(f"bad guys triggered: {newly}")
     finally:
         await r.aclose()

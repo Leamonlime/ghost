@@ -31,10 +31,13 @@ import uvicorn  # noqa: E402
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger("dashboard")
+for _noisy in ("httpx", "httpcore"):   # their INFO lines put full request URLs (tokens, topics) in the logs
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 LOCAL_TZ = zoneinfo.ZoneInfo(os.environ.get("GHOST_TZ", "UTC"))
-OWNER_ID = int(os.environ.get("TELEGRAM_USER_ID") or "0")
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+# The single user's numeric id (keys every native/app row). GHOST_USER_ID is the neutral name;
+# TELEGRAM_USER_ID is the pre-01/11 name of the same value, kept as a fallback.
+OWNER_ID = int(os.environ.get("GHOST_USER_ID") or os.environ.get("TELEGRAM_USER_ID") or "0")
 
 app = FastAPI()
 
@@ -170,15 +173,6 @@ def seconds_to_midnight() -> int:
     now = datetime.now(LOCAL_TZ)
     midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
     return int((midnight - now).total_seconds())
-
-async def send_telegram(message: str, silent: bool = False):
-    async with httpx.AsyncClient() as client:
-        response = await client.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                                     json={"chat_id": OWNER_ID, "text": message,
-                                           "disable_notification": silent}, timeout=30.0)
-        if response.status_code != 200:
-            logger.error(f"Telegram send FAILED ({response.status_code}): {response.text[:200]}")
-            raise RuntimeError(f"telegram send failed: {response.status_code}")
 
 NTFY_URL = os.environ.get("NTFY_URL", "")
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
@@ -354,20 +348,13 @@ async def api_chat(request: Request):
         message = str(data.get("message", "")).strip()
         if not message:
             return {"reply": "say something."}
-        # Demo mode: never reach the real bot — that would send to Telegram, write
+        # Demo mode: never reach the real bot — that would write
         # real message_log rows, and return a reply grounded in real data. Canned reply.
         if is_demo(request):
             return {"reply": "(demo mode) I'd normally answer from your real data here.", "demo": True}
         await bot.log_message("dashboard_in", "chat", message)
         reply = await bot.process_message(OWNER_ID, message, source="dashboard")
         await bot.log_message("dashboard_out", "chat", reply)
-        # Mirror dashboard chat into Telegram SILENTLY (no buzz) so the Telegram
-        # app's own history stays complete (session 15, task 6).
-        try:
-            await send_telegram(f"[dashboard] {bot.USER_NAME}: {message}", silent=True)
-            await send_telegram(reply, silent=True)
-        except Exception as e:
-            logger.error(f"telegram mirror error: {e}")
         return {"reply": reply}
     except Exception as e:
         logger.error(f"chat error: {e}")
@@ -696,7 +683,7 @@ async def api_command_center(request: Request):
         conn = await pg_conn()
         rows = await conn.fetch("""
             SELECT DISTINCT ON (service) service, status, detail, checked_at
-            FROM health_checks WHERE service IN ('telegram','postgres','redis','fatsecret')
+            FROM health_checks WHERE service IN ('ntfy','postgres','redis','fatsecret')
             ORDER BY service, checked_at DESC
         """)
         await conn.close()
@@ -3602,17 +3589,13 @@ async def scrolling_webhook(request: Request):
         logger.error(f"webhook claude error: {e}")
         message = fallback
 
-    # ntfy / app push first: it is the delivery path that survives Telegram's retirement.
     pushed = await push_ntfy(message, "Ghost")
-    try:
-        await send_telegram(message)
-    except Exception as e:
-        logger.error(f"webhook telegram error: {e}")
-        if not pushed:
-            return {"ok": False, "error": "send failed"}
+    if not pushed:
+        logger.error("webhook push FAILED: nothing delivered")
+        return {"ok": False, "error": "push failed"}
     try:
         # source 'webhook' (a sixth source beyond the original five) — these are real
-        # Telegram sends and belong in the unified feed, but attributing them to
+        # pushes and belong in the unified feed, but attributing them to
         # 'scheduler' would be false.
         await bot.log_message("webhook", "nudge", message)
     except Exception as e:

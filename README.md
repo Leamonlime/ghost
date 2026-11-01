@@ -4,7 +4,7 @@
 [![gitleaks](https://github.com/Leamonlime/ghost/actions/workflows/gitleaks.yml/badge.svg)](https://github.com/Leamonlime/ghost/actions/workflows/gitleaks.yml)
 
 A self-hosted AI accountability assistant. It runs on a home Kubernetes (k3s)
-cluster, talks to me over Telegram and a private Android app, tracks my habits,
+cluster, talks to me through a private Android app and a web dashboard (push via ntfy), tracks my habits,
 todos, money and food, and nudges me back on track when I'm scrolling instead of
 living.
 
@@ -14,9 +14,9 @@ through Kubernetes Secrets; no real values live in the repo.
 
 ## What it does
 
-- **Conversation.** Telegram is the primary chat interface; the Claude API does
-  the reasoning. The same conversation is shared with the dashboard chat and the
-  phone app.
+- **Conversation.** The phone app and the dashboard chat share one conversation;
+  the Claude API does the reasoning. (The Telegram interface and local voice
+  transcription were removed on 01/11/2026.)
 - **Native habits and todos.** Habits (tick, counter, value and checklist types,
   streaks, momentum) and todos live in Ghost's own Postgres tables. They replaced
   the Habitica integration, which is being retired.
@@ -31,8 +31,6 @@ through Kubernetes Secrets; no real values live in the repo.
   a tone that escalates instead of repeating itself.
 - **Calendar.** A private Google Calendar integration with confirm-before-write
   handling for anything it changes.
-- **Voice.** Voice notes are transcribed by a local Whisper model; a voice memo
-  can be turned into a draft blog post.
 - **Dashboard.** A Tailscale-only web UI: habits, bills, a command centre and a
   few themed pages, all sharing one monochrome design system.
 - **Phone app API.** A versioned API (`/api/app/v1/`) serving a private
@@ -51,24 +49,24 @@ through Kubernetes Secrets; no real values live in the repo.
   headlessly at night, one branch per prompt. It runs syntax and smoke checks,
   merges only if they pass, and auto-deploys the dashboard alone. Anything it
   cannot decide is stored as a *decision* with options and a recommendation,
-  answered by tap (Telegram or the app), which then drives the next run.
+  answered by tap in the app, which then drives the next run.
   Nothing is ever auto-answered or auto-applied.
 
 ## Architecture
 
 ```
-Telegram / Android app / dashboard
+Android app / dashboard
         |
    ghost-bot  ---- Claude API (general reasoning)
    ghost-dashboard (FastAPI)  ---- Ollama (finance only, local)
-   ghost-scheduler (nudges, summaries)  ---- Whisper (voice, local)
+   ghost-scheduler (nudges, summaries, push via ntfy)
         |
    Postgres (durable state)   Redis (session memory, pending actions)
 ```
 
 | Path | What it is |
 |---|---|
-| `bot/` | Telegram bot: routing, habits/todos, money, voice, calendar |
+| `bot/` | Shared chat brain (imported by the dashboard): routing, habits/todos, money, calendar |
 | `scheduler/` | Proactive nudges, summaries, health checks |
 | `dashboard/` | FastAPI dashboard and the phone-app API, plus `pages/` |
 | `deploy/` | Verified deploy (rebuild + post-deploy checks) |
@@ -80,8 +78,7 @@ Everything runs as pods in the `ghost` namespace. Secrets are read with
 ## Setup
 
 You will need a Linux host running k3s (or any small Kubernetes cluster) with
-`kubectl`, Docker, Helm and Tailscale, plus a Telegram bot token (from
-BotFather), your own Telegram user ID and an Anthropic API key. Optional: a USDA
+`kubectl`, Docker, Helm and Tailscale, plus your own numeric user id (any integer that keys your rows) and an Anthropic API key. Optional: a USDA
 FoodData Central key (nutrition fallback) and an ntfy server (phone push).
 
 1. **Clone and read the config reference.**
@@ -100,7 +97,6 @@ FoodData Central key (nutrition fallback) and an ntfy server (phone push).
 4. **Create the app secret.** Keys are lowercase and hyphenated:
    ```bash
    kubectl -n ghost create secret generic ghost-app-secrets \
-     --from-literal=bot-token=... \
      --from-literal=telegram-user-id=... \
      --from-literal=anthropic-api-key=... \
      --from-literal=ghost-user-name=... \
