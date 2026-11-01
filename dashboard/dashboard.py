@@ -583,6 +583,9 @@ async def _cephalopod_health() -> dict:
         ok = r.status_code == 200
         return {"service": "cephalopod", "status": "ok" if ok else "fail",
                 "detail": "" if ok else f"http {r.status_code}"}
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        # Cephalopod was scaled to 0 on 01/11/2026 (not live yet): that is not a failure to alarm on
+        return {"service": "cephalopod", "status": "unconfigured", "detail": "not live (scaled to 0)"}
     except Exception as e:
         return {"service": "cephalopod", "status": "fail", "detail": str(e)[:60]}
 
@@ -685,7 +688,7 @@ async def api_command_center(request: Request):
         conn = await pg_conn()
         rows = await conn.fetch("""
             SELECT DISTINCT ON (service) service, status, detail, checked_at
-            FROM health_checks WHERE service IN ('ntfy','postgres','redis','habitica','anthropic')
+            FROM health_checks WHERE service IN ('ntfy','postgres','redis','habitica','anthropic','gcal')
             ORDER BY service, checked_at DESC
         """)
         await conn.close()
