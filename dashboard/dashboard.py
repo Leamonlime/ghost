@@ -4260,7 +4260,12 @@ async def _search_foods(q):
                 "protein": round(m["p"], 1), "source": m["source"], "source_id": m["source_id"],
                 "mine": True} for m in mine]
     seen = {(m["source"], m["source_id"]) for m in mine if m["source_id"]}
-    off, usda = await asyncio.gather(_search_off(q), _search_usda(q))
+    # OFF/USDA match whole words, so a half-typed last word ("chicken br") finds nothing. Ask them for
+    # the complete words only and pull a deeper page; the relevance filter below applies the full query.
+    words = q.split()
+    partial_tail = len(words) > 1 and len(words[-1]) <= 3
+    ext_q, lim = (" ".join(words[:-1]), 20) if partial_tail else (q, 5)
+    off, usda = await asyncio.gather(_search_off(ext_q, lim), _search_usda(ext_q, lim))
     ext_all = [e for e in off + usda]
     ext = [e for e in ext_all if _food_rank(e["name"], e.get("brand"), q) < 9]
     if not ext and not mine:
