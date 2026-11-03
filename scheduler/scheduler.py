@@ -648,12 +648,12 @@ async def _native_task_list(limit=8):
                                      password=POSTGRES_PASSWORD, database="ghost_db")
         try:
             rows = await conn.fetch(
-                "SELECT text, is_quest FROM todos WHERE NOT done AND NOT archived "
-                "ORDER BY is_quest DESC, "
+                "SELECT text FROM todos WHERE NOT done AND NOT archived "
+                "ORDER BY "
                 "CASE priority WHEN 'high' THEN 0 WHEN 'med' THEN 1 ELSE 2 END, id LIMIT $1", limit)
         finally:
             await conn.close()
-        return [("[quest] " if r["is_quest"] else "") + r["text"] for r in rows]
+        return [r["text"] for r in rows]
     except Exception as e:
         logger.error(f"_native_task_list error: {e}")
         return []

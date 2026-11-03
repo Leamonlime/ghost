@@ -1092,19 +1092,6 @@ async def api_todo_checklist(request: Request):
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
-@app.post("/api/todos/quest")
-async def api_todo_quest(request: Request):
-    """S78: flag/unflag an existing todo as a quest (per-row toggle — the todo 'edit' path)."""
-    body = await _json_body(request)
-    try:
-        _r = await native.set_todo_quest(int(body.get("id")), bool(body.get("is_quest", True)))
-        await _bust_native()
-        return _r
-    except Exception as e:
-        logger.error(f"/api/todos/quest error: {e}")
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
-
-
 @app.post("/api/todos/checklist/add")
 async def api_todo_checklist_add(request: Request):
     """S77: add an item to a checklist todo — mirrors /api/habits/checklist/add."""
@@ -1126,7 +1113,6 @@ async def api_todo_create(request: Request):
             body.get("text", ""), kind=body.get("kind", "tickbox"),
             priority=body.get("priority", "med"), due_date=body.get("due_date"),
             bucket=body.get("bucket"), checklist=body.get("checklist"),
-            is_quest=bool(body.get("is_quest")),
             user_id=_native_uid(request))
         await _bust_native()
         return {"ok": tid is not None, "id": tid}

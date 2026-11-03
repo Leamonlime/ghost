@@ -262,11 +262,9 @@ async def create_habit(name, field_type="tickbox", frequency_kind="weekdays",
 
 
 async def create_todo(text, kind="tickbox", priority="med", due_date=None,
-                      bucket=None, checklist=None, user_id=None, habitica_source_id=None,
-                      is_quest=False):
+                      bucket=None, checklist=None, user_id=None, habitica_source_id=None):
     """Create a native todo. due_date may be a date or an ISO 'YYYY-MM-DD' string. Returns id.
-    habitica_source_id records Session-75 import provenance (idempotency key). is_quest (S78) flags
-    it a quest (display flag only)."""
+    habitica_source_id records Session-75 import provenance (idempotency key)."""
     text = (text or "").strip()
     if not text:
         return None
@@ -287,9 +285,9 @@ async def create_todo(text, kind="tickbox", priority="med", due_date=None,
     try:
         await ensure_schema(conn)
         tid = await conn.fetchval(
-            """INSERT INTO todos (user_id, text, kind, priority, due_date, bucket, habitica_source_id, is_quest)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id""",
-            uid, text, kind, priority, due_date, bucket, habitica_source_id, bool(is_quest))
+            """INSERT INTO todos (user_id, text, kind, priority, due_date, bucket, habitica_source_id)
+               VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id""",
+            uid, text, kind, priority, due_date, bucket, habitica_source_id)
         if kind == "checklist" and checklist:
             for i, item in enumerate(checklist):
                 item = (item or "").strip()
@@ -613,7 +611,7 @@ async def set_todo_checklist_item(item_id, done=True):
         await conn.execute("UPDATE todo_checklist SET done=$1 WHERE id=$2", bool(done), item_id)
         total = await conn.fetchval("SELECT COUNT(*) FROM todo_checklist WHERE todo_id=$1", tid)
         ndone = await conn.fetchval("SELECT COUNT(*) FROM todo_checklist WHERE todo_id=$1 AND done=TRUE", tid)
-        todo = await conn.fetchrow("SELECT done, bucket, is_quest FROM todos WHERE id=$1", tid)
+        todo = await conn.fetchrow("SELECT done, bucket FROM todos WHERE id=$1", tid)
         was_done = bool(todo["done"]) if todo else False
         complete = total > 0 and ndone >= total
         if complete and not was_done:
@@ -623,20 +621,6 @@ async def set_todo_checklist_item(item_id, done=True):
         elif (not complete) and was_done:
             await conn.execute("UPDATE todos SET done=FALSE, completed_at=NULL WHERE id=$1", tid)
         return {"ok": True, "complete": complete, "done_count": ndone, "total": total}
-    finally:
-        await conn.close()
-
-
-async def set_todo_quest(todo_id, is_quest=True):
-    """S78: flag/unflag an existing todo as a quest (the per-row 'edit' path — there's no todo edit
-    modal). Display flag only."""
-    conn = await pg_conn()
-    try:
-        await ensure_schema(conn)
-        status = await conn.execute("UPDATE todos SET is_quest=$1 WHERE id=$2", bool(is_quest), todo_id)
-        if status.split()[-1] == "0":
-            return {"ok": False, "error": "todo not found"}
-        return {"ok": True, "id": todo_id, "is_quest": bool(is_quest)}
     finally:
         await conn.close()
 
