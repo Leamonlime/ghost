@@ -4262,7 +4262,9 @@ async def app_foods_search(request: Request, q: str = ""):
         seen = {(m["source"], m["source_id"]) for m in mine if m["source_id"]}
         off, usda = await asyncio.gather(_search_off(q), _search_usda(q))
         ext_all = [e for e in off + usda]
-        ext = [e for e in ext_all if _food_rank(e["name"], e.get("brand"), q) < 9] or ext_all
+        ext = [e for e in ext_all if _food_rank(e["name"], e.get("brand"), q) < 9]
+        if not ext and not mine:
+            ext = ext_all          # nothing relevant anywhere: show the raw hits rather than an empty list
         ext.sort(key=lambda e: _food_rank(e["name"], e.get("brand"), q))   # stable: keeps source order within a rank
         for e in ext:
             key = (e["source"], e["source_id"])
