@@ -68,6 +68,15 @@ async def _bust_native():
     except Exception:
         pass
 
+async def _bust_command_center():
+    """Drop the 25s Command Center cache after a food-log write so the nutrition gauge is current."""
+    try:
+        r = redis_conn()
+        await r.delete("command_center")
+        await r.aclose()
+    except Exception:
+        pass
+
 # --------------------------------------------------------------------------
 # Display-layer helpers (Session 30, 05/08/2026). Demo mode, escalation theme,
 # and liveness are DISPLAY ONLY — nothing here writes, nudges, or routes. Demo
@@ -4229,6 +4238,43 @@ def _food_rank(name, brand, q):
     return 9
 
 
+async def _search_foods(q):
+    """Shared by the app route and the dashboard food-log card. q is already normalised, len >= 2."""
+    like = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    conn = await pg_conn()
+    try:
+        await _ensure_app_schema(conn)
+        mine = await conn.fetch(
+            "SELECT f.id, f.name, f.brand, f.serving_desc, f.calories::float8 c, f.protein::float8 p, "
+            "f.source, f.source_id, COUNT(l.id) uses, MAX(l.logged_at) last_used "
+            "FROM foods f LEFT JOIN food_log l ON l.food_id=f.id "
+            "WHERE (f.is_mine OR EXISTS (SELECT 1 FROM food_log x WHERE x.food_id=f.id)) "
+            "AND (f.name ILIKE $1 OR COALESCE(f.brand,'') ILIKE $1) GROUP BY f.id LIMIT 60",
+            like)
+    finally:
+        await conn.close()
+    mine = sorted(mine, key=lambda m: (_food_rank(m["name"], m["brand"], q), -m["uses"],
+                                       -(m["last_used"].timestamp() if m["last_used"] else 0), m["name"]))[:8]
+    results = [{"food_id": m["id"], "name": m["name"], "brand": m["brand"],
+                "serving_desc": m["serving_desc"], "calories": round(m["c"], 1),
+                "protein": round(m["p"], 1), "source": m["source"], "source_id": m["source_id"],
+                "mine": True} for m in mine]
+    seen = {(m["source"], m["source_id"]) for m in mine if m["source_id"]}
+    off, usda = await asyncio.gather(_search_off(q), _search_usda(q))
+    ext_all = [e for e in off + usda]
+    ext = [e for e in ext_all if _food_rank(e["name"], e.get("brand"), q) < 9]
+    if not ext and not mine:
+        ext = ext_all          # nothing relevant anywhere: show the raw hits rather than an empty list
+    ext.sort(key=lambda e: _food_rank(e["name"], e.get("brand"), q))   # stable: keeps source order within a rank
+    for e in ext:
+        key = (e["source"], e["source_id"])
+        if e["source_id"] and key in seen:
+            continue
+        seen.add(key)
+        results.append({**e, "food_id": None, "mine": False})
+    return results[:16]
+
+
 @app.get("/api/app/v1/foods/search")
 async def app_foods_search(request: Request, q: str = ""):
     """Partial, case-insensitive search. Own foods (saved OR previously logged) come first, ranked
@@ -4240,39 +4286,7 @@ async def app_foods_search(request: Request, q: str = ""):
     if len(q) < 2:
         return {"ok": True, "query": q, "results": []}
     try:
-        like = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-        conn = await pg_conn()
-        try:
-            await _ensure_app_schema(conn)
-            mine = await conn.fetch(
-                "SELECT f.id, f.name, f.brand, f.serving_desc, f.calories::float8 c, f.protein::float8 p, "
-                "f.source, f.source_id, COUNT(l.id) uses, MAX(l.logged_at) last_used "
-                "FROM foods f LEFT JOIN food_log l ON l.food_id=f.id "
-                "WHERE (f.is_mine OR EXISTS (SELECT 1 FROM food_log x WHERE x.food_id=f.id)) "
-                "AND (f.name ILIKE $1 OR COALESCE(f.brand,'') ILIKE $1) GROUP BY f.id LIMIT 60",
-                like)
-        finally:
-            await conn.close()
-        mine = sorted(mine, key=lambda m: (_food_rank(m["name"], m["brand"], q), -m["uses"],
-                                           -(m["last_used"].timestamp() if m["last_used"] else 0), m["name"]))[:8]
-        results = [{"food_id": m["id"], "name": m["name"], "brand": m["brand"],
-                    "serving_desc": m["serving_desc"], "calories": round(m["c"], 1),
-                    "protein": round(m["p"], 1), "source": m["source"], "source_id": m["source_id"],
-                    "mine": True} for m in mine]
-        seen = {(m["source"], m["source_id"]) for m in mine if m["source_id"]}
-        off, usda = await asyncio.gather(_search_off(q), _search_usda(q))
-        ext_all = [e for e in off + usda]
-        ext = [e for e in ext_all if _food_rank(e["name"], e.get("brand"), q) < 9]
-        if not ext and not mine:
-            ext = ext_all          # nothing relevant anywhere: show the raw hits rather than an empty list
-        ext.sort(key=lambda e: _food_rank(e["name"], e.get("brand"), q))   # stable: keeps source order within a rank
-        for e in ext:
-            key = (e["source"], e["source_id"])
-            if e["source_id"] and key in seen:
-                continue
-            seen.add(key)
-            results.append({**e, "food_id": None, "mine": False})
-        return {"ok": True, "query": q, "results": results[:16]}
+        return {"ok": True, "query": q, "results": await _search_foods(q)}
     except Exception as e:
         logger.error(f"/api/app/v1/foods/search error: {e}")
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
@@ -4302,6 +4316,31 @@ async def app_foods_mine(request: Request):
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
+async def _do_food_log(conn, data, servings, client_id=None):
+    """Insert one food_log row for today (local). -> (status, result dict). Shared by the app and dashboard."""
+    if data.get("food_id"):
+        food = await conn.fetchrow(
+            "SELECT id, name, calories::float8 c, protein::float8 p FROM foods WHERE id=$1", int(data["food_id"]))
+        if not food:
+            return 404, {"ok": False, "error": "food not found"}
+        fid, fname, per_c, per_p = food["id"], food["name"], food["c"], food["p"]
+    else:
+        if not (data.get("name")):
+            return 400, {"ok": False, "error": "food_id or name required"}
+        fid = await _cache_food(conn, data)
+        fname, per_c, per_p = data.get("name"), _f(data.get("calories")), _f(data.get("protein"))
+    tot_c, tot_p = round(per_c * servings, 1), round(per_p * servings, 1)
+    d = datetime.now(LOCAL_TZ).date()
+    log_id = await conn.fetchval(
+        "INSERT INTO food_log (user_id, food_id, food_name, servings, calories, protein, log_date, client_id) "
+        "VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id",
+        OWNER_ID, fid, fname, servings, tot_c, tot_p, d, client_id)
+    nutrition = await _nutrition_today(conn)
+    result = {"ok": True, "id": log_id, "food_name": fname, "servings": servings,
+              "calories": tot_c, "protein": tot_p, "nutrition": nutrition}
+    return 200, result
+
+
 @app.post("/api/app/v1/food-log")
 async def app_food_log(request: Request):
     """Log a food. Body: {food_id} OR {name,calories,protein,source?,source_id?,serving_desc?,brand?,mine?},
@@ -4323,26 +4362,9 @@ async def app_food_log(request: Request):
         cached = await _idem_get(conn, client_id)
         if cached is not None:
             return cached
-        if data.get("food_id"):
-            food = await conn.fetchrow(
-                "SELECT id, name, calories::float8 c, protein::float8 p FROM foods WHERE id=$1", int(data["food_id"]))
-            if not food:
-                return JSONResponse({"ok": False, "error": "food not found"}, status_code=404)
-            fid, fname, per_c, per_p = food["id"], food["name"], food["c"], food["p"]
-        else:
-            if not (data.get("name")):
-                return JSONResponse({"ok": False, "error": "food_id or name required"}, status_code=400)
-            fid = await _cache_food(conn, data)
-            fname, per_c, per_p = data.get("name"), _f(data.get("calories")), _f(data.get("protein"))
-        tot_c, tot_p = round(per_c * servings, 1), round(per_p * servings, 1)
-        d = datetime.now(LOCAL_TZ).date()
-        log_id = await conn.fetchval(
-            "INSERT INTO food_log (user_id, food_id, food_name, servings, calories, protein, log_date, client_id) "
-            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id",
-            OWNER_ID, fid, fname, servings, tot_c, tot_p, d, client_id)
-        nutrition = await _nutrition_today(conn)
-        result = {"ok": True, "id": log_id, "food_name": fname, "servings": servings,
-                  "calories": tot_c, "protein": tot_p, "nutrition": nutrition}
+        status, result = await _do_food_log(conn, data, servings, client_id)
+        if status != 200:
+            return JSONResponse(result, status_code=status)
         await _idem_put(conn, client_id, "food_log", result)
     finally:
         await conn.close()
@@ -4363,6 +4385,80 @@ async def app_food_log_delete(log_id: int, request: Request):
     finally:
         await conn.close()
     return {"ok": True, "id": log_id, "nutrition": nutrition}
+
+
+# ---- Dashboard food log (S101): the Command Center "Food log" card. Same data and helpers as the app
+# routes above, but without the app bearer token (this dashboard is Tailscale-only, like every other
+# /api/ route the pages call). "Today" is the Melbourne day (LOCAL_TZ).
+@app.get("/api/food-log")
+async def api_food_log(request: Request):
+    raw = (request.query_params.get("date") or "").strip()
+    try:
+        d = date.fromisoformat(raw) if raw else datetime.now(LOCAL_TZ).date()
+    except ValueError:
+        return JSONResponse({"ok": False, "error": "date must be YYYY-MM-DD"}, status_code=400)
+    conn = await pg_conn()
+    try:
+        await _ensure_app_schema(conn)
+        rows = await conn.fetch(
+            "SELECT id, food_name, servings::float8 s, calories::float8 c, protein::float8 p, logged_at "
+            "FROM food_log WHERE user_id=$1 AND log_date=$2 ORDER BY logged_at DESC, id DESC", OWNER_ID, d)
+        tc, tp = await _nutrition_targets(conn)
+    finally:
+        await conn.close()
+    eaten_c = round(sum(r["c"] for r in rows), 1)
+    eaten_p = round(sum(r["p"] for r in rows), 1)
+    return {"ok": True, "date": d.isoformat(),
+            "entries": [{"id": r["id"], "food_name": r["food_name"], "servings": r["s"], "calories": r["c"],
+                         "protein": r["p"], "time": r["logged_at"].astimezone(LOCAL_TZ).strftime("%H:%M")}
+                        for r in rows],
+            "totals": {"calories": eaten_c, "protein": eaten_p, "calorie_target": tc, "protein_target": tp}}
+
+
+@app.get("/api/food-search")
+async def api_food_search(q: str = ""):
+    q = " ".join((q or "").split())
+    if len(q) < 2:
+        return {"ok": True, "query": q, "results": []}
+    try:
+        return {"ok": True, "query": q, "results": await _search_foods(q)}
+    except Exception as e:
+        logger.error(f"/api/food-search error: {e}")
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.post("/api/food-log")
+async def api_food_log_add(request: Request):
+    """Body: a search result item ({food_id} or {name,calories,protein,source,source_id,...}) + servings?."""
+    data = await _json_body(request)
+    try:
+        servings = float(data.get("servings", 1) or 1)
+    except (TypeError, ValueError):
+        servings = 1.0
+    if not (0 < servings <= 20):
+        return JSONResponse({"ok": False, "error": "servings must be between 0 and 20"}, status_code=400)
+    conn = await pg_conn()
+    try:
+        await _ensure_app_schema(conn)
+        status, result = await _do_food_log(conn, data, servings)
+    finally:
+        await conn.close()
+    await _bust_command_center()
+    return result if status == 200 else JSONResponse(result, status_code=status)
+
+
+@app.delete("/api/food-log/{log_id}")
+async def api_food_log_delete(log_id: int):
+    conn = await pg_conn()
+    try:
+        await _ensure_app_schema(conn)
+        status = await conn.execute("DELETE FROM food_log WHERE id=$1 AND user_id=$2", log_id, OWNER_ID)
+        if _changed_zero(status):
+            return JSONResponse({"ok": False, "error": f"no food-log #{log_id}"}, status_code=404)
+    finally:
+        await conn.close()
+    await _bust_command_center()
+    return {"ok": True, "id": log_id}
 
 
 @app.get("/api/app/v1/foods/barcode/{code}")
