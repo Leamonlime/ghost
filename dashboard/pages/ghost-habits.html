@@ -6,10 +6,10 @@
 <link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAzMiAzMic+PHBhdGggZD0nTTYgMTVhMTAgMTAgMCAwIDEgMjAgMHYxMC42bC0zLjM1LTIuMy0zLjMgMi4zLTMuMzUtMi4zLTMuMzUgMi4zLTMuMy0yLjNMNiAyNS42WicgZmlsbD0nbm9uZScgc3Ryb2tlPScjZWFiOGMwJyBzdHJva2Utd2lkdGg9JzEuNycgc3Ryb2tlLWxpbmVqb2luPSdyb3VuZCcvPjxjaXJjbGUgY3g9JzEyLjQnIGN5PScxNC42JyByPScxLjUnIGZpbGw9JyNlYWI4YzAnLz48Y2lyY2xlIGN4PScxOS42JyBjeT0nMTQuNicgcj0nMS41JyBmaWxsPScjZWFiOGMwJy8+PC9zdmc+">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ghost — Habits &amp; Todos</title>
-<!-- Ghost 2.0 Phase 1 (native Habits & Todos). Built to the "Habits & Todos" + "Level Up"
-     artboards on the Ghost 2.0 Screens canvas, in the confirmed gothic-monochrome design
+<!-- Ghost 2.0 Phase 1 (native Habits & Todos). Built to the "Habits & Todos"
+     artboard on the Ghost 2.0 Screens canvas, in the confirmed gothic-monochrome design
      system. Served live from the vault; data comes from the native.py-backed /api/habits,
-     /api/todos, /api/level (same code path the Telegram bot uses). Styling reuses the shared
+     /api/todos (same code path the Telegram bot uses). Styling reuses the shared
      tokens/base/grain/watermark from ghost-common.css; component styles below are lifted from
      the artboards. -->
 <link rel="stylesheet" href="/assets/ghost-common.css?v=61">
@@ -125,27 +125,6 @@
   .create-form input[type="text"]{flex:1;min-width:150px;}
   .create-form .go{font-family:var(--gc-serif);font-variant:small-caps;letter-spacing:0.05em;background:var(--ink);color:#150e14;border:none;border-radius:4px;padding:6px 12px;cursor:pointer;}
 
-  /* ===== Level Up view ===== */
-  #levelView{display:none;flex-direction:column;gap:14px;align-items:center;}
-  #levelView.on{display:flex;}
-  .sigil-wrap{position:relative;width:200px;height:200px;margin:10px auto 2px;}
-  .sigil-wrap svg.sigil-bg{position:absolute;inset:0;width:100%;height:100%;color:var(--ink-faintest);opacity:0.55;}
-  .sigil-wrap svg.sigil-ring{position:absolute;inset:0;width:100%;height:100%;}
-  .sigil-main{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;}
-  .sigil-level{font-family:var(--gc-serif);font-size:42px;font-weight:700;color:var(--ink);line-height:1;font-variant:small-caps;}
-  .sigil-sub{font-size:9.5px;letter-spacing:0.14em;text-transform:uppercase;font-variant:small-caps;color:var(--accent);margin-top:5px;font-weight:700;}
-  .headline{text-align:center;}
-  .headline-title{font-family:var(--gc-serif);font-size:18px;font-weight:700;color:var(--ink);font-variant:small-caps;letter-spacing:0.03em;}
-  .headline-sub{font-size:11px;color:var(--ink-dim);margin-top:6px;line-height:1.6;}
-  .lvlpanel{width:100%;}
-  .bucket-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:6px;}
-  .bucket{display:flex;flex-direction:column;align-items:center;}
-  .mon-ring{position:relative;width:60px;height:60px;}
-  .mon-ring svg{width:100%;height:100%;transform:rotate(-90deg);}
-  .mon-ring-track{fill:none;stroke:rgba(255,255,255,0.07);stroke-width:3;}
-  .mon-ring-fill{fill:none;stroke-width:3;stroke-linecap:round;}
-  .mon-ring-val{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:var(--ink);}
-  .bucket-label{font-size:8.5px;color:var(--ink-faint);text-transform:uppercase;font-variant:small-caps;letter-spacing:0.03em;margin-top:7px;text-align:center;}
   .streak-summary{display:flex;gap:10px;margin-top:4px;}
   .streak-stat{flex:1;text-align:center;padding:11px 4px;border:1px solid var(--border-2);border-radius:4px;}
   .streak-stat-val{font-size:15px;font-weight:700;color:var(--warn);}
@@ -161,7 +140,6 @@
   <div class="spacer"></div>
   <div class="nav-pill panel" data-role="nav-item">
     <button id="tabHabits" class="active" onclick="showView('habits')">Habits &amp; Todos</button>
-    <button id="tabLevel" onclick="showView('level')">Level Up</button>
   </div>
 </div>
 
@@ -216,61 +194,16 @@
 
   </div>
 
-  <!-- ===== Level Up view ===== -->
-  <div id="levelView" data-role="level-panel">
-    <div class="sigil-wrap">
-      <svg class="sigil-bg" viewBox="0 0 200 200" fill="none" stroke="currentColor" stroke-width="0.7">
-        <circle cx="100" cy="100" r="80"/><circle cx="100" cy="100" r="55"/>
-        <polygon points="100,35 155,140 45,140"/>
-        <line x1="100" y1="16" x2="100" y2="35"/><line x1="100" y1="165" x2="100" y2="184"/>
-        <line x1="16" y1="100" x2="35" y2="100"/><line x1="165" y1="100" x2="184" y2="100"/>
-      </svg>
-      <svg class="sigil-ring" viewBox="0 0 200 200" style="transform:rotate(-90deg);">
-        <circle cx="100" cy="100" r="90" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="1.5"/>
-        <circle id="levelRing" cx="100" cy="100" r="90" fill="none" stroke="#eab8c0" stroke-width="1.5"
-                stroke-linecap="round" stroke-dasharray="565" stroke-dashoffset="565"/>
-      </svg>
-      <div class="sigil-main">
-        <div class="sigil-level" id="levelNum">–</div>
-        <div class="sigil-sub">Level</div>
-      </div>
-    </div>
-    <div class="headline">
-      <div class="headline-title" id="levelHeadline">Your level</div>
-      <div class="headline-sub" id="levelSubline"></div>
-    </div>
-
-    <!-- S76: bad-guy notices (threshold triggers off existing data) -->
-    <div id="badguyRow" style="display:none;margin:0 0 4px;"></div>
-
-    <div class="panel section lvlpanel">
-      <div class="card-title">Bucket Stats</div>
-      <div class="bucket-grid" id="bucketGrid"></div>
-    </div>
-    <div class="panel section lvlpanel">
-      <div class="card-title" style="margin-bottom:9px;">Since Last Level</div>
-      <div class="streak-summary" id="sinceStats"></div>
-    </div>
-    <div class="stub-note" id="stubNote"></div>
-  </div>
-
 </div>
 
 <script>
 (function(){
-  var BUCKET_COLORS = {
-    "Maintenance":"#8fc9a3","Habits":"#eab8c0","Work":"#d9b872",
-    "Business":"#a8949e","Sidequests":"#d97a8c","Creative/Relax":"#8fc9a3"
-  };
   function esc(s){ return (s==null?"":String(s)).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];}); }
   function post(url, body){ return fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body||{})}); }
 
   window.showView = function(v){
     document.getElementById("habitsView").style.display = (v==="habits")?"block":"none";
-    document.getElementById("levelView").classList.toggle("on", v==="level");
     document.getElementById("tabHabits").classList.toggle("active", v==="habits");
-    document.getElementById("tabLevel").classList.toggle("active", v==="level");
-    if(v==="level") loadLevel();
   };
   window.toggleForm = function(id){ document.getElementById(id).classList.toggle("open"); };
 
@@ -375,7 +308,7 @@
     }
     return row;
   }
-  window.checkTodoItem = function(id, done){ post("/api/todos/checklist",{id:id,done:done}).then(function(){ loadTodos(); if(document.getElementById("levelView").classList.contains("on")) loadLevel(); }); };
+  window.checkTodoItem = function(id, done){ post("/api/todos/checklist",{id:id,done:done}).then(function(){ loadTodos(); }); };
   window.addTodoChecklistItem = function(todoId){
     var text = prompt("New checklist item:"); if(!text || !text.trim()) return;
     post("/api/todos/checklist/add",{id:todoId,text:text.trim()}).then(function(){ loadTodos(); });
@@ -390,7 +323,7 @@
       el.innerHTML = list.map(todoRow).join("");
     }).catch(function(){ document.getElementById("todosList").innerHTML='<div class="empty">Could not load todos.</div>'; });
   }
-  window.completeTodo = function(id, done){ post("/api/todos/complete",{id:id,done:done}).then(function(){ loadTodos(); if(document.getElementById("levelView").classList.contains("on")) loadLevel(); }); };
+  window.completeTodo = function(id, done){ post("/api/todos/complete",{id:id,done:done}).then(function(){ loadTodos(); }); };
   window.delTodo = function(id, text){
     if(!confirm('Archive todo "'+text+'"? It stops showing here; its record is kept.')) return;
     post("/api/todos/delete",{id:id}).then(function(){ loadTodos(); });
@@ -402,47 +335,6 @@
     post("/api/todos/create",body).then(function(){ document.getElementById("tText").value=""; document.getElementById("tDue").value=""; toggleForm("todoForm"); loadTodos(); });
   };
 
-  // ---- Level ----
-  function ring(pct, color){
-    var C = 2*Math.PI*26; var off = C*(1-(pct/100));
-    return '<div class="mon-ring"><svg viewBox="0 0 62 62"><circle class="mon-ring-track" cx="31" cy="31" r="26"/>'
-      + '<circle class="mon-ring-fill" cx="31" cy="31" r="26" stroke="'+color+'" stroke-dasharray="'+C.toFixed(0)+'" stroke-dashoffset="'+off.toFixed(0)+'"/></svg>'
-      + '<div class="mon-ring-val">'+pct+'%</div></div>';
-  }
-  window.loadLevel = function(){
-    fetch("/api/level").then(function(r){return r.json();}).then(function(d){
-      if(!d || d.error){ return; }
-      document.getElementById("levelNum").textContent = d.level;
-      document.getElementById("levelHeadline").textContent = "Level " + d.level;
-      document.getElementById("levelSubline").innerHTML = d.total_completions + " completions logged · " + d.pct_to_next + "% toward level " + (d.level+1);
-      // overall ring (circumference for r=90)
-      var C = 2*Math.PI*90; document.getElementById("levelRing").setAttribute("stroke-dasharray", C.toFixed(0));
-      document.getElementById("levelRing").setAttribute("stroke-dashoffset", (C*(1-(d.pct_to_next/100))).toFixed(0));
-      var grid = (d.buckets||[]).map(function(b){
-        return '<div class="bucket">'+ring(b.pct, BUCKET_COLORS[b.bucket]||"#a8949e")+'<div class="bucket-label">'+esc(b.bucket.replace("/","/<br>"))+'</div></div>';
-      }).join("");
-      document.getElementById("bucketGrid").innerHTML = grid;
-      var s = d.since||{};
-      document.getElementById("sinceStats").innerHTML =
-        '<div class="streak-stat"><div class="streak-stat-val">'+(s.longest_streak||0)+'</div><div class="streak-stat-label">Longest streak</div></div>'
-        + '<div class="streak-stat"><div class="streak-stat-val">'+(s.days_active||0)+'</div><div class="streak-stat-label">Days active</div></div>'
-        + '<div class="streak-stat"><div class="streak-stat-val">'+(s.todos_done||0)+'</div><div class="streak-stat-label">Todos done</div></div>';
-      document.getElementById("stubNote").textContent = d._placeholder || "";
-    }).catch(function(){});
-    loadBadguys();
-  };
-
-  window.loadBadguys = function(){
-    fetch("/api/badguys").then(function(r){return r.json();}).then(function(d){
-      var row = document.getElementById("badguyRow");
-      var a = (d && d.active) || [];
-      if(!a.length){ row.style.display="none"; row.innerHTML=""; return; }
-      row.style.display="";
-      row.innerHTML = a.map(function(b){
-        return '<span style="display:inline-block;border:1px solid #d97a8c;color:#d97a8c;border-radius:12px;padding:2px 10px;margin:2px;font-size:11px;">⚔ '+esc(b.label)+'</span>';
-      }).join(" ");
-    }).catch(function(){});
-  };
 
   loadHabits(); loadTodos();
 })();

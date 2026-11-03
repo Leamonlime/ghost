@@ -16,7 +16,7 @@ PAGE_HOOKS = {
     "ghost-horoscope.html": ["profile-select"],
     "ghost-tarot.html":     ["tarot-board"],
     # Ghost 2.0 Phase 1 — native Habits & Todos
-    "ghost-habits.html":    ["nav-item", "habits-list", "todos-list", "level-panel"],
+    "ghost-habits.html":    ["nav-item", "habits-list", "todos-list"],
 }
 
 # API endpoints that must return HTTP 200 (checked in live mode only — they need the backend)
@@ -32,7 +32,6 @@ API_ENDPOINTS = [
     "/api/version",
     "/api/habits",
     "/api/todos",
-    "/api/level",
     "/api/bills/spending",
     "/api/bills/categories",
     "/api/bills/candidates",

@@ -805,7 +805,7 @@ async def api_decisions_answer(request: Request):
 # NB the routine/meal/habit board items aren't anchored in the sync files, so
 # Maintenance/Habits stay sparse — this reflects the chosen hooks, by design.
 # ===========================================================================
-MOMENTUM_BUCKETS = ["Maintenance", "Habits", "Work", "Business", "Sidequests", "Creative/Relax", "unsorted"]
+MOMENTUM_BUCKETS = ["Maintenance", "Habits", "Work", "Business", "Creative/Relax", "unsorted"]
 
 _MOMENTUM_SCHEMA_READY = False
 
@@ -847,7 +847,7 @@ async def api_momentum(request: Request, window: int = 60):
                   "closed": _r.randint(0, 4)} for i in range(min(window, 30))]
         return {"window": window, "demo": True,
                 "overall": {"closed": 48, "open": 12, "ratio": 0.8},
-                "buckets": {b: {"closed": 8, "open": 2, "ratio": 0.8} for b in MOMENTUM_BUCKETS[:6]},
+                "buckets": {b: {"closed": 8, "open": 2, "ratio": 0.8} for b in MOMENTUM_BUCKETS[:-1]},
                 "sparkline": spark}
     ck = f"momentum:{window}"
     try:
@@ -955,15 +955,6 @@ async def api_todos(request: Request, include_done: int = 1):
     except Exception as e:
         logger.error(f"/api/todos error: {e}")
         return JSONResponse({"todos": [], "error": str(e)}, status_code=500)
-
-
-@app.get("/api/level")
-async def api_level(request: Request):
-    try:
-        return await native.level_stats(_native_uid(request))
-    except Exception as e:
-        logger.error(f"/api/level error: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 @app.get("/api/badguys")

@@ -29,7 +29,6 @@ logger = logging.getLogger("habitica_sync")
 POSTGRES_HOST = os.environ.get("POSTGRES_HOST", "ghost-postgres-postgresql.ghost.svc.cluster.local")
 POSTGRES_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "")
 _BUCKET_PROJECT = {
-    "sidequesting": "Sidequests",
     "darkandwild": "Business", "website": "Business",
     "writing": "Creative/Relax", "novel": "Creative/Relax",
     "ghost": "Work", "hob": "Work", "rook": "Work", "cephalopod": "Work",
@@ -41,8 +40,6 @@ def derive_bucket(text, source="", rel=""):
     m = re.search(r"#project/([a-z0-9_-]+)", t)
     if m and m.group(1) in _BUCKET_PROJECT:
         return _BUCKET_PROJECT[m.group(1)]
-    if source == "quest":
-        return "Sidequests"
     if any(w in t for w in ("morning routine", "evening routine", "bedtime", "breakfast",
                             "lunch", "dinner", "tidy", "skincare", "make bed", "supplements")):
         return "Maintenance"
