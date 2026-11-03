@@ -11,6 +11,7 @@ PAGE_HOOKS = {
     "ghost-dashboard-live.html": [
         "nav-item", "habits", "todos", "budget",
         "momentum", "momentum-ratio", "momentum-sparkline", "momentum-counts", "decisions",
+        "food-log", "food-entries",
     ],
     "ghost-bills.html":     ["bills-table", "spending-summary", "spending-review", "category-manager", "bill-candidates", "budget-caps", "planned-costs", "export-review"],
     "ghost-horoscope.html": ["profile-select"],
@@ -38,6 +39,7 @@ API_ENDPOINTS = [
     "/api/bills/caps-status",
     "/api/bills/planned-costs",
     "/api/badguys",
+    "/api/food-log",
 ]
 
 PAGES = list(PAGE_HOOKS.keys())

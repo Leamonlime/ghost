@@ -83,6 +83,20 @@
      19/10/2026: the Self-Code Proposals card was removed with self-coding. */
   .row2 { display: grid; grid-template-columns: 1fr 1.15fr; gap: 7px; min-height: 0; align-items: start; }
   #cardOverview { min-height: 116px; }
+  /* S101: Food log card */
+  .food-row { display: flex; align-items: center; gap: 7px; padding: 4px 0; font-size: 10.5px; color: #dcc3d3; border-bottom: 1px solid rgba(255,150,200,0.07); }
+  .food-row .fn { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .food-row .fm { font-size: 9px; color: #8a6a7c; white-space: nowrap; }
+  .food-row .fx { cursor: pointer; color: #a97b95; padding: 0 4px; }
+  .food-add { margin-top: 8px; display: flex; gap: 6px; }
+  .food-add input { background: rgba(10,3,8,0.5); border: 1px solid rgba(255,150,200,0.18); border-radius: 8px; padding: 6px 9px; color: #f3e6ee; font-size: 11px; outline: none; }
+  #foodQ { flex: 1 1 auto; min-width: 0; }
+  #foodServ { width: 54px; }
+  #foodResults { margin-top: 4px; max-height: 190px; overflow-y: auto; }
+  .food-res { display: flex; gap: 7px; padding: 5px 6px; font-size: 10.5px; color: #dcc3d3; cursor: pointer; border-radius: 6px; }
+  .food-res:hover { background: rgba(255,150,200,0.1); }
+  .food-res .fn { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .food-res .fm { font-size: 9px; color: #8a6a7c; white-space: nowrap; }
   #cardTimeline .scroll-list { max-height: 210px; }   /* bound the timeline so row2 stays compact */
   .row3 { display: grid; grid-template-columns: 1fr 1fr 1.2fr; gap: 7px; min-height: 0; }
 
@@ -293,6 +307,19 @@
         <div class="card panel" id="cardDecisions">
           <div class="card-title">Pending decisions<span class="count" id="decCount" style="margin-left:auto;font-size:9px;color:#8a6a7c;"></span></div>
           <div class="scroll-list" id="decisionList" data-role="decisions"></div>
+        </div>
+      </div>
+
+      <!-- S101: Food log (today, Melbourne). Reads/writes /api/food-log; search via /api/food-search. -->
+      <div class="row4">
+        <div class="card panel" id="cardFood" data-role="food-log">
+          <div class="card-title">Food log<span id="foodTotals" style="font-size:9px;color:#8a6a7c;margin-left:auto;"></span></div>
+          <div class="scroll-list" id="foodList" data-role="food-entries" style="max-height:210px;"></div>
+          <div class="food-add">
+            <input id="foodQ" type="text" placeholder="add a food… (2+ letters)" autocomplete="off" oninput="foodSearchSoon()">
+            <input id="foodServ" type="number" min="0.25" max="20" step="0.25" value="1" title="servings">
+          </div>
+          <div id="foodResults"></div>
         </div>
       </div>
 
@@ -568,6 +595,53 @@ async function fetchDashboard(){
     console.error("Dashboard fetch failed:", e);
   }
 }
+
+// ---- S101: Food log card ----
+let foodSeq = 0, foodTimer = null, foodResultsCache = [];
+async function loadFoodLog(){
+  try{
+    const d = await (await fetch("/api/food-log",{cache:"no-store"})).json();
+    if(!d || !d.ok) return;
+    const t = d.totals||{};
+    document.getElementById("foodTotals").textContent = Math.round(t.calories||0)+" / "+Math.round(t.calorie_target||0)+" kcal · "+Math.round(t.protein||0)+" / "+Math.round(t.protein_target||0)+" g protein";
+    document.getElementById("foodList").innerHTML = (d.entries||[]).map(e =>
+      `<div class="food-row" data-role="food-row"><span class="fm">${esc(e.time)}</span><span class="fn">${esc(e.food_name)}${e.servings&&e.servings!==1?" ×"+esc(e.servings):""}</span><span class="fm">${Math.round(e.calories)} kcal · ${Math.round(e.protein)} g</span><span class="fx" title="remove" onclick="foodDel(${Number(e.id)})">✕</span></div>`
+    ).join("") || "<div style='font-size:11px;color:#8a6a7c;'>nothing logged today</div>";
+  }catch(e){ console.error("food log load failed", e); }
+}
+function foodSearchSoon(){ clearTimeout(foodTimer); foodTimer = setTimeout(foodSearch, 350); }
+async function foodSearch(){
+  const q = document.getElementById("foodQ").value.trim();
+  const box = document.getElementById("foodResults");
+  if(q.length < 2){ box.innerHTML = ""; return; }
+  const my = ++foodSeq;                       // ignore a slow answer to an older keystroke
+  try{
+    const d = await (await fetch("/api/food-search?q="+encodeURIComponent(q),{cache:"no-store"})).json();
+    if(my !== foodSeq) return;
+    foodResultsCache = d.results||[];
+    box.innerHTML = foodResultsCache.map((r,i) =>
+      `<div class="food-res" onclick="foodAdd(${i})"><span class="fn">${esc(r.name)}${r.brand?" · "+esc(r.brand):""}</span><span class="fm">${Math.round(r.calories)} kcal · ${Math.round(r.protein)} g ${r.mine?"· saved":""}</span></div>`
+    ).join("") || "<div style='font-size:11px;color:#8a6a7c;padding:4px 6px;'>no matches</div>";
+  }catch(e){ if(my === foodSeq) box.innerHTML = "<div style='font-size:11px;color:#8a6a7c;padding:4px 6px;'>search failed, try again</div>"; }
+}
+async function foodAdd(i){
+  const item = foodResultsCache[i]; if(!item) return;
+  const servings = parseFloat(document.getElementById("foodServ").value) || 1;
+  try{
+    const r = await fetch("/api/food-log",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...item, servings})});
+    if(!r.ok){ alert("Couldn't log that food."); return; }
+    document.getElementById("foodQ").value = ""; document.getElementById("foodResults").innerHTML = "";
+    foodResultsCache = [];
+    loadFoodLog();
+  }catch(e){ alert("Couldn't log that food."); }
+}
+async function foodDel(id){
+  if(!confirm("Remove this entry?")) return;
+  try{ await fetch("/api/food-log/"+id,{method:"DELETE"}); }catch(e){}
+  loadFoodLog();
+}
+loadFoodLog();
+setInterval(loadFoodLog, POLL_MS);
 
 fetchDashboard();
 setInterval(fetchDashboard, POLL_MS);
