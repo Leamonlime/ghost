@@ -4,9 +4,9 @@
 [![gitleaks](https://github.com/Leamonlime/ghost/actions/workflows/gitleaks.yml/badge.svg)](https://github.com/Leamonlime/ghost/actions/workflows/gitleaks.yml)
 
 A self-hosted AI accountability assistant. It runs on a home Kubernetes (k3s)
-cluster, talks to me over Telegram and a private Android app, tracks my habits,
-todos, money and food, and nudges me back on track when I'm scrolling instead of
-living.
+cluster, talks to me through a private Android app and a web dashboard, tracks
+my habits, todos, money and food, and nudges me back on track when I'm scrolling
+instead of living.
 
 Built for one person (me), so treat this repo as a worked example of the
 architecture rather than a turnkey product. Everything personal is injected
@@ -14,12 +14,12 @@ through Kubernetes Secrets; no real values live in the repo.
 
 ## What it does
 
-- **Conversation.** Telegram is the primary chat interface; the Claude API does
-  the reasoning. The same conversation is shared with the dashboard chat and the
-  phone app.
+- **Conversation.** The private Android app and the dashboard chat are the
+  chat interfaces; the Claude API does the reasoning. Both share one
+  conversation. (Telegram was the original interface and has been retired.)
 - **Native habits and todos.** Habits (tick, counter, value and checklist types,
   streaks, momentum) and todos live in Ghost's own Postgres tables. They replaced
-  the Habitica integration, which is being retired.
+  the Habitica integration.
 - **Money.** Spending is logged conversationally ("spent $12 on lunch") or
   imported from bank CSVs, categorised, and reconciled against recurring bills.
   Financial messages are routed to a local Ollama model only, enforced at the
@@ -51,13 +51,13 @@ through Kubernetes Secrets; no real values live in the repo.
   headlessly at night, one branch per prompt. It runs syntax and smoke checks,
   merges only if they pass, and auto-deploys the dashboard alone. Anything it
   cannot decide is stored as a *decision* with options and a recommendation,
-  answered by tap (Telegram or the app), which then drives the next run.
+  answered by tap in the app or the dashboard, which then drives the next run.
   Nothing is ever auto-answered or auto-applied.
 
 ## Architecture
 
 ```
-Telegram / Android app / dashboard
+Android app / dashboard
         |
    ghost-bot  ---- Claude API (general reasoning)
    ghost-dashboard (FastAPI)  ---- Ollama (finance only, local)
@@ -68,7 +68,7 @@ Telegram / Android app / dashboard
 
 | Path | What it is |
 |---|---|
-| `bot/` | Telegram bot: routing, habits/todos, money, voice, calendar |
+| `bot/` | Core service: routing, habits/todos, money, voice, calendar |
 | `scheduler/` | Proactive nudges, summaries, health checks |
 | `dashboard/` | FastAPI dashboard and the phone-app API, plus `pages/` |
 | `deploy/` | Verified deploy (rebuild + post-deploy checks) |
@@ -80,9 +80,8 @@ Everything runs as pods in the `ghost` namespace. Secrets are read with
 ## Setup
 
 You will need a Linux host running k3s (or any small Kubernetes cluster) with
-`kubectl`, Docker, Helm and Tailscale, plus a Telegram bot token (from
-BotFather), your own Telegram user ID and an Anthropic API key. Optional: a USDA
-FoodData Central key (nutrition fallback) and an ntfy server (phone push).
+`kubectl`, Docker, Helm and Tailscale, plus an Anthropic API key. Optional: a
+USDA FoodData Central key (nutrition fallback) and an ntfy server (phone push).
 
 1. **Clone and read the config reference.**
    ```bash
@@ -100,8 +99,6 @@ FoodData Central key (nutrition fallback) and an ntfy server (phone push).
 4. **Create the app secret.** Keys are lowercase and hyphenated:
    ```bash
    kubectl -n ghost create secret generic ghost-app-secrets \
-     --from-literal=bot-token=... \
-     --from-literal=telegram-user-id=... \
      --from-literal=anthropic-api-key=... \
      --from-literal=ghost-user-name=... \
      --from-literal=ghost-tz=Australia/Melbourne \
@@ -172,3 +169,4 @@ persistent friend who remembers yesterday, not a notification you swipe away.
 
 Live and in daily use since July 2026. This repo is published from the live
 system and may trail it by a few sessions.
+Telegram was retired in November 2026; the app and dashboard are the interfaces.
