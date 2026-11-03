@@ -11,6 +11,7 @@ import copy
 import time
 import json
 import hashlib
+import asyncio
 import logging
 from datetime import datetime, timedelta, date
 from decimal import Decimal
@@ -4210,36 +4211,65 @@ async def app_todo_patch(todo_id: int, request: Request):
     return result if result["ok"] else JSONResponse(result, status_code=404)
 
 
+def _food_rank(name, brand, q):
+    """Relevance of a food to the typed query, lower = better: 0 exact name, 1 name starts with q,
+    2 a word in name/brand starts with q, 3 q is contained somewhere, 9 not a match. Multi-word
+    queries match when every word does (so 'chicken breast' ranks 'Breast, Chicken' as a match)."""
+    n, b, ql = (name or "").lower(), (brand or "").lower(), q.lower()
+    hay = f"{n} {b}".strip()
+    if n == ql:
+        return 0
+    if n.startswith(ql):
+        return 1
+    words = ql.split()
+    if all(any(w2.startswith(w) for w2 in hay.replace(",", " ").split()) for w in words):
+        return 2
+    if all(w in hay for w in words):
+        return 3
+    return 9
+
+
 @app.get("/api/app/v1/foods/search")
 async def app_foods_search(request: Request, q: str = ""):
+    """Partial, case-insensitive search. Own foods (saved OR previously logged) come first, ranked
+    exact > prefix > word-prefix > contains then by how often they're logged; Open Food Facts and
+    USDA are queried at the same time (not one after the other) and filtered/ranked the same way."""
     if not _app_auth_ok(request):
         return _app_401()
-    q = (q or "").strip()
+    q = " ".join((q or "").split())
     if len(q) < 2:
         return {"ok": True, "query": q, "results": []}
     try:
+        like = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
         conn = await pg_conn()
         try:
             await _ensure_app_schema(conn)
             mine = await conn.fetch(
                 "SELECT f.id, f.name, f.brand, f.serving_desc, f.calories::float8 c, f.protein::float8 p, "
-                "f.source, f.source_id, COUNT(l.id) uses "
+                "f.source, f.source_id, COUNT(l.id) uses, MAX(l.logged_at) last_used "
                 "FROM foods f LEFT JOIN food_log l ON l.food_id=f.id "
-                "WHERE f.is_mine AND f.name ILIKE $1 GROUP BY f.id ORDER BY uses DESC, f.name LIMIT 8",
-                f"%{q}%")
+                "WHERE (f.is_mine OR EXISTS (SELECT 1 FROM food_log x WHERE x.food_id=f.id)) "
+                "AND (f.name ILIKE $1 OR COALESCE(f.brand,'') ILIKE $1) GROUP BY f.id LIMIT 60",
+                like)
         finally:
             await conn.close()
+        mine = sorted(mine, key=lambda m: (_food_rank(m["name"], m["brand"], q), -m["uses"],
+                                           -(m["last_used"].timestamp() if m["last_used"] else 0), m["name"]))[:8]
         results = [{"food_id": m["id"], "name": m["name"], "brand": m["brand"],
                     "serving_desc": m["serving_desc"], "calories": round(m["c"], 1),
                     "protein": round(m["p"], 1), "source": m["source"], "source_id": m["source_id"],
                     "mine": True} for m in mine]
         seen = {(m["source"], m["source_id"]) for m in mine if m["source_id"]}
-        for ext in (await _search_off(q)) + (await _search_usda(q)):
-            key = (ext["source"], ext["source_id"])
-            if ext["source_id"] and key in seen:
+        off, usda = await asyncio.gather(_search_off(q), _search_usda(q))
+        ext_all = [e for e in off + usda]
+        ext = [e for e in ext_all if _food_rank(e["name"], e.get("brand"), q) < 9] or ext_all
+        ext.sort(key=lambda e: _food_rank(e["name"], e.get("brand"), q))   # stable: keeps source order within a rank
+        for e in ext:
+            key = (e["source"], e["source_id"])
+            if e["source_id"] and key in seen:
                 continue
             seen.add(key)
-            results.append({**ext, "food_id": None, "mine": False})
+            results.append({**e, "food_id": None, "mine": False})
         return {"ok": True, "query": q, "results": results[:16]}
     except Exception as e:
         logger.error(f"/api/app/v1/foods/search error: {e}")
