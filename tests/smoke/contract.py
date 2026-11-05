@@ -11,12 +11,13 @@ PAGE_HOOKS = {
     "ghost-dashboard-live.html": [
         "nav-item", "habits", "todos", "budget",
         "momentum", "momentum-ratio", "momentum-sparkline", "momentum-counts", "decisions",
+        "food-log", "food-entries",
     ],
     "ghost-bills.html":     ["bills-table", "spending-summary", "spending-review", "category-manager", "bill-candidates", "budget-caps", "planned-costs", "export-review"],
     "ghost-horoscope.html": ["profile-select"],
     "ghost-tarot.html":     ["tarot-board"],
     # Ghost 2.0 Phase 1 — native Habits & Todos
-    "ghost-habits.html":    ["nav-item", "habits-list", "todos-list", "level-panel"],
+    "ghost-habits.html":    ["nav-item", "habits-list", "todos-list"],
 }
 
 # API endpoints that must return HTTP 200 (checked in live mode only — they need the backend)
@@ -32,13 +33,13 @@ API_ENDPOINTS = [
     "/api/version",
     "/api/habits",
     "/api/todos",
-    "/api/level",
     "/api/bills/spending",
     "/api/bills/categories",
     "/api/bills/candidates",
     "/api/bills/caps-status",
     "/api/bills/planned-costs",
     "/api/badguys",
+    "/api/food-log",
 ]
 
 PAGES = list(PAGE_HOOKS.keys())

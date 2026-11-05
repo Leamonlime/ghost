@@ -4,6 +4,11 @@ Auto-generated from the project build log; titles only. Newest session first.
 
 | Session | Date | Summary |
 | ------: | :--- | :------ |
+| 101 | 03/11/2026 | Dashboard food log |
+| 100 | 03/11/2026 | Phone-test fixes: food search fixed; dashboard food log and chat spacing held for a decision |
+| 99 | 03/11/2026 | Cleanup: leftover quest layer and dead game tables removed |
+| 98 | 01/11/2026 | Audit and cuts II: alerts onto ntfy, Telegram and voice removed, FatSecret retired, gcal monitored, Cephalopod off |
+| 97 | 29/10/2026 | Bills: keyword categoriser retired, new category set, monthly caps, export for review |
 | 96 | 19/10/2026 | Audit and cuts: self-coding removed, Quest Log and currency gone, Redis standalone |
 | 95 | 16/10/2026 | Automatic GitHub publishing: deploy-key push, full history rewrite to Leamonlime, gitleaks + denylist guards, 06:30 timer |
 | 94 | 11/10/2026 | Decision loop: overnight-runner questions are stored in full, answered by button, and drive the next run |

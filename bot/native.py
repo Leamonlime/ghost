@@ -36,12 +36,12 @@ logger = logging.getLogger("native")
 POSTGRES_HOST = os.environ.get("POSTGRES_HOST", "ghost-postgres-postgresql.ghost.svc.cluster.local")
 POSTGRES_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "")
 LOCAL_TZ = zoneinfo.ZoneInfo(os.environ.get("GHOST_TZ", "UTC"))
-DEFAULT_USER_ID = int(os.environ.get("TELEGRAM_USER_ID") or "0")
+DEFAULT_USER_ID = int(os.environ.get("GHOST_USER_ID") or os.environ.get("TELEGRAM_USER_ID") or "0")
 
 FIELD_TYPES = ("positive", "negative", "both", "tickbox", "checklist")
 FREQ_KINDS = ("weekdays", "monthly", "count")
 PRIORITIES = ("high", "med", "low")
-BUCKETS = ["Maintenance", "Habits", "Work", "Business", "Sidequests", "Creative/Relax", "unsorted"]
+BUCKETS = ["Maintenance", "Habits", "Work", "Business", "Creative/Relax", "unsorted"]
 
 
 async def pg_conn():
@@ -117,9 +117,6 @@ CREATE TABLE IF NOT EXISTS todos (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE todos ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT FALSE;
--- S78: a todo can be flagged a "quest" (a display flag; the quest currency tier it once set was
--- removed with the currency economy, 19/10/2026).
-ALTER TABLE todos ADD COLUMN IF NOT EXISTS is_quest BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE TABLE IF NOT EXISTS todo_checklist (
     id BIGSERIAL PRIMARY KEY,
     todo_id BIGINT NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
@@ -180,8 +177,6 @@ def infer_bucket(text: str, default: str) -> str:
     if any(w in t for w in ("dark and wild", "tdaw", "witch", "shopify", "shop", "adsense",
                             "substack", "blog", "brand", "website", "content")):
         return "Business"
-    if any(w in t for w in ("quest", "sidequest", "trial class", "adventure")):
-        return "Sidequests"
     if any(w in t for w in ("novel", "fanfic", "writing", "paint", "craft", "relax", "read", "creative")):
         return "Creative/Relax"
     return default
@@ -262,11 +257,9 @@ async def create_habit(name, field_type="tickbox", frequency_kind="weekdays",
 
 
 async def create_todo(text, kind="tickbox", priority="med", due_date=None,
-                      bucket=None, checklist=None, user_id=None, habitica_source_id=None,
-                      is_quest=False):
+                      bucket=None, checklist=None, user_id=None, habitica_source_id=None):
     """Create a native todo. due_date may be a date or an ISO 'YYYY-MM-DD' string. Returns id.
-    habitica_source_id records Session-75 import provenance (idempotency key). is_quest (S78) flags
-    it a quest (display flag only)."""
+    habitica_source_id records Session-75 import provenance (idempotency key)."""
     text = (text or "").strip()
     if not text:
         return None
@@ -287,9 +280,9 @@ async def create_todo(text, kind="tickbox", priority="med", due_date=None,
     try:
         await ensure_schema(conn)
         tid = await conn.fetchval(
-            """INSERT INTO todos (user_id, text, kind, priority, due_date, bucket, habitica_source_id, is_quest)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id""",
-            uid, text, kind, priority, due_date, bucket, habitica_source_id, bool(is_quest))
+            """INSERT INTO todos (user_id, text, kind, priority, due_date, bucket, habitica_source_id)
+               VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id""",
+            uid, text, kind, priority, due_date, bucket, habitica_source_id)
         if kind == "checklist" and checklist:
             for i, item in enumerate(checklist):
                 item = (item or "").strip()
@@ -613,7 +606,7 @@ async def set_todo_checklist_item(item_id, done=True):
         await conn.execute("UPDATE todo_checklist SET done=$1 WHERE id=$2", bool(done), item_id)
         total = await conn.fetchval("SELECT COUNT(*) FROM todo_checklist WHERE todo_id=$1", tid)
         ndone = await conn.fetchval("SELECT COUNT(*) FROM todo_checklist WHERE todo_id=$1 AND done=TRUE", tid)
-        todo = await conn.fetchrow("SELECT done, bucket, is_quest FROM todos WHERE id=$1", tid)
+        todo = await conn.fetchrow("SELECT done, bucket FROM todos WHERE id=$1", tid)
         was_done = bool(todo["done"]) if todo else False
         complete = total > 0 and ndone >= total
         if complete and not was_done:
@@ -623,20 +616,6 @@ async def set_todo_checklist_item(item_id, done=True):
         elif (not complete) and was_done:
             await conn.execute("UPDATE todos SET done=FALSE, completed_at=NULL WHERE id=$1", tid)
         return {"ok": True, "complete": complete, "done_count": ndone, "total": total}
-    finally:
-        await conn.close()
-
-
-async def set_todo_quest(todo_id, is_quest=True):
-    """S78: flag/unflag an existing todo as a quest (the per-row 'edit' path — there's no todo edit
-    modal). Display flag only."""
-    conn = await pg_conn()
-    try:
-        await ensure_schema(conn)
-        status = await conn.execute("UPDATE todos SET is_quest=$1 WHERE id=$2", bool(is_quest), todo_id)
-        if status.split()[-1] == "0":
-            return {"ok": False, "error": "todo not found"}
-        return {"ok": True, "id": todo_id, "is_quest": bool(is_quest)}
     finally:
         await conn.close()
 
@@ -810,7 +789,7 @@ async def list_todos(user_id=None, include_done=True, conn=None):
             overdue = bool(t["due_date"] and (not t["done"]) and t["due_date"] < d)
             item = {
                 "id": t["id"], "text": t["text"], "kind": t["kind"], "priority": t["priority"],
-                "bucket": t["bucket"], "done": t["done"], "is_quest": bool(t["is_quest"]),
+                "bucket": t["bucket"], "done": t["done"],
                 "due_date": t["due_date"].isoformat() if t["due_date"] else None,
                 "overdue": overdue, "checklist": [],
             }
@@ -825,55 +804,6 @@ async def list_todos(user_id=None, include_done=True, conn=None):
             await conn.close()
 
 
-# ---------------------------------------------------------------------------
-# Level / bucket stats — PLACEHOLDER math (Phase 3 replaces the curve; Phase 1 only wires
-# the raw counters). Level = floor(total completions / 10) + 1. Bucket "ring" percent is a
-# provisional progress-to-next-10 within each bucket. "Since last level" = simple real stats.
-# ---------------------------------------------------------------------------
-LEVEL_STEP = 10
-
-
-async def level_stats(user_id=None, conn=None):
-    own = conn is None
-    if own:
-        conn = await pg_conn()
-    try:
-        await ensure_schema(conn)
-        rows = await conn.fetch(
-            "SELECT bucket, COUNT(*) n FROM momentum_events WHERE source IN ('native_habit','native_todo') GROUP BY bucket")
-        counts = {b: 0 for b in BUCKETS}
-        total = 0
-        for r in rows:
-            b = r["bucket"] if r["bucket"] in counts else "unsorted"
-            counts[b] += r["n"]
-            total += r["n"]
-        level = total // LEVEL_STEP + 1
-        into = total % LEVEL_STEP
-        buckets = []
-        for b in BUCKETS[:6]:
-            c = counts[b]
-            buckets.append({"bucket": b, "count": c,
-                            "level": c // LEVEL_STEP + 1,
-                            "pct": int(round((c % LEVEL_STEP) / LEVEL_STEP * 100))})
-        # since-last-level: real stats
-        uid = user_id if user_id is not None else DEFAULT_USER_ID
-        longest = await conn.fetchval(
-            "SELECT COALESCE(MAX(streak_best),0) FROM habits WHERE user_id=$1", uid) or 0
-        days_active = await conn.fetchval(
-            "SELECT COUNT(DISTINCT tap_date) FROM habit_taps") or 0
-        todos_done = await conn.fetchval(
-            "SELECT COUNT(*) FROM todos WHERE user_id=$1 AND done=TRUE", uid) or 0
-        return {
-            "level": level, "total_completions": total,
-            "into_level": into, "level_step": LEVEL_STEP,
-            "pct_to_next": int(round(into / LEVEL_STEP * 100)),
-            "buckets": buckets,
-            "since": {"longest_streak": longest, "days_active": days_active, "todos_done": todos_done},
-            "_placeholder": "level math is a Phase-1 stub (floor(completions/10)+1); Phase 3 replaces the curve",
-        }
-    finally:
-        if own:
-            await conn.close()
 
 
 # ---------------------------------------------------------------------------

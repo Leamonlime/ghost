@@ -11,6 +11,7 @@ import copy
 import time
 import json
 import hashlib
+import asyncio
 import logging
 from datetime import datetime, timedelta, date
 from decimal import Decimal
@@ -31,10 +32,13 @@ import uvicorn  # noqa: E402
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger("dashboard")
+for _noisy in ("httpx", "httpcore"):   # their INFO lines put full request URLs (tokens, topics) in the logs
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 LOCAL_TZ = zoneinfo.ZoneInfo(os.environ.get("GHOST_TZ", "UTC"))
-OWNER_ID = int(os.environ.get("TELEGRAM_USER_ID") or "0")
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+# The single user's numeric id (keys every native/app row). GHOST_USER_ID is the neutral name;
+# TELEGRAM_USER_ID is the pre-01/11 name of the same value, kept as a fallback.
+OWNER_ID = int(os.environ.get("GHOST_USER_ID") or os.environ.get("TELEGRAM_USER_ID") or "0")
 
 app = FastAPI()
 
@@ -61,6 +65,15 @@ async def _bust_native():
     right after reflects the change (S66)."""
     try:
         await bot._bust_native_cache()
+    except Exception:
+        pass
+
+async def _bust_command_center():
+    """Drop the 25s Command Center cache after a food-log write so the nutrition gauge is current."""
+    try:
+        r = redis_conn()
+        await r.delete("command_center")
+        await r.aclose()
     except Exception:
         pass
 
@@ -171,14 +184,67 @@ def seconds_to_midnight() -> int:
     midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
     return int((midnight - now).total_seconds())
 
-async def send_telegram(message: str, silent: bool = False):
-    async with httpx.AsyncClient() as client:
-        response = await client.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                                     json={"chat_id": OWNER_ID, "text": message,
-                                           "disable_notification": silent}, timeout=30.0)
-        if response.status_code != 200:
-            logger.error(f"Telegram send FAILED ({response.status_code}): {response.text[:200]}")
-            raise RuntimeError(f"telegram send failed: {response.status_code}")
+NTFY_URL = os.environ.get("NTFY_URL", "")
+NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
+NTFY_TOKEN = os.environ.get("NTFY_TOKEN", "")
+
+
+def _ascii_header(value: str) -> str:
+    """HTTP header values must be ASCII; fold dashes/quotes, drop the rest (same rule as the scheduler)."""
+    v = str(value or "")
+    for src, dst in (("\u2014", "-"), ("\u2013", "-"), ("\u2018", "'"), ("\u2019", "'"),
+                     ("\u201c", '"'), ("\u201d", '"'), ("\u2026", "...")):
+        v = v.replace(src, dst)
+    return " ".join(v.encode("ascii", "ignore").decode("ascii").split()) or "Ghost"
+
+
+async def push_ntfy(message: str, title: str = "Ghost") -> bool:
+    """Push to Lea's private ntfy topic and to every UnifiedPush endpoint the Ghost app registered
+    (the same two deliveries the scheduler makes). Best-effort; True if at least one succeeded."""
+    if not NTFY_TOKEN:
+        return False
+    delivered = False
+    auth = {"Authorization": f"Bearer {NTFY_TOKEN}"}
+    base = NTFY_URL.rstrip("/")
+    try:
+        conn = await pg_conn()
+        try:
+            rows = await conn.fetch("SELECT endpoint FROM app_push_endpoints")
+            body = json.dumps({"title": title, "message": message}).encode("utf-8")
+            async with httpx.AsyncClient() as client:
+                for r in rows:
+                    ep = r["endpoint"]
+                    from urllib.parse import urlsplit
+                    u = urlsplit(ep)
+                    # tailnet endpoints are not resolvable in-pod; same ntfy server, in-cluster URL
+                    url = f"{base}{u.path}" if (base and (u.hostname or "").endswith(".ts.net") and u.port == 10443) else ep
+                    try:
+                        resp = await client.post(url, content=body, headers=auth, timeout=10.0)
+                        if resp.status_code < 300:
+                            delivered = True
+                            await conn.execute("UPDATE app_push_endpoints SET last_ok_at=now() WHERE endpoint=$1", ep)
+                        elif resp.status_code in (404, 410):
+                            await conn.execute("DELETE FROM app_push_endpoints WHERE endpoint=$1", ep)
+                        else:
+                            logger.error(f"app push FAILED ({resp.status_code}): {resp.text[:160]}")
+                    except Exception as e:
+                        logger.error(f"app push error: {e}")
+        finally:
+            await conn.close()
+    except Exception as e:
+        logger.error(f"app push: db error: {e}")
+    if NTFY_URL and NTFY_TOPIC:
+        try:
+            async with httpx.AsyncClient() as client:
+                r = await client.post(f"{base}/{NTFY_TOPIC}", content=message.encode("utf-8"),
+                                      headers={**auth, "Title": _ascii_header(title)}, timeout=10.0)
+            if r.status_code == 200:
+                delivered = True
+            else:
+                logger.error(f"ntfy publish FAILED ({r.status_code}): {r.text[:160]}")
+        except Exception as e:
+            logger.error(f"ntfy publish error: {e}")
+    return delivered
 
 async def claude_line(prompt: str) -> str:
     """One-line Ghost message via Claude, with recent-phrase avoidance."""
@@ -292,20 +358,13 @@ async def api_chat(request: Request):
         message = str(data.get("message", "")).strip()
         if not message:
             return {"reply": "say something."}
-        # Demo mode: never reach the real bot — that would send to Telegram, write
+        # Demo mode: never reach the real bot — that would write
         # real message_log rows, and return a reply grounded in real data. Canned reply.
         if is_demo(request):
             return {"reply": "(demo mode) I'd normally answer from your real data here.", "demo": True}
         await bot.log_message("dashboard_in", "chat", message)
         reply = await bot.process_message(OWNER_ID, message, source="dashboard")
         await bot.log_message("dashboard_out", "chat", reply)
-        # Mirror dashboard chat into Telegram SILENTLY (no buzz) so the Telegram
-        # app's own history stays complete (session 15, task 6).
-        try:
-            await send_telegram(f"[dashboard] {bot.USER_NAME}: {message}", silent=True)
-            await send_telegram(reply, silent=True)
-        except Exception as e:
-            logger.error(f"telegram mirror error: {e}")
         return {"reply": reply}
     except Exception as e:
         logger.error(f"chat error: {e}")
@@ -534,6 +593,9 @@ async def _cephalopod_health() -> dict:
         ok = r.status_code == 200
         return {"service": "cephalopod", "status": "ok" if ok else "fail",
                 "detail": "" if ok else f"http {r.status_code}"}
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        # Cephalopod was scaled to 0 on 01/11/2026 (not live yet): that is not a failure to alarm on
+        return {"service": "cephalopod", "status": "unconfigured", "detail": "not live (scaled to 0)"}
     except Exception as e:
         return {"service": "cephalopod", "status": "fail", "detail": str(e)[:60]}
 
@@ -598,7 +660,7 @@ async def api_command_center(request: Request):
     out = {"time": now.strftime("%A %d %B %Y, %I:%M %p").replace(" 0", " "), "errors": [],
            "_meta": {"derived": {
                "habits.streak/doneToday/atRisk": "approximated from Habitica history/counterUp/value — habits have no native streak/done/at-risk",
-               "nutrition.caloriesTarget": "from GHOST_CALORIE_TARGET env (0 = not set) — not available from FatSecret",
+               "nutrition": "from the Ghost app food_log (calories + protein only; carbs/fat/fiber null)", "nutrition.caloriesTarget": "from GHOST_CALORIE_TARGET env (0 = not set)",
            }}}
     # Habitica: habits, todos, vitals
     try:
@@ -615,18 +677,20 @@ async def api_command_center(request: Request):
         out["errors"].append(f"vitals: {e}"); out["vitals"] = {}
     # S70: conversational money pipeline removed — spending is CSV-only (Bills dashboard / spending
     # card). No budget-vs-limit block from expenses/budget_categories here anymore.
-    # Nutrition (FatSecret)
+    # Nutrition: the Ghost app's food_log (FatSecret retired 01/11/2026). The app tracks calories and
+    # protein only, so carbs / fat / fiber are null, not zero (a missing figure is not a zero).
     try:
-        import fatsecret
-        f = await fatsecret.get_today_summary()
-        if f is None:
-            out["nutrition"] = None
-        else:
-            out["nutrition"] = {
-                "caloriesLogged": round(f["calories"]), "caloriesTarget": CALORIE_TARGET or None,
-                "macros": {"protein": round(f["protein"]), "carbs": round(f["carbs"]),
-                           "fat": round(f["fat"]), "fiber": round(f.get("fiber", 0))},
-                "mealsLoggedToday": len(f.get("groups", [])) or f.get("entries", 0)}
+        conn = await pg_conn()
+        try:
+            row = await conn.fetchrow(
+                "SELECT COALESCE(SUM(calories),0)::float8 c, COALESCE(SUM(protein),0)::float8 p, COUNT(*) n "
+                "FROM food_log WHERE user_id=$1 AND log_date=$2", OWNER_ID, now.date())
+        finally:
+            await conn.close()
+        out["nutrition"] = {
+            "caloriesLogged": round(row["c"]), "caloriesTarget": CALORIE_TARGET or None,
+            "macros": {"protein": round(row["p"]), "carbs": None, "fat": None, "fiber": None},
+            "mealsLoggedToday": int(row["n"])}
     except Exception as e:
         out["errors"].append(f"nutrition: {e}"); out["nutrition"] = None
     # Self-check (health_checks table) + live Cephalopod ping
@@ -634,7 +698,7 @@ async def api_command_center(request: Request):
         conn = await pg_conn()
         rows = await conn.fetch("""
             SELECT DISTINCT ON (service) service, status, detail, checked_at
-            FROM health_checks WHERE service IN ('telegram','postgres','redis','fatsecret')
+            FROM health_checks WHERE service IN ('ntfy','postgres','redis','habitica','anthropic','gcal')
             ORDER BY service, checked_at DESC
         """)
         await conn.close()
@@ -751,7 +815,7 @@ async def api_decisions_answer(request: Request):
 # NB the routine/meal/habit board items aren't anchored in the sync files, so
 # Maintenance/Habits stay sparse — this reflects the chosen hooks, by design.
 # ===========================================================================
-MOMENTUM_BUCKETS = ["Maintenance", "Habits", "Work", "Business", "Sidequests", "Creative/Relax", "unsorted"]
+MOMENTUM_BUCKETS = ["Maintenance", "Habits", "Work", "Business", "Creative/Relax", "unsorted"]
 
 _MOMENTUM_SCHEMA_READY = False
 
@@ -793,7 +857,7 @@ async def api_momentum(request: Request, window: int = 60):
                   "closed": _r.randint(0, 4)} for i in range(min(window, 30))]
         return {"window": window, "demo": True,
                 "overall": {"closed": 48, "open": 12, "ratio": 0.8},
-                "buckets": {b: {"closed": 8, "open": 2, "ratio": 0.8} for b in MOMENTUM_BUCKETS[:6]},
+                "buckets": {b: {"closed": 8, "open": 2, "ratio": 0.8} for b in MOMENTUM_BUCKETS[:-1]},
                 "sparkline": spark}
     ck = f"momentum:{window}"
     try:
@@ -901,15 +965,6 @@ async def api_todos(request: Request, include_done: int = 1):
     except Exception as e:
         logger.error(f"/api/todos error: {e}")
         return JSONResponse({"todos": [], "error": str(e)}, status_code=500)
-
-
-@app.get("/api/level")
-async def api_level(request: Request):
-    try:
-        return await native.level_stats(_native_uid(request))
-    except Exception as e:
-        logger.error(f"/api/level error: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 @app.get("/api/badguys")
@@ -1038,19 +1093,6 @@ async def api_todo_checklist(request: Request):
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
-@app.post("/api/todos/quest")
-async def api_todo_quest(request: Request):
-    """S78: flag/unflag an existing todo as a quest (per-row toggle — the todo 'edit' path)."""
-    body = await _json_body(request)
-    try:
-        _r = await native.set_todo_quest(int(body.get("id")), bool(body.get("is_quest", True)))
-        await _bust_native()
-        return _r
-    except Exception as e:
-        logger.error(f"/api/todos/quest error: {e}")
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
-
-
 @app.post("/api/todos/checklist/add")
 async def api_todo_checklist_add(request: Request):
     """S77: add an item to a checklist todo — mirrors /api/habits/checklist/add."""
@@ -1072,7 +1114,6 @@ async def api_todo_create(request: Request):
             body.get("text", ""), kind=body.get("kind", "tickbox"),
             priority=body.get("priority", "med"), due_date=body.get("due_date"),
             bucket=body.get("bucket"), checklist=body.get("checklist"),
-            is_quest=bool(body.get("is_quest")),
             user_id=_native_uid(request))
         await _bust_native()
         return {"ok": tid is not None, "id": tid}
@@ -3540,14 +3581,13 @@ async def scrolling_webhook(request: Request):
         logger.error(f"webhook claude error: {e}")
         message = fallback
 
-    try:
-        await send_telegram(message)
-    except Exception as e:
-        logger.error(f"webhook telegram error: {e}")
-        return {"ok": False, "error": "telegram send failed"}
+    pushed = await push_ntfy(message, "Ghost")
+    if not pushed:
+        logger.error("webhook push FAILED: nothing delivered")
+        return {"ok": False, "error": "push failed"}
     try:
         # source 'webhook' (a sixth source beyond the original five) — these are real
-        # Telegram sends and belong in the unified feed, but attributing them to
+        # pushes and belong in the unified feed, but attributing them to
         # 'scheduler' would be false.
         await bot.log_message("webhook", "nudge", message)
     except Exception as e:
@@ -4180,37 +4220,78 @@ async def app_todo_patch(todo_id: int, request: Request):
     return result if result["ok"] else JSONResponse(result, status_code=404)
 
 
+def _food_rank(name, brand, q):
+    """Relevance of a food to the typed query, lower = better: 0 exact name, 1 name starts with q,
+    2 a word in name/brand starts with q, 3 q is contained somewhere, 9 not a match. Multi-word
+    queries match when every word does (so 'chicken breast' ranks 'Breast, Chicken' as a match)."""
+    n, b, ql = (name or "").lower(), (brand or "").lower(), q.lower()
+    hay = f"{n} {b}".strip()
+    if n == ql:
+        return 0
+    if n.startswith(ql):
+        return 1
+    words = ql.split()
+    if all(any(w2.startswith(w) for w2 in hay.replace(",", " ").split()) for w in words):
+        return 2
+    if all(w in hay for w in words):
+        return 3
+    return 9
+
+
+async def _search_foods(q):
+    """Shared by the app route and the dashboard food-log card. q is already normalised, len >= 2."""
+    like = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    conn = await pg_conn()
+    try:
+        await _ensure_app_schema(conn)
+        mine = await conn.fetch(
+            "SELECT f.id, f.name, f.brand, f.serving_desc, f.calories::float8 c, f.protein::float8 p, "
+            "f.source, f.source_id, COUNT(l.id) uses, MAX(l.logged_at) last_used "
+            "FROM foods f LEFT JOIN food_log l ON l.food_id=f.id "
+            "WHERE (f.is_mine OR EXISTS (SELECT 1 FROM food_log x WHERE x.food_id=f.id)) "
+            "AND (f.name ILIKE $1 OR COALESCE(f.brand,'') ILIKE $1) GROUP BY f.id LIMIT 60",
+            like)
+    finally:
+        await conn.close()
+    mine = sorted(mine, key=lambda m: (_food_rank(m["name"], m["brand"], q), -m["uses"],
+                                       -(m["last_used"].timestamp() if m["last_used"] else 0), m["name"]))[:8]
+    results = [{"food_id": m["id"], "name": m["name"], "brand": m["brand"],
+                "serving_desc": m["serving_desc"], "calories": round(m["c"], 1),
+                "protein": round(m["p"], 1), "source": m["source"], "source_id": m["source_id"],
+                "mine": True} for m in mine]
+    seen = {(m["source"], m["source_id"]) for m in mine if m["source_id"]}
+    # OFF/USDA match whole words, so a half-typed last word ("chicken br") finds nothing. Ask them for
+    # the complete words only and pull a deeper page; the relevance filter below applies the full query.
+    words = q.split()
+    partial_tail = len(words) > 1 and len(words[-1]) <= 3
+    ext_q, lim = (" ".join(words[:-1]), 20) if partial_tail else (q, 5)
+    off, usda = await asyncio.gather(_search_off(ext_q, lim), _search_usda(ext_q, lim))
+    ext_all = [e for e in off + usda]
+    ext = [e for e in ext_all if _food_rank(e["name"], e.get("brand"), q) < 9]
+    if not ext and not mine:
+        ext = ext_all          # nothing relevant anywhere: show the raw hits rather than an empty list
+    ext.sort(key=lambda e: _food_rank(e["name"], e.get("brand"), q))   # stable: keeps source order within a rank
+    for e in ext:
+        key = (e["source"], e["source_id"])
+        if e["source_id"] and key in seen:
+            continue
+        seen.add(key)
+        results.append({**e, "food_id": None, "mine": False})
+    return results[:16]
+
+
 @app.get("/api/app/v1/foods/search")
 async def app_foods_search(request: Request, q: str = ""):
+    """Partial, case-insensitive search. Own foods (saved OR previously logged) come first, ranked
+    exact > prefix > word-prefix > contains then by how often they're logged; Open Food Facts and
+    USDA are queried at the same time (not one after the other) and filtered/ranked the same way."""
     if not _app_auth_ok(request):
         return _app_401()
-    q = (q or "").strip()
+    q = " ".join((q or "").split())
     if len(q) < 2:
         return {"ok": True, "query": q, "results": []}
     try:
-        conn = await pg_conn()
-        try:
-            await _ensure_app_schema(conn)
-            mine = await conn.fetch(
-                "SELECT f.id, f.name, f.brand, f.serving_desc, f.calories::float8 c, f.protein::float8 p, "
-                "f.source, f.source_id, COUNT(l.id) uses "
-                "FROM foods f LEFT JOIN food_log l ON l.food_id=f.id "
-                "WHERE f.is_mine AND f.name ILIKE $1 GROUP BY f.id ORDER BY uses DESC, f.name LIMIT 8",
-                f"%{q}%")
-        finally:
-            await conn.close()
-        results = [{"food_id": m["id"], "name": m["name"], "brand": m["brand"],
-                    "serving_desc": m["serving_desc"], "calories": round(m["c"], 1),
-                    "protein": round(m["p"], 1), "source": m["source"], "source_id": m["source_id"],
-                    "mine": True} for m in mine]
-        seen = {(m["source"], m["source_id"]) for m in mine if m["source_id"]}
-        for ext in (await _search_off(q)) + (await _search_usda(q)):
-            key = (ext["source"], ext["source_id"])
-            if ext["source_id"] and key in seen:
-                continue
-            seen.add(key)
-            results.append({**ext, "food_id": None, "mine": False})
-        return {"ok": True, "query": q, "results": results[:16]}
+        return {"ok": True, "query": q, "results": await _search_foods(q)}
     except Exception as e:
         logger.error(f"/api/app/v1/foods/search error: {e}")
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
@@ -4240,6 +4321,31 @@ async def app_foods_mine(request: Request):
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
+async def _do_food_log(conn, data, servings, client_id=None):
+    """Insert one food_log row for today (local). -> (status, result dict). Shared by the app and dashboard."""
+    if data.get("food_id"):
+        food = await conn.fetchrow(
+            "SELECT id, name, calories::float8 c, protein::float8 p FROM foods WHERE id=$1", int(data["food_id"]))
+        if not food:
+            return 404, {"ok": False, "error": "food not found"}
+        fid, fname, per_c, per_p = food["id"], food["name"], food["c"], food["p"]
+    else:
+        if not (data.get("name")):
+            return 400, {"ok": False, "error": "food_id or name required"}
+        fid = await _cache_food(conn, data)
+        fname, per_c, per_p = data.get("name"), _f(data.get("calories")), _f(data.get("protein"))
+    tot_c, tot_p = round(per_c * servings, 1), round(per_p * servings, 1)
+    d = datetime.now(LOCAL_TZ).date()
+    log_id = await conn.fetchval(
+        "INSERT INTO food_log (user_id, food_id, food_name, servings, calories, protein, log_date, client_id) "
+        "VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id",
+        OWNER_ID, fid, fname, servings, tot_c, tot_p, d, client_id)
+    nutrition = await _nutrition_today(conn)
+    result = {"ok": True, "id": log_id, "food_name": fname, "servings": servings,
+              "calories": tot_c, "protein": tot_p, "nutrition": nutrition}
+    return 200, result
+
+
 @app.post("/api/app/v1/food-log")
 async def app_food_log(request: Request):
     """Log a food. Body: {food_id} OR {name,calories,protein,source?,source_id?,serving_desc?,brand?,mine?},
@@ -4261,26 +4367,9 @@ async def app_food_log(request: Request):
         cached = await _idem_get(conn, client_id)
         if cached is not None:
             return cached
-        if data.get("food_id"):
-            food = await conn.fetchrow(
-                "SELECT id, name, calories::float8 c, protein::float8 p FROM foods WHERE id=$1", int(data["food_id"]))
-            if not food:
-                return JSONResponse({"ok": False, "error": "food not found"}, status_code=404)
-            fid, fname, per_c, per_p = food["id"], food["name"], food["c"], food["p"]
-        else:
-            if not (data.get("name")):
-                return JSONResponse({"ok": False, "error": "food_id or name required"}, status_code=400)
-            fid = await _cache_food(conn, data)
-            fname, per_c, per_p = data.get("name"), _f(data.get("calories")), _f(data.get("protein"))
-        tot_c, tot_p = round(per_c * servings, 1), round(per_p * servings, 1)
-        d = datetime.now(LOCAL_TZ).date()
-        log_id = await conn.fetchval(
-            "INSERT INTO food_log (user_id, food_id, food_name, servings, calories, protein, log_date, client_id) "
-            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id",
-            OWNER_ID, fid, fname, servings, tot_c, tot_p, d, client_id)
-        nutrition = await _nutrition_today(conn)
-        result = {"ok": True, "id": log_id, "food_name": fname, "servings": servings,
-                  "calories": tot_c, "protein": tot_p, "nutrition": nutrition}
+        status, result = await _do_food_log(conn, data, servings, client_id)
+        if status != 200:
+            return JSONResponse(result, status_code=status)
         await _idem_put(conn, client_id, "food_log", result)
     finally:
         await conn.close()
@@ -4301,6 +4390,80 @@ async def app_food_log_delete(log_id: int, request: Request):
     finally:
         await conn.close()
     return {"ok": True, "id": log_id, "nutrition": nutrition}
+
+
+# ---- Dashboard food log (S101): the Command Center "Food log" card. Same data and helpers as the app
+# routes above, but without the app bearer token (this dashboard is Tailscale-only, like every other
+# /api/ route the pages call). "Today" is the Melbourne day (LOCAL_TZ).
+@app.get("/api/food-log")
+async def api_food_log(request: Request):
+    raw = (request.query_params.get("date") or "").strip()
+    try:
+        d = date.fromisoformat(raw) if raw else datetime.now(LOCAL_TZ).date()
+    except ValueError:
+        return JSONResponse({"ok": False, "error": "date must be YYYY-MM-DD"}, status_code=400)
+    conn = await pg_conn()
+    try:
+        await _ensure_app_schema(conn)
+        rows = await conn.fetch(
+            "SELECT id, food_name, servings::float8 s, calories::float8 c, protein::float8 p, logged_at "
+            "FROM food_log WHERE user_id=$1 AND log_date=$2 ORDER BY logged_at DESC, id DESC", OWNER_ID, d)
+        tc, tp = await _nutrition_targets(conn)
+    finally:
+        await conn.close()
+    eaten_c = round(sum(r["c"] for r in rows), 1)
+    eaten_p = round(sum(r["p"] for r in rows), 1)
+    return {"ok": True, "date": d.isoformat(),
+            "entries": [{"id": r["id"], "food_name": r["food_name"], "servings": r["s"], "calories": r["c"],
+                         "protein": r["p"], "time": r["logged_at"].astimezone(LOCAL_TZ).strftime("%H:%M")}
+                        for r in rows],
+            "totals": {"calories": eaten_c, "protein": eaten_p, "calorie_target": tc, "protein_target": tp}}
+
+
+@app.get("/api/food-search")
+async def api_food_search(q: str = ""):
+    q = " ".join((q or "").split())
+    if len(q) < 2:
+        return {"ok": True, "query": q, "results": []}
+    try:
+        return {"ok": True, "query": q, "results": await _search_foods(q)}
+    except Exception as e:
+        logger.error(f"/api/food-search error: {e}")
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.post("/api/food-log")
+async def api_food_log_add(request: Request):
+    """Body: a search result item ({food_id} or {name,calories,protein,source,source_id,...}) + servings?."""
+    data = await _json_body(request)
+    try:
+        servings = float(data.get("servings", 1) or 1)
+    except (TypeError, ValueError):
+        servings = 1.0
+    if not (0 < servings <= 20):
+        return JSONResponse({"ok": False, "error": "servings must be between 0 and 20"}, status_code=400)
+    conn = await pg_conn()
+    try:
+        await _ensure_app_schema(conn)
+        status, result = await _do_food_log(conn, data, servings)
+    finally:
+        await conn.close()
+    await _bust_command_center()
+    return result if status == 200 else JSONResponse(result, status_code=status)
+
+
+@app.delete("/api/food-log/{log_id}")
+async def api_food_log_delete(log_id: int):
+    conn = await pg_conn()
+    try:
+        await _ensure_app_schema(conn)
+        status = await conn.execute("DELETE FROM food_log WHERE id=$1 AND user_id=$2", log_id, OWNER_ID)
+        if _changed_zero(status):
+            return JSONResponse({"ok": False, "error": f"no food-log #{log_id}"}, status_code=404)
+    finally:
+        await conn.close()
+    await _bust_command_center()
+    return {"ok": True, "id": log_id}
 
 
 @app.get("/api/app/v1/foods/barcode/{code}")
