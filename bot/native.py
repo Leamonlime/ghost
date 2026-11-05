@@ -441,7 +441,15 @@ async def _today_taps(conn, habit_id, d):
         habit_id, d)
     agg = {"up": 0, "down": 0, "check": 0, "value": 0.0}
     for r in rows:
-        agg[r["direction"]] = r["n"]
+        if r["direction"] in agg:
+            agg[r["direction"]] = r["n"]
+    # Un-tick is append-only: an 'uncheck' tap voids every 'check' tap recorded before it that day
+    # (the log keeps the history; only checks AFTER the last uncheck count).
+    agg["check"] = await conn.fetchval(
+        """SELECT COUNT(*) FROM habit_taps t WHERE t.habit_id=$1 AND t.tap_date=$2 AND t.direction='check'
+           AND t.id > COALESCE((SELECT MAX(u.id) FROM habit_taps u WHERE u.habit_id=t.habit_id
+                                AND u.tap_date=t.tap_date AND u.direction='uncheck'), 0)""",
+        habit_id, d)
     # S92: sum of logged values today (value-entry habits)
     v = await conn.fetchval(
         "SELECT COALESCE(SUM(value),0) FROM habit_taps WHERE habit_id=$1 AND tap_date=$2", habit_id, d)
@@ -513,8 +521,9 @@ async def _reconcile_streak(conn, habit, d):
 async def tap_habit(habit_id, direction="up", value=None):
     """Record a habit tap and update its streak. direction: up|down|check. `value` (S92) is an
     optional logged number (reps/seconds/ml) stored on the tap for value-entry habits.
+    direction 'uncheck' reverts a tickbox for today (append-only; see _today_taps).
     Returns {ok, habit, direction, streak, counted, value} or {ok:False,error}."""
-    if direction not in ("up", "down", "check"):
+    if direction not in ("up", "down", "check", "uncheck"):
         direction = "up"
     if value is not None:
         try:

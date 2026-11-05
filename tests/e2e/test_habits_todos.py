@@ -714,3 +714,15 @@ def test_page_loads_cleanly_with_no_console_or_network_errors(page, api):
     api.create_habit(unique("clean-h")); api.create_todo(unique("clean-t"))
     load(page)
     reload(page)   # the `page` fixture fails the test if anything was logged
+
+
+def test_habits_tickbox_untick_then_retick_credits_streak_once(page, api):
+    name = unique("retick")
+    h = api.create_habit(name)
+    for d in ("check", "uncheck", "check"):
+        api.tap(h, d)
+    s = api.habit(h)
+    assert s["done_today"] is True and s["streak"] == 1, s
+    api.tap(h, "uncheck"); api.tap(h, "uncheck")        # double un-tick is harmless
+    s = api.habit(h)
+    assert s["done_today"] is False and s["streak"] == 0, s

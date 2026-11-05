@@ -213,7 +213,7 @@
     var meta = esc(h.frequency_label) + " · " + esc(h.field_label);
     var taps = "";
     if(h.field_type==="tickbox"){
-      taps = '<div class="tap-btns"><div class="tap-btn check '+(h.done_today?"on":"")+'" title="tick" onclick="tap('+h.id+',\'check\')">✓</div></div>';
+      taps = '<div class="tap-btns"><div class="tap-btn check '+(h.done_today?"on":"")+'" title="'+(h.done_today?"un-tick":"tick")+'" onclick="tap('+h.id+',\''+(h.done_today?"uncheck":"check")+'\')">✓</div></div>';
     } else if(h.field_type==="checklist"){
       taps = '<div class="tap-btns"></div>';   // S77: empty cell keeps the 5-track grid aligned
     } else if(h.field_type==="positive"){
