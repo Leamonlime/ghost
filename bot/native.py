@@ -48,7 +48,8 @@ async def pg_conn():
     """The one shared Postgres connection helper for native (and, via delegation, for the
     new query paths in bot.py/dashboard.py). Caller closes."""
     return await asyncpg.connect(host=POSTGRES_HOST, port=5432, user="postgres",
-                                 password=POSTGRES_PASSWORD, database="ghost_db")
+                                 password=POSTGRES_PASSWORD,
+                                 database=os.environ.get("GHOST_DB_NAME", "ghost_db"))
 
 
 def today_local() -> date:
