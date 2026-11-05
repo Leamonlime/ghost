@@ -654,7 +654,7 @@ async def _native_task_list(limit=8):
             rows = await conn.fetch(
                 "SELECT text FROM todos WHERE NOT done AND NOT archived "
                 "ORDER BY "
-                "CASE priority WHEN 'high' THEN 0 WHEN 'med' THEN 1 ELSE 2 END, id LIMIT $1", limit)
+                "CASE priority WHEN 'high' THEN 0 WHEN 'med' THEN 1 ELSE 2 END, due_date NULLS LAST, id LIMIT $1", limit)
         finally:
             await conn.close()
         return [r["text"] for r in rows]
