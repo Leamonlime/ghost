@@ -20,7 +20,10 @@ UID = 990077
 
 
 def run(coro):
-    return asyncio.run(coro)
+    # Playwright's session fixtures leave an event loop running in this thread; use a fresh thread.
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(1) as ex:
+        return ex.submit(asyncio.run, coro).result()
 
 
 @pytest.fixture(autouse=True)
