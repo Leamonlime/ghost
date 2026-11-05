@@ -141,3 +141,18 @@ def test_negative_habit_streak_is_clean_days_since_last_down_tap_with_no_up_tap_
         await _taps(hid, [SUN], "down")
         assert (await _state(hid))["streak"] == 0
     run(go())
+
+
+def test_negative_habit_with_a_running_streak_resets_to_zero_on_a_slip():
+    async def go():
+        hid = await _mk(name="ZZ-TEST smoke2", field_type="negative")
+        c = await native.pg_conn()
+        await c.execute("UPDATE habits SET created_at=now() - interval '30 days' WHERE id=$1", hid)
+        await c.close()
+        before = (await _state(hid))["streak"]
+        assert before >= 20, before
+        res = await native.tap_habit(hid, "down")
+        assert res["ok"]
+        after = await _state(hid)
+        assert after["streak"] == 0 and after["today_down"] == 1, after
+    run(go())

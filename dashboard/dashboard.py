@@ -67,6 +67,12 @@ async def _bust_native():
         await bot._bust_native_cache()
     except Exception:
         pass
+    try:   # the home page (Command Center) now reads native habits/todos, so refresh it too
+        r = redis_conn()
+        await r.delete("command_center")
+        await r.aclose()
+    except Exception:
+        pass
 
 async def _bust_command_center():
     """Drop the 25s Command Center cache after a food-log write so the nutrition gauge is current."""
@@ -1137,6 +1143,15 @@ async def api_habit_checklist_optional(request: Request):
 async def api_habit_log_date(request: Request):
     body = await _json_body(request)
     r = await native.set_habit_log_date(int(body.get("id") or 0), on=bool(body.get("on", True)), log_date=body.get("date"))
+    await _bust_native()
+    return r if r.get("ok") else JSONResponse(r, status_code=400)
+
+
+@app.post("/api/habits/log-date/edit")
+async def api_habit_log_date_edit(request: Request):
+    """Change or clear a saved Log date: {id, old_date?, new_date? (empty = clear)}."""
+    body = await _json_body(request)
+    r = await native.move_habit_log_date(int(body.get("id") or 0), body.get("old_date"), body.get("new_date"))
     await _bust_native()
     return r if r.get("ok") else JSONResponse(r, status_code=400)
 

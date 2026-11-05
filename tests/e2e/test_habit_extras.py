@@ -69,7 +69,7 @@ def test_log_date_tick_records_todays_date_and_persists_without_ticking_the_habi
         assert s["logged_dates"] == [today()] and s["logged_today"] is True, s
         assert s["done_today"] is False and s["streak"] == 0, "the second tick must not complete the habit"
         expect(habit_row(page, name).locator(".logdate-btn")).to_have_class(re.compile(r"\bon\b"))
-        expect(habit_row(page, name)).to_contain_text("last: " + today())
+        expect(habit_row(page, name).locator(".logdate-edit")).to_have_value(today())
         reload(page)
 
 

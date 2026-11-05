@@ -28,7 +28,6 @@ HABITS = [
     ("Smoking", {"field_type": "negative"}),
     # ---- routines (daily checklists)
     ("Morning routine", {"field_type": "checklist", "checklist": [
-        "Feed the cats",
         "Slow morning: check the day's todos in Ghost",
         "Slow morning: stretch?", "Slow morning: journal?", "Slow morning: read?", "Slow morning: meditate?",
         "Up: track weight", "Up: supplements + protein shake", "Up: brush teeth", "Up: face/skincare",

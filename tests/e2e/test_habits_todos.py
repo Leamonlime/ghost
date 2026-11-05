@@ -170,7 +170,6 @@ def test_habits_counter_positive_increments_persist(page, api):
     assert state["done_today"] is True and streak_of(row) == 1
 
 
-@ABSENT
 def test_habits_counter_positive_shows_todays_count_in_ui(page, api):
     """After 3 taps the row should show the count somewhere (the API has today_up=3)."""
     name = unique("counter-visible")
@@ -180,8 +179,7 @@ def test_habits_counter_positive_shows_todays_count_in_ui(page, api):
     load(page)
     row = habit_row(page, name)
     text = row.locator(".row-main").inner_text() + row.locator(".tap-btns").inner_text()
-    if not re.search(r"\b3\b", text):
-        raise FeatureAbsent("no visible today-count on a counter habit (API has today_up=3); row text=" + repr(text))
+    assert re.search(r"\b3 today\b", text), "no visible today-count on a counter habit (API has today_up=3); row text=" + repr(text)
 
 
 def test_habits_negative_decrement_persist(page, api):

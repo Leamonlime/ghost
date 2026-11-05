@@ -866,6 +866,39 @@ async def set_habit_log_date(habit_id, on=True, log_date=None):
         await conn.close()
 
 
+async def move_habit_log_date(habit_id, old_date=None, new_date=None):
+    """Edit a saved "Log date": deactivate old_date and activate new_date (the row is kept, flipped
+    inactive, like every other delete). new_date empty/None clears it. old_date empty/None just
+    adds new_date. Both are ISO dates. Returns {ok, cleared|date, logged_dates}."""
+    def _d(v):
+        return date.fromisoformat(str(v)[:10]) if v else None
+    try:
+        old, new = _d(old_date), _d(new_date)
+    except ValueError:
+        return {"ok": False, "error": "date must be YYYY-MM-DD"}
+    if old is None and new is None:
+        return {"ok": False, "error": "nothing to change"}
+    conn = await pg_conn()
+    try:
+        await ensure_schema(conn)
+        h = await conn.fetchrow("SELECT log_date_label FROM habits WHERE id=$1 AND active=TRUE", habit_id)
+        if not h:
+            return {"ok": False, "error": "habit not found"}
+        if not h["log_date_label"]:
+            return {"ok": False, "error": "this habit has no log-date tick"}
+        if old is not None and old != new:
+            await conn.execute("UPDATE habit_date_log SET active=FALSE WHERE habit_id=$1 AND log_date=$2", habit_id, old)
+        if new is not None:
+            await conn.execute(
+                """INSERT INTO habit_date_log (habit_id, log_date, active) VALUES ($1,$2,TRUE)
+                   ON CONFLICT (habit_id, log_date) DO UPDATE SET active=TRUE, logged_at=now()""", habit_id, new)
+        dates = [r["log_date"].isoformat() for r in await conn.fetch(
+            "SELECT log_date FROM habit_date_log WHERE habit_id=$1 AND active ORDER BY log_date DESC LIMIT 8", habit_id)]
+        return {"ok": True, "date": new.isoformat() if new else None, "cleared": new is None, "logged_dates": dates}
+    finally:
+        await conn.close()
+
+
 async def rename_checklist_item(kind, item_id, text):
     """Rename one checklist item. kind: 'habit' | 'todo'."""
     text = (text or "").strip()
@@ -1142,7 +1175,8 @@ async def list_todos(user_id=None, include_done=True, conn=None):
         await ensure_schema(conn)
         uid = user_id if user_id is not None else DEFAULT_USER_ID
         rows = await conn.fetch(
-            "SELECT * FROM todos WHERE user_id=$1 AND archived=FALSE ORDER BY done, due_date NULLS LAST, id", uid)
+            "SELECT * FROM todos WHERE user_id=$1 AND archived=FALSE ORDER BY done, "
+            "CASE priority WHEN 'high' THEN 0 WHEN 'med' THEN 1 ELSE 2 END, due_date NULLS LAST, id", uid)
         d = today_local()
         out = []
         for t in rows:
