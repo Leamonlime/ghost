@@ -1,0 +1,20 @@
+name: e2e-collect
+
+# The Habits/Todos CRUD suite (tests/e2e) needs the live dashboard + Postgres, so CI only proves
+# it still imports and collects. Run it for real against a deployed dashboard - see tests/e2e/README.md.
+on:
+  push:
+    paths: ["tests/e2e/**"]
+  pull_request:
+    paths: ["tests/e2e/**"]
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pytest playwright
+      - run: python3 -m pytest tests/e2e --collect-only -q
