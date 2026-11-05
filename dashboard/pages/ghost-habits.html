@@ -69,12 +69,12 @@
   /* S77: habit row is a FIXED-TRACK grid so the streak pill forms a straight column regardless of
      which tap-control (tickbox / single / dual / none-for-checklist) precedes it. Tracks:
      icon | name(flex) | tap-controls(fixed) | streak(fixed) | archive. */
-  .habit-row{display:grid;grid-template-columns:28px 1fr 62px 54px 24px;align-items:center;gap:10px;padding:10px 4px;border-bottom:1px solid var(--border-2);}
+  .habit-row{display:grid;grid-template-columns:28px minmax(0,1fr) 62px 54px 24px;align-items:center;gap:10px;padding:10px 4px;border-bottom:1px solid var(--border-2);}
   .habit-row .tap-btns{justify-content:flex-end;}   /* buttons hug the streak column within their fixed track */
   .habit-row:last-child,.todo-row:last-child{border-bottom:none;}
   .row-icon{width:28px;height:28px;border-radius:3px;flex-shrink:0;display:flex;align-items:center;justify-content:center;border:1px solid var(--border);color:var(--ink-dim);font-size:13px;}
   .row-main{flex:1;min-width:0;}
-  .row-name{font-size:13.5px;font-weight:500;color:var(--ink);}
+  .row-name{font-size:13.5px;font-weight:500;color:var(--ink);overflow-wrap:anywhere;word-break:break-word;}
   .row-name.done{color:var(--ink-faint);text-decoration:line-through;}
   .row-meta{font-size:9.5px;color:var(--ink-faint);margin-top:2px;font-variant:small-caps;letter-spacing:0.02em;}
 
@@ -91,7 +91,7 @@
   .tap-btn:active{transform:scale(0.92);}
 
   .checklist-mini{padding-left:38px;margin-top:-2px;padding-bottom:8px;}
-  .checklist-item{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--ink-dim);padding:3px 0;cursor:pointer;}
+  .checklist-item{overflow-wrap:anywhere;display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--ink-dim);padding:3px 0;cursor:pointer;}
   .checklist-item .box{width:12px;height:12px;border-radius:2px;border:1.5px solid var(--ink-faintest);flex-shrink:0;}
   .checklist-item.done{color:var(--ink-faint);text-decoration:line-through;}
   .checklist-item.done .box{background:var(--ink);border-color:var(--ink);}
