@@ -101,6 +101,17 @@ ALTER TABLE habits ADD COLUMN IF NOT EXISTS unit TEXT;
 -- period targets: a weekly count can be a range (min..max), a value habit has target_value..target_max
 ALTER TABLE habits ADD COLUMN IF NOT EXISTS frequency_count_max INT;
 ALTER TABLE habits ADD COLUMN IF NOT EXISTS target_max NUMERIC;
+-- optional checklist items never block completion of the parent
+ALTER TABLE habit_checklist ADD COLUMN IF NOT EXISTS optional BOOLEAN NOT NULL DEFAULT FALSE;
+-- "Log date": an optional SECOND tick on a habit. A normal tick never writes here.
+ALTER TABLE habits ADD COLUMN IF NOT EXISTS log_date_label TEXT;
+CREATE TABLE IF NOT EXISTS habit_date_log (
+    habit_id BIGINT NOT NULL REFERENCES habits(id) ON DELETE CASCADE,
+    log_date DATE NOT NULL,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    logged_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (habit_id, log_date)
+);
 -- checklist item delete is a SOFT delete (same policy as habit/todo archive: history is kept)
 ALTER TABLE habit_checklist ADD COLUMN IF NOT EXISTS deleted BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE todo_checklist ADD COLUMN IF NOT EXISTS deleted BOOLEAN NOT NULL DEFAULT FALSE;
@@ -208,6 +219,17 @@ async def _record_momentum(conn, item_id, source, bucket):
 # ---------------------------------------------------------------------------
 # Create
 # ---------------------------------------------------------------------------
+def _parse_item(item):
+    """Checklist item spec -> (text, optional). Accepts 'text', 'text?' (trailing ? = optional) or
+    {'text':..., 'optional':bool}."""
+    if isinstance(item, dict):
+        return (item.get("text") or "").strip(), bool(item.get("optional"))
+    t = (item or "").strip()
+    if t.endswith("?") and len(t) > 1:
+        return t[:-1].strip(), True
+    return t, False
+
+
 def _num(v, cast=float):
     if v in (None, ""):
         return None
@@ -223,7 +245,8 @@ async def create_habit(name, field_type="tickbox", frequency_kind="weekdays",
                        streak_rule="net_positive", streak_min_taps=None,
                        checklist=None, user_id=None,
                        streak_count=0, habitica_source_id=None,
-                       frequency_count_max=None, target_value=None, target_max=None, unit=None):
+                       frequency_count_max=None, target_value=None, target_max=None, unit=None,
+                       log_date_label=None):
     """Create a native habit. Returns the new row id, or None on invalid input.
     streak_count seeds the visible streak (Session 75 Habitica import carries the existing streak
     over so momentum isn't lost); when >0, last_streak_date is set to today so it reads as a live
@@ -267,19 +290,19 @@ async def create_habit(name, field_type="tickbox", frequency_kind="weekdays",
             """INSERT INTO habits (user_id, name, field_type, frequency_kind, frequency_days,
                    frequency_count, bucket, streak_rule, streak_min_taps,
                    streak_count, streak_best, last_streak_date, habitica_source_id,
-                   frequency_count_max, target_value, target_max, unit)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,$11,$12,$13,$14,$15,$16) RETURNING id""",
+                   frequency_count_max, target_value, target_max, unit, log_date_label)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id""",
             uid, name, field_type, frequency_kind, frequency_days, frequency_count,
             bucket, streak_rule, streak_min_taps,
             streak_count, last_streak_date, habitica_source_id,
-            frequency_count_max, target_value, target_max, unit)
+            frequency_count_max, target_value, target_max, unit, (log_date_label or "").strip() or None)
         if field_type == "checklist" and checklist:
-            for i, item in enumerate(checklist):
-                item = (item or "").strip()
+            for i, spec in enumerate(checklist):
+                item, optional = _parse_item(spec)
                 if item:
                     await conn.execute(
-                        "INSERT INTO habit_checklist (habit_id, text, position) VALUES ($1,$2,$3)",
-                        hid, item, i)
+                        "INSERT INTO habit_checklist (habit_id, text, position, optional) VALUES ($1,$2,$3,$4)",
+                        hid, item, i, optional)
         return hid
     finally:
         await conn.close()
@@ -486,13 +509,13 @@ async def _today_taps(conn, habit_id, d):
 
 
 async def _checklist_all_done(conn, habit_id, d):
-    total = await conn.fetchval("SELECT COUNT(*) FROM habit_checklist WHERE habit_id=$1 AND NOT deleted", habit_id)
+    total = await conn.fetchval("SELECT COUNT(*) FROM habit_checklist WHERE habit_id=$1 AND NOT deleted AND NOT optional", habit_id)
     if not total:
         return False
     done = await conn.fetchval(
         """SELECT COUNT(*) FROM habit_checklist hc
            JOIN habit_checklist_state s ON s.checklist_id=hc.id AND s.state_date=$2
-           WHERE hc.habit_id=$1 AND NOT hc.deleted AND s.done=TRUE""", habit_id, d)
+           WHERE hc.habit_id=$1 AND NOT hc.deleted AND NOT hc.optional AND s.done=TRUE""", habit_id, d)
     return done >= total
 
 
@@ -561,9 +584,9 @@ async def _period_done(conn, h, a, b):
     if ft == "checklist":
         rows = await conn.fetch(
             """SELECT s.state_date FROM habit_checklist_state s JOIN habit_checklist hc ON hc.id=s.checklist_id
-               WHERE hc.habit_id=$1 AND NOT hc.deleted AND s.done AND s.state_date BETWEEN $2 AND $3
+               WHERE hc.habit_id=$1 AND NOT hc.deleted AND NOT hc.optional AND s.done AND s.state_date BETWEEN $2 AND $3
                GROUP BY s.state_date
-               HAVING COUNT(*) >= (SELECT COUNT(*) FROM habit_checklist WHERE habit_id=$1 AND NOT deleted)""", hid, a, b)
+               HAVING COUNT(*) >= GREATEST(1, (SELECT COUNT(*) FROM habit_checklist WHERE habit_id=$1 AND NOT deleted AND NOT optional))""", hid, a, b)
         return len(rows)
     rows = await conn.fetch(
         "SELECT DISTINCT tap_date FROM habit_taps WHERE habit_id=$1 AND tap_date BETWEEN $2 AND $3 AND direction='up'",
@@ -778,10 +801,10 @@ async def add_todo_checklist_item(todo_id, text):
         await conn.close()
 
 
-async def add_habit_checklist_item(habit_id, text):
+async def add_habit_checklist_item(habit_id, text, optional=None):
     """Add a checklist item to an existing checklist habit (S64 — Session 62 only supported items
     set at create time). Returns the new item id, or None on invalid input."""
-    text = (text or "").strip()
+    text, opt = _parse_item({"text": text, "optional": optional} if optional is not None else text)
     if not text:
         return {"ok": False, "error": "empty item text"}
     conn = await pg_conn()
@@ -793,9 +816,52 @@ async def add_habit_checklist_item(habit_id, text):
         pos = await conn.fetchval(
             "SELECT COALESCE(MAX(position),-1)+1 FROM habit_checklist WHERE habit_id=$1", habit_id)
         cid = await conn.fetchval(
-            "INSERT INTO habit_checklist (habit_id, text, position) VALUES ($1,$2,$3) RETURNING id",
-            habit_id, text, pos)
-        return {"ok": True, "id": cid, "text": text}
+            "INSERT INTO habit_checklist (habit_id, text, position, optional) VALUES ($1,$2,$3,$4) RETURNING id",
+            habit_id, text, pos, opt)
+        habit = await conn.fetchrow("SELECT * FROM habits WHERE id=$1", habit_id)
+        await _reconcile_streak(conn, habit, today_local())
+        return {"ok": True, "id": cid, "text": text, "optional": opt}
+    finally:
+        await conn.close()
+
+
+async def set_checklist_item_optional(item_id, optional):
+    """Mark a habit checklist item optional (never blocks completion) or required again."""
+    conn = await pg_conn()
+    try:
+        await ensure_schema(conn)
+        row = await conn.fetchrow("SELECT habit_id FROM habit_checklist WHERE id=$1 AND NOT deleted", item_id)
+        if not row:
+            return {"ok": False, "error": "checklist item not found"}
+        await conn.execute("UPDATE habit_checklist SET optional=$1 WHERE id=$2", bool(optional), item_id)
+        habit = await conn.fetchrow("SELECT * FROM habits WHERE id=$1", row["habit_id"])
+        streak = await _reconcile_streak(conn, habit, today_local())
+        return {"ok": True, "id": item_id, "optional": bool(optional), "streak": streak}
+    finally:
+        await conn.close()
+
+
+async def set_habit_log_date(habit_id, on=True, log_date=None):
+    """The optional second tick: record (on=True) or clear (on=False) a date on a habit that has a
+    log_date_label. Defaults to today. Clearing flips active off, the row is kept. A normal tick
+    (tap_habit) never touches this."""
+    try:
+        d = date.fromisoformat(str(log_date)[:10]) if log_date else today_local()
+    except ValueError:
+        return {"ok": False, "error": "date must be YYYY-MM-DD"}
+    conn = await pg_conn()
+    try:
+        await ensure_schema(conn)
+        h = await conn.fetchrow("SELECT log_date_label FROM habits WHERE id=$1 AND active=TRUE", habit_id)
+        if not h:
+            return {"ok": False, "error": "habit not found"}
+        if not h["log_date_label"]:
+            return {"ok": False, "error": "this habit has no log-date tick"}
+        await conn.execute(
+            """INSERT INTO habit_date_log (habit_id, log_date, active) VALUES ($1,$2,$3)
+               ON CONFLICT (habit_id, log_date) DO UPDATE SET active=EXCLUDED.active, logged_at=now()""",
+            habit_id, d, bool(on))
+        return {"ok": True, "date": d.isoformat(), "on": bool(on)}
     finally:
         await conn.close()
 
@@ -880,7 +946,7 @@ async def edit_todo(todo_id, text=None, priority=None, due_date="__keep__"):
 
 async def edit_habit(habit_id, name=None, field_type=None, frequency_kind=None,
                      frequency_days="__keep__", frequency_count="__keep__", frequency_count_max="__keep__",
-                     target_value="__keep__", target_max="__keep__", unit="__keep__"):
+                     target_value="__keep__", target_max="__keep__", unit="__keep__", log_date_label="__keep__"):
     """Edit a habit's name / type / frequency. Streak and history are kept. Changing the type or
     frequency re-reconciles today's streak against the new rule."""
     sets, args = [], []
@@ -907,6 +973,8 @@ async def edit_habit(habit_id, name=None, field_type=None, frequency_kind=None,
             args.append(_num(val, cast)); sets.append(f"{col}=${len(args)}")
     if unit != "__keep__":
         args.append((unit or "").strip() or None); sets.append(f"unit=${len(args)}")
+    if log_date_label != "__keep__":
+        args.append((log_date_label or "").strip() or None); sets.append(f"log_date_label=${len(args)}")
     if not sets:
         return {"ok": False, "error": "nothing to update"}
     conn = await pg_conn()
@@ -1045,12 +1113,20 @@ async def list_habits(user_id=None, conn=None):
                 item["streak_best"] = max(h["streak_best"], item["streak"])
             if h["field_type"] == "checklist":
                 citems = await conn.fetch(
-                    """SELECT hc.id, hc.text,
+                    """SELECT hc.id, hc.text, hc.optional,
                               COALESCE(s.done, FALSE) AS done
                        FROM habit_checklist hc
                        LEFT JOIN habit_checklist_state s ON s.checklist_id=hc.id AND s.state_date=$2
                        WHERE hc.habit_id=$1 AND NOT hc.deleted ORDER BY hc.position, hc.id""", h["id"], d)
-                item["checklist"] = [{"id": c["id"], "text": c["text"], "done": c["done"]} for c in citems]
+                item["checklist"] = [{"id": c["id"], "text": c["text"], "done": c["done"], "optional": c["optional"]}
+                                     for c in citems]
+            if h["log_date_label"]:
+                dates = [r["log_date"] for r in await conn.fetch(
+                    "SELECT log_date FROM habit_date_log WHERE habit_id=$1 AND active ORDER BY log_date DESC LIMIT 8", h["id"])]
+                item["logged_dates"] = [x.isoformat() for x in dates]
+                item["logged_today"] = d in dates
+                item["last_logged"] = dates[0].isoformat() if dates else None
+            item["log_date_label"] = h["log_date_label"]
             out.append(item)
         return out
     finally:

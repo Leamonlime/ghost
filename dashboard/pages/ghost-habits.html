@@ -117,6 +117,10 @@
   .bonus{color:var(--ok);font-weight:700;}
   .chk-line{display:flex;align-items:center;gap:6px;}
   .chk-line .checklist-item{flex:1;min-width:0;}
+  .opt-tag{font-size:8.5px;color:var(--ink-faintest);font-variant:small-caps;letter-spacing:0.04em;margin-left:4px;}
+  .logdate-btn{display:inline-block;margin-top:5px;font-size:10px;font-variant:small-caps;letter-spacing:0.04em;color:var(--ink-dim);border:1px solid var(--border);border-radius:12px;padding:2px 9px;cursor:pointer;}
+  .logdate-btn.on{color:#150e14;background:var(--accent);border-color:var(--accent);}
+  .item-opt{font-size:9px;line-height:1;color:var(--ink-faintest);cursor:pointer;padding:2px 4px;flex-shrink:0;} .item-opt:hover{color:var(--ink);}
   .item-edit,.item-del{font-size:10px;line-height:1;color:var(--ink-faintest);cursor:pointer;padding:2px 4px;border-radius:3px;flex-shrink:0;}
   .item-edit:hover{color:var(--ink);} .item-del:hover{color:var(--alert);}
   .row-edit{width:24px;height:24px;border-radius:3px;flex-shrink:0;display:flex;align-items:center;justify-content:center;border:1px solid var(--border);color:var(--ink-faintest);cursor:pointer;font-size:12px;line-height:1;}
@@ -188,7 +192,8 @@
         </span>
         <span id="hCount" class="pickrow" style="display:none;">times <input type="number" id="hCountMin" min="1" max="31" placeholder="min" style="width:56px"> to <input type="number" id="hCountMax" min="1" max="31" placeholder="max (opt.)" style="width:84px"></span>
         <span id="hTarget" class="pickrow" style="display:none;">target <input type="number" id="hTargetMin" min="0" step="any" placeholder="min" style="width:60px"> to <input type="number" id="hTargetMax" min="0" step="any" placeholder="max (opt.)" style="width:84px"> <input type="text" id="hUnit" placeholder="unit (hrs)" style="width:80px;flex:none;min-width:0"></span>
-        <input type="text" id="hItems" placeholder="checklist items, comma-separated (optional)">
+        <input type="text" id="hItems" placeholder="checklist items, comma-separated; end an item with ? to make it optional">
+        <span class="pickrow"><label><input type="checkbox" id="hLogOn" onchange="syncHabitForm()">second tick</label><input type="text" id="hLogLabel" placeholder="label" value="Log date" style="width:90px;flex:none;min-width:0;display:none"></span>
         <button class="go" id="hGo" onclick="createHabit()">Add</button>
       </div>
     </div>
@@ -242,7 +247,8 @@
     if(h.field_type==="value") return ' · '+fmt(h.today_value)+(h.unit?" "+esc(h.unit):"")+' today';
     if(h.field_type==="checklist"){
       var cl=h.checklist||[]; if(!cl.length) return "";
-      return ' · '+cl.filter(function(c){return c.done;}).length+' of '+cl.length;
+      var req=cl.filter(function(c){return !c.optional;}), od=cl.filter(function(c){return c.optional&&c.done;}).length;
+      return ' · '+req.filter(function(c){return c.done;}).length+' of '+req.length+(od?' (+'+od+' optional)':"");
     }
     return "";
   }
@@ -251,6 +257,8 @@
     var v = Number(raw); if(!(v>0)) return;
     fetch("/api/habits/tap",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:id,direction:"up",value:v})}).then(function(){ loadHabits(); });
   };
+  window.logDate = function(id, on){ post("/api/habits/log-date",{id:id,on:on}).then(function(){ loadHabits(); }); };
+  window.toggleOptional = function(id, opt){ post("/api/habits/checklist/optional",{id:id,optional:opt}).then(function(){ loadHabits(); }); };
   window.toggleOffDays = function(){ document.getElementById("habitsList").classList.toggle("show-off"); loadHabits(); };
   function habitRow(h){
     var streakCls = (h.period ? h.period.met : h.done_today) ? "done" : ((h.due_today && h.streak>0) ? "risk" : "");
@@ -276,7 +284,9 @@
     var edit = '<div class="row-edit" title="Edit" onclick="editHabit('+h.id+')">✎</div>';
     var row = '<div class="habit-row'+(h.due_today?'':' off-day')+'">'
       + '<div class="row-icon">◈</div>'
-      + '<div class="row-main"><div class="row-name">'+esc(h.name)+'</div><div class="row-meta">'+meta+(h.streak_rule==="min_taps"?(" · needs "+h.streak_min_taps+" taps"):"")+'</div></div>'
+      + '<div class="row-main"><div class="row-name">'+esc(h.name)+'</div><div class="row-meta">'+meta+(h.streak_rule==="min_taps"?(" · needs "+h.streak_min_taps+" taps"):"")+'</div>'
+        + (h.log_date_label ? '<div><span class="logdate-btn '+(h.logged_today?"on":"")+'" title="records today\'s date; a normal tick does not" onclick="logDate('+h.id+','+(!h.logged_today)+')">'+esc(h.log_date_label)+(h.logged_today?" ✓":"")+'</span>'+(h.last_logged?'<span class="row-meta" style="margin-left:8px">last: '+esc(h.last_logged)+'</span>':"")+'</div>' : "")
+        + '</div>'
       + taps
       + '<div class="streak-pill '+streakCls+'">🔥 '+h.streak+'</div>'
       + edit + del
@@ -287,8 +297,8 @@
       // so checklist habits had nothing to tick and no way to add.
       row += '<div class="checklist-mini">';
       (h.checklist||[]).forEach(function(c){
-        row += '<div class="chk-line"><div class="checklist-item '+(c.done?"done":"")+'" onclick="checkHabitItem('+c.id+','+(!c.done)+')"><span class="box"></span>'+esc(c.text)+'</div>'
-          + '<span class="item-edit" title="Rename item" onclick="renameItem(\'habit\','+c.id+')">✎</span><span class="item-del" title="Remove item" onclick="delItem(\'habit\','+c.id+')">✕</span></div>';
+        row += '<div class="chk-line"><div class="checklist-item '+(c.done?"done":"")+(c.optional?" optional":"")+'" onclick="checkHabitItem('+c.id+','+(!c.done)+')"><span class="box"></span>'+esc(c.text)+(c.optional?' <span class="opt-tag">optional</span>':"")+'</div>'
+          + '<span class="item-opt" title="'+(c.optional?"Make required":"Make optional")+'" onclick="toggleOptional('+c.id+','+(!c.optional)+')">'+(c.optional?"●":"○")+'</span><span class="item-edit" title="Rename item" onclick="renameItem(\'habit\','+c.id+')">✎</span><span class="item-del" title="Remove item" onclick="delItem(\'habit\','+c.id+')">✕</span></div>';
       });
       row += '<span class="chk-add" onclick="addChecklistItem('+h.id+')">+ add item</span>';
       row += '</div>';
@@ -312,7 +322,7 @@
   window.tap = function(id, dir){ post("/api/habits/tap",{id:id,direction:dir}).then(function(){ loadHabits(); }); };
   window.checkHabitItem = function(id, done){ post("/api/habits/checklist",{id:id,done:done}).then(function(){ loadHabits(); }); };
   window.addChecklistItem = function(habitId){
-    var text = prompt("New checklist item:"); if(!text || !text.trim()) return;
+    var text = prompt("New checklist item (end with ? to make it optional):"); if(!text || !text.trim()) return;
     post("/api/habits/checklist/add",{id:habitId,text:text.trim()}).then(function(){ loadHabits(); });
   };
   window.delHabit = function(id, name){
@@ -325,6 +335,7 @@
     document.getElementById("hDays").style.display = (f==="days")?"flex":"none";
     document.getElementById("hCount").style.display = (f==="count"||f==="monthly")?"flex":"none";
     document.getElementById("hTarget").style.display = (t==="value")?"flex":"none";
+    document.getElementById("hLogLabel").style.display = document.getElementById("hLogOn").checked ? "" : "none";
   };
   document.getElementById("hField").addEventListener("change", function(){ window.syncHabitForm(); });
   function dayBoxes(){ return Array.prototype.slice.call(document.querySelectorAll("#hDays input")); }
@@ -337,6 +348,7 @@
       if(!b.frequency_days.length) b.frequency_days=[0,1,2,3,4,5,6];
     } else if(f==="weekdays"){ b.frequency_kind="weekdays"; b.frequency_days=[0,1,2,3,4,5,6]; }
     else { b.frequency_kind=f; b.frequency_count=num("hCountMin")||(f==="monthly"?1:3); b.frequency_count_max=num("hCountMax"); }
+    b.log_date_label = document.getElementById("hLogOn").checked ? (document.getElementById("hLogLabel").value.trim()||"Log date") : "";
     if(t==="value"){ b.target_value=num("hTargetMin"); b.target_max=num("hTargetMax"); b.unit=document.getElementById("hUnit").value.trim(); }
     return b;
   }
@@ -352,6 +364,7 @@
     document.getElementById("hCountMin").value = h.frequency_count||""; document.getElementById("hCountMax").value = h.frequency_count_max||"";
     document.getElementById("hTargetMin").value = h.target_value||""; document.getElementById("hTargetMax").value = h.target_max||""; document.getElementById("hUnit").value = h.unit||"";
     document.getElementById("hItems").style.display = "none";
+    document.getElementById("hLogOn").checked = !!h.log_date_label; document.getElementById("hLogLabel").value = h.log_date_label || "Log date";
     document.getElementById("hGo").textContent = "Save";
     window.syncHabitForm();
     document.getElementById("hName").focus();
@@ -360,6 +373,7 @@
     editingHabit = null;
     ["hName","hItems","hCountMin","hCountMax","hTargetMin","hTargetMax","hUnit"].forEach(function(i){ document.getElementById(i).value=""; });
     dayBoxes().forEach(function(x){ x.checked=false; });
+    document.getElementById("hLogOn").checked = false; document.getElementById("hLogLabel").value = "Log date";
     document.getElementById("hItems").style.display = "";
     document.getElementById("hGo").textContent = "Add";
     window.syncHabitForm();

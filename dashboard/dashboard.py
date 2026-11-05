@@ -1019,7 +1019,7 @@ async def api_habit_checklist(request: Request):
 async def api_habit_checklist_add(request: Request):
     body = await _json_body(request)
     try:
-        _r = await native.add_habit_checklist_item(int(body.get("id")), body.get("text", ""))
+        _r = await native.add_habit_checklist_item(int(body.get("id")), body.get("text", ""), body.get("optional"))
         await _bust_native()
         return _r
     except Exception as e:
@@ -1063,6 +1063,7 @@ async def api_habit_create(request: Request):
             streak_min_taps=body.get("streak_min_taps"), checklist=body.get("checklist"),
             frequency_count_max=body.get("frequency_count_max"), target_value=body.get("target_value"),
             target_max=body.get("target_max"), unit=body.get("unit"),
+            log_date_label=body.get("log_date_label"),
             user_id=_native_uid(request))
         await _bust_native()
         return {"ok": hid is not None, "id": hid}
@@ -1124,6 +1125,22 @@ async def api_habit_checklist_delete(request: Request):
     return r if r.get("ok") else JSONResponse(r, status_code=404)
 
 
+@app.post("/api/habits/checklist/optional")
+async def api_habit_checklist_optional(request: Request):
+    body = await _json_body(request)
+    r = await native.set_checklist_item_optional(int(body.get("id") or 0), bool(body.get("optional")))
+    await _bust_native()
+    return r if r.get("ok") else JSONResponse(r, status_code=404)
+
+
+@app.post("/api/habits/log-date")
+async def api_habit_log_date(request: Request):
+    body = await _json_body(request)
+    r = await native.set_habit_log_date(int(body.get("id") or 0), on=bool(body.get("on", True)), log_date=body.get("date"))
+    await _bust_native()
+    return r if r.get("ok") else JSONResponse(r, status_code=400)
+
+
 @app.post("/api/todos/checklist/rename")
 async def api_todo_checklist_rename(request: Request):
     body = await _json_body(request)
@@ -1144,7 +1161,7 @@ async def api_todo_checklist_delete(request: Request):
 async def api_habit_edit(request: Request):
     body = await _json_body(request)
     kw = {k: body[k] for k in ("name", "field_type", "frequency_kind", "frequency_days", "frequency_count",
-                                  "frequency_count_max", "target_value", "target_max", "unit") if k in body}
+                                  "frequency_count_max", "target_value", "target_max", "unit", "log_date_label") if k in body}
     r = await native.edit_habit(int(body.get("id") or 0), **kw)
     await _bust_native()
     return r if r.get("ok") else JSONResponse(r, status_code=400)
