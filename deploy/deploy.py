@@ -1,7 +1,6 @@
 """Ghost deploy + post-deploy verification (used by `ghost-deploy`).
 
-Extracted from the retired self-coding module (selfcode.py, removed 19/10/2026) so the
-deploy path no longer carries any proposal/apply machinery. Each service has ONE fixed
+Each service has ONE fixed
 rebuild: bot/scheduler go through the root-owned /usr/local/sbin/ghost-rebuild wrapper via
 its scoped NOPASSWD sudo entry; the dashboard is a configmap refresh + rollout (kubectl only).
 A deploy only counts when the verification afterwards passes.

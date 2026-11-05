@@ -31,8 +31,6 @@ through Kubernetes Secrets; no real values live in the repo.
   a tone that escalates instead of repeating itself.
 - **Calendar.** A private Google Calendar integration with confirm-before-write
   handling for anything it changes.
-- **Voice.** Voice notes are transcribed by a local Whisper model; a voice memo
-  can be turned into a draft blog post.
 - **Dashboard.** A Tailscale-only web UI: habits, bills, a command centre and a
   few themed pages, all sharing one monochrome design system.
 - **Phone app API.** A versioned API (`/api/app/v1/`) serving a private
@@ -61,7 +59,7 @@ Android app / dashboard
         |
    ghost-bot  ---- Claude API (general reasoning)
    ghost-dashboard (FastAPI)  ---- Ollama (finance only, local)
-   ghost-scheduler (nudges, summaries)  ---- Whisper (voice, local)
+   ghost-scheduler (nudges, summaries, push via ntfy)
         |
    Postgres (durable state)   Redis (session memory, pending actions)
 ```

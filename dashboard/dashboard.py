@@ -11,6 +11,7 @@ import copy
 import time
 import json
 import hashlib
+import asyncio
 import logging
 from datetime import datetime, timedelta, date
 from decimal import Decimal
@@ -31,10 +32,13 @@ import uvicorn  # noqa: E402
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger("dashboard")
+for _noisy in ("httpx", "httpcore"):   # their INFO lines put full request URLs (tokens, topics) in the logs
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 LOCAL_TZ = zoneinfo.ZoneInfo(os.environ.get("GHOST_TZ", "UTC"))
-OWNER_ID = int(os.environ.get("TELEGRAM_USER_ID") or "0")
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+# The single user's numeric id (keys every native/app row). GHOST_USER_ID is the neutral name;
+# TELEGRAM_USER_ID is the pre-01/11 name of the same value, kept as a fallback.
+OWNER_ID = int(os.environ.get("GHOST_USER_ID") or os.environ.get("TELEGRAM_USER_ID") or "0")
 
 app = FastAPI()
 
@@ -61,6 +65,21 @@ async def _bust_native():
     right after reflects the change (S66)."""
     try:
         await bot._bust_native_cache()
+    except Exception:
+        pass
+    try:   # the home page (Command Center) now reads native habits/todos, so refresh it too
+        r = redis_conn()
+        await r.delete("command_center")
+        await r.aclose()
+    except Exception:
+        pass
+
+async def _bust_command_center():
+    """Drop the 25s Command Center cache after a food-log write so the nutrition gauge is current."""
+    try:
+        r = redis_conn()
+        await r.delete("command_center")
+        await r.aclose()
     except Exception:
         pass
 
@@ -171,14 +190,67 @@ def seconds_to_midnight() -> int:
     midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
     return int((midnight - now).total_seconds())
 
-async def send_telegram(message: str, silent: bool = False):
-    async with httpx.AsyncClient() as client:
-        response = await client.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                                     json={"chat_id": OWNER_ID, "text": message,
-                                           "disable_notification": silent}, timeout=30.0)
-        if response.status_code != 200:
-            logger.error(f"Telegram send FAILED ({response.status_code}): {response.text[:200]}")
-            raise RuntimeError(f"telegram send failed: {response.status_code}")
+NTFY_URL = os.environ.get("NTFY_URL", "")
+NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
+NTFY_TOKEN = os.environ.get("NTFY_TOKEN", "")
+
+
+def _ascii_header(value: str) -> str:
+    """HTTP header values must be ASCII; fold dashes/quotes, drop the rest (same rule as the scheduler)."""
+    v = str(value or "")
+    for src, dst in (("\u2014", "-"), ("\u2013", "-"), ("\u2018", "'"), ("\u2019", "'"),
+                     ("\u201c", '"'), ("\u201d", '"'), ("\u2026", "...")):
+        v = v.replace(src, dst)
+    return " ".join(v.encode("ascii", "ignore").decode("ascii").split()) or "Ghost"
+
+
+async def push_ntfy(message: str, title: str = "Ghost") -> bool:
+    """Push to Lea's private ntfy topic and to every UnifiedPush endpoint the Ghost app registered
+    (the same two deliveries the scheduler makes). Best-effort; True if at least one succeeded."""
+    if not NTFY_TOKEN:
+        return False
+    delivered = False
+    auth = {"Authorization": f"Bearer {NTFY_TOKEN}"}
+    base = NTFY_URL.rstrip("/")
+    try:
+        conn = await pg_conn()
+        try:
+            rows = await conn.fetch("SELECT endpoint FROM app_push_endpoints")
+            body = json.dumps({"title": title, "message": message}).encode("utf-8")
+            async with httpx.AsyncClient() as client:
+                for r in rows:
+                    ep = r["endpoint"]
+                    from urllib.parse import urlsplit
+                    u = urlsplit(ep)
+                    # tailnet endpoints are not resolvable in-pod; same ntfy server, in-cluster URL
+                    url = f"{base}{u.path}" if (base and (u.hostname or "").endswith(".ts.net") and u.port == 10443) else ep
+                    try:
+                        resp = await client.post(url, content=body, headers=auth, timeout=10.0)
+                        if resp.status_code < 300:
+                            delivered = True
+                            await conn.execute("UPDATE app_push_endpoints SET last_ok_at=now() WHERE endpoint=$1", ep)
+                        elif resp.status_code in (404, 410):
+                            await conn.execute("DELETE FROM app_push_endpoints WHERE endpoint=$1", ep)
+                        else:
+                            logger.error(f"app push FAILED ({resp.status_code}): {resp.text[:160]}")
+                    except Exception as e:
+                        logger.error(f"app push error: {e}")
+        finally:
+            await conn.close()
+    except Exception as e:
+        logger.error(f"app push: db error: {e}")
+    if NTFY_URL and NTFY_TOPIC:
+        try:
+            async with httpx.AsyncClient() as client:
+                r = await client.post(f"{base}/{NTFY_TOPIC}", content=message.encode("utf-8"),
+                                      headers={**auth, "Title": _ascii_header(title)}, timeout=10.0)
+            if r.status_code == 200:
+                delivered = True
+            else:
+                logger.error(f"ntfy publish FAILED ({r.status_code}): {r.text[:160]}")
+        except Exception as e:
+            logger.error(f"ntfy publish error: {e}")
+    return delivered
 
 async def claude_line(prompt: str) -> str:
     """One-line Ghost message via Claude, with recent-phrase avoidance."""
@@ -292,20 +364,13 @@ async def api_chat(request: Request):
         message = str(data.get("message", "")).strip()
         if not message:
             return {"reply": "say something."}
-        # Demo mode: never reach the real bot — that would send to Telegram, write
+        # Demo mode: never reach the real bot — that would write
         # real message_log rows, and return a reply grounded in real data. Canned reply.
         if is_demo(request):
             return {"reply": "(demo mode) I'd normally answer from your real data here.", "demo": True}
         await bot.log_message("dashboard_in", "chat", message)
         reply = await bot.process_message(OWNER_ID, message, source="dashboard")
         await bot.log_message("dashboard_out", "chat", reply)
-        # Mirror dashboard chat into Telegram SILENTLY (no buzz) so the Telegram
-        # app's own history stays complete (session 15, task 6).
-        try:
-            await send_telegram(f"[dashboard] {bot.USER_NAME}: {message}", silent=True)
-            await send_telegram(reply, silent=True)
-        except Exception as e:
-            logger.error(f"telegram mirror error: {e}")
         return {"reply": reply}
     except Exception as e:
         logger.error(f"chat error: {e}")
@@ -534,6 +599,9 @@ async def _cephalopod_health() -> dict:
         ok = r.status_code == 200
         return {"service": "cephalopod", "status": "ok" if ok else "fail",
                 "detail": "" if ok else f"http {r.status_code}"}
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        # Cephalopod was scaled to 0 on 01/11/2026 (not live yet): that is not a failure to alarm on
+        return {"service": "cephalopod", "status": "unconfigured", "detail": "not live (scaled to 0)"}
     except Exception as e:
         return {"service": "cephalopod", "status": "fail", "detail": str(e)[:60]}
 
@@ -579,6 +647,55 @@ def _mask_command_center(data: dict) -> dict:
     d["demo"] = True
     return d
 
+def _fmtn(n):
+    return f"{round(float(n), 2):g}"
+
+
+def _habit_progress(h):
+    """Short progress text for a native habit, mirroring ghost-habits.html."""
+    p = h.get("period")
+    if p:
+        tgt = "" if p["target"] is None else f" of {_fmtn(p['target'])}" + (f"-{_fmtn(p['max'])}" if p.get("max") and p["max"] != p["target"] else "")
+        unit = f" {h['unit']}" if h.get("unit") else ""
+        return f"{_fmtn(p['done'])}{tgt}{unit} this {p['kind']}" + (" (bonus)" if p.get("bonus") else "")
+    ft = h["field_type"]
+    if ft == "negative":
+        return f"{h['today_down']} slip{'s' if h['today_down'] != 1 else ''} today" if h["today_down"] else "clean so far today"
+    if ft == "positive":
+        return f"{h['today_up']} today" if h["today_up"] else ""
+    if ft == "both":
+        return f"+{h['today_up']} / -{h['today_down']} today" if (h["today_up"] or h["today_down"]) else ""
+    if ft == "value":
+        return f"{_fmtn(h['today_value'])}{(' ' + h['unit']) if h.get('unit') else ''} today"
+    if ft == "checklist":
+        req = [c for c in h["checklist"] if not c.get("optional")]
+        od = sum(1 for c in h["checklist"] if c.get("optional") and c["done"])
+        return f"{sum(1 for c in req if c['done'])} of {len(req)}" + (f" (+{od} optional)" if od else "")
+    return ""
+
+
+async def _native_home(uid):
+    """Today's native habits (due today only: weekday-limited ones such as the office add-on drop out
+    on other days) and open todos (priority High>Med>Low, then due date), in the Command Center shape."""
+    habits, todos = [], []
+    for h in await native.list_habits(uid):
+        if not h["due_today"]:
+            continue
+        pn = {"negative": "negative", "both": "both"}.get(h["field_type"], "positive")
+        done = bool(h["period"]["met"]) if h.get("period") else (False if pn == "negative" else bool(h["done_today"]))
+        unit = {"count": "week", "monthly": "month"}.get(h["frequency_kind"], "day")
+        habits.append({"name": h["name"], "type": "habit", "positiveNegative": pn, "kind": h["field_type"],
+                       "streak": h["streak"], "streakUnit": unit, "doneToday": done,
+                       "atRisk": bool(h["streak"] > 0 and not done and pn != "negative" and not h.get("period")),
+                       "progress": _habit_progress(h), "frequency": h["frequency_label"]})
+    for t in await native.list_todos(uid, include_done=False):
+        cl = t.get("checklist") or []
+        todos.append({"text": t["text"], "priority": {"high": 2, "med": 1.5, "low": 1}.get(t["priority"], 1),
+                      "priorityLabel": t["priority"], "done": False, "due": t["due_date"], "overdue": bool(t["overdue"]),
+                      "progress": (f"{sum(1 for c in cl if c['done'])} of {len(cl)}" if t["kind"] == "checklist" else "")})
+    return habits, todos
+
+
 @app.get("/api/command-center")
 async def api_command_center(request: Request):
     """Read-only. Serves the v8 dashboard data contract from real Postgres/Redis/
@@ -597,36 +714,35 @@ async def api_command_center(request: Request):
         pass
     out = {"time": now.strftime("%A %d %B %Y, %I:%M %p").replace(" 0", " "), "errors": [],
            "_meta": {"derived": {
-               "habits.streak/doneToday/atRisk": "approximated from Habitica history/counterUp/value — habits have no native streak/done/at-risk",
-               "nutrition.caloriesTarget": "from GHOST_CALORIE_TARGET env (0 = not set) — not available from FatSecret",
+               "habits/todos": "native rebuilt habits + todos (same data as ghost-habits.html); habits = due today only; vitals still from Habitica",
+               "nutrition": "from the Ghost app food_log (calories + protein only; carbs/fat/fiber null)", "nutrition.caloriesTarget": "from GHOST_CALORIE_TARGET env (0 = not set)",
            }}}
-    # Habitica: habits, todos, vitals
+    # Habits + todos: the NATIVE rebuilt data (same source as /ghost-habits.html), not Habitica.
+    # Vitals (hp/xp/gold/level) still come from Habitica below.
     try:
-        out["habits"] = await habitica.get_habits_detailed()
+        out["habits"], out["todos"] = await _native_home(_native_uid(request))
     except Exception as e:
-        out["errors"].append(f"habits: {e}"); out["habits"] = []
-    try:
-        out["todos"] = await habitica.get_todos_detailed()
-    except Exception as e:
-        out["errors"].append(f"todos: {e}"); out["todos"] = []
+        out["errors"].append(f"habits/todos: {e}"); out["habits"] = []; out["todos"] = []
     try:
         out["vitals"] = await habitica.get_user_stats()
     except Exception as e:
         out["errors"].append(f"vitals: {e}"); out["vitals"] = {}
     # S70: conversational money pipeline removed — spending is CSV-only (Bills dashboard / spending
     # card). No budget-vs-limit block from expenses/budget_categories here anymore.
-    # Nutrition (FatSecret)
+    # Nutrition: the Ghost app's food_log (FatSecret retired 01/11/2026). The app tracks calories and
+    # protein only, so carbs / fat / fiber are null, not zero (a missing figure is not a zero).
     try:
-        import fatsecret
-        f = await fatsecret.get_today_summary()
-        if f is None:
-            out["nutrition"] = None
-        else:
-            out["nutrition"] = {
-                "caloriesLogged": round(f["calories"]), "caloriesTarget": CALORIE_TARGET or None,
-                "macros": {"protein": round(f["protein"]), "carbs": round(f["carbs"]),
-                           "fat": round(f["fat"]), "fiber": round(f.get("fiber", 0))},
-                "mealsLoggedToday": len(f.get("groups", [])) or f.get("entries", 0)}
+        conn = await pg_conn()
+        try:
+            row = await conn.fetchrow(
+                "SELECT COALESCE(SUM(calories),0)::float8 c, COALESCE(SUM(protein),0)::float8 p, COUNT(*) n "
+                "FROM food_log WHERE user_id=$1 AND log_date=$2", OWNER_ID, now.date())
+        finally:
+            await conn.close()
+        out["nutrition"] = {
+            "caloriesLogged": round(row["c"]), "caloriesTarget": CALORIE_TARGET or None,
+            "macros": {"protein": round(row["p"]), "carbs": None, "fat": None, "fiber": None},
+            "mealsLoggedToday": int(row["n"])}
     except Exception as e:
         out["errors"].append(f"nutrition: {e}"); out["nutrition"] = None
     # Self-check (health_checks table) + live Cephalopod ping
@@ -634,7 +750,7 @@ async def api_command_center(request: Request):
         conn = await pg_conn()
         rows = await conn.fetch("""
             SELECT DISTINCT ON (service) service, status, detail, checked_at
-            FROM health_checks WHERE service IN ('telegram','postgres','redis','fatsecret')
+            FROM health_checks WHERE service IN ('ntfy','postgres','redis','habitica','anthropic','gcal')
             ORDER BY service, checked_at DESC
         """)
         await conn.close()
@@ -751,7 +867,7 @@ async def api_decisions_answer(request: Request):
 # NB the routine/meal/habit board items aren't anchored in the sync files, so
 # Maintenance/Habits stay sparse — this reflects the chosen hooks, by design.
 # ===========================================================================
-MOMENTUM_BUCKETS = ["Maintenance", "Habits", "Work", "Business", "Sidequests", "Creative/Relax", "unsorted"]
+MOMENTUM_BUCKETS = ["Maintenance", "Habits", "Work", "Business", "Creative/Relax", "unsorted"]
 
 _MOMENTUM_SCHEMA_READY = False
 
@@ -793,7 +909,7 @@ async def api_momentum(request: Request, window: int = 60):
                   "closed": _r.randint(0, 4)} for i in range(min(window, 30))]
         return {"window": window, "demo": True,
                 "overall": {"closed": 48, "open": 12, "ratio": 0.8},
-                "buckets": {b: {"closed": 8, "open": 2, "ratio": 0.8} for b in MOMENTUM_BUCKETS[:6]},
+                "buckets": {b: {"closed": 8, "open": 2, "ratio": 0.8} for b in MOMENTUM_BUCKETS[:-1]},
                 "sparkline": spark}
     ck = f"momentum:{window}"
     try:
@@ -903,15 +1019,6 @@ async def api_todos(request: Request, include_done: int = 1):
         return JSONResponse({"todos": [], "error": str(e)}, status_code=500)
 
 
-@app.get("/api/level")
-async def api_level(request: Request):
-    try:
-        return await native.level_stats(_native_uid(request))
-    except Exception as e:
-        logger.error(f"/api/level error: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
 @app.get("/api/badguys")
 async def api_badguys(request: Request):
     """S76: which 'bad guy' threshold checks are currently active (edge-state set by the scheduler
@@ -940,7 +1047,7 @@ async def _json_body(request: Request) -> dict:
 async def api_habit_tap(request: Request):
     body = await _json_body(request)
     try:
-        res = await native.tap_habit(int(body.get("id")), body.get("direction", "up"))
+        res = await native.tap_habit(int(body.get("id")), body.get("direction", "up"), value=body.get("value"))
         await _bust_native()
         return res
     except Exception as e:
@@ -964,7 +1071,7 @@ async def api_habit_checklist(request: Request):
 async def api_habit_checklist_add(request: Request):
     body = await _json_body(request)
     try:
-        _r = await native.add_habit_checklist_item(int(body.get("id")), body.get("text", ""))
+        _r = await native.add_habit_checklist_item(int(body.get("id")), body.get("text", ""), body.get("optional"))
         await _bust_native()
         return _r
     except Exception as e:
@@ -1006,6 +1113,9 @@ async def api_habit_create(request: Request):
             frequency_days=body.get("frequency_days"), frequency_count=body.get("frequency_count"),
             bucket=body.get("bucket"), streak_rule=body.get("streak_rule", "net_positive"),
             streak_min_taps=body.get("streak_min_taps"), checklist=body.get("checklist"),
+            frequency_count_max=body.get("frequency_count_max"), target_value=body.get("target_value"),
+            target_max=body.get("target_max"), unit=body.get("unit"),
+            log_date_label=body.get("log_date_label"),
             user_id=_native_uid(request))
         await _bust_native()
         return {"ok": hid is not None, "id": hid}
@@ -1038,19 +1148,6 @@ async def api_todo_checklist(request: Request):
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
-@app.post("/api/todos/quest")
-async def api_todo_quest(request: Request):
-    """S78: flag/unflag an existing todo as a quest (per-row toggle — the todo 'edit' path)."""
-    body = await _json_body(request)
-    try:
-        _r = await native.set_todo_quest(int(body.get("id")), bool(body.get("is_quest", True)))
-        await _bust_native()
-        return _r
-    except Exception as e:
-        logger.error(f"/api/todos/quest error: {e}")
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
-
-
 @app.post("/api/todos/checklist/add")
 async def api_todo_checklist_add(request: Request):
     """S77: add an item to a checklist todo — mirrors /api/habits/checklist/add."""
@@ -1064,6 +1161,82 @@ async def api_todo_checklist_add(request: Request):
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
+@app.post("/api/habits/checklist/rename")
+async def api_habit_checklist_rename(request: Request):
+    body = await _json_body(request)
+    r = await native.rename_checklist_item("habit", int(body.get("id") or 0), body.get("text", ""))
+    await _bust_native()
+    return r if r.get("ok") else JSONResponse(r, status_code=400)
+
+
+@app.post("/api/habits/checklist/delete")
+async def api_habit_checklist_delete(request: Request):
+    body = await _json_body(request)
+    r = await native.delete_checklist_item("habit", int(body.get("id") or 0))
+    await _bust_native()
+    return r if r.get("ok") else JSONResponse(r, status_code=404)
+
+
+@app.post("/api/habits/checklist/optional")
+async def api_habit_checklist_optional(request: Request):
+    body = await _json_body(request)
+    r = await native.set_checklist_item_optional(int(body.get("id") or 0), bool(body.get("optional")))
+    await _bust_native()
+    return r if r.get("ok") else JSONResponse(r, status_code=404)
+
+
+@app.post("/api/habits/log-date")
+async def api_habit_log_date(request: Request):
+    body = await _json_body(request)
+    r = await native.set_habit_log_date(int(body.get("id") or 0), on=bool(body.get("on", True)), log_date=body.get("date"))
+    await _bust_native()
+    return r if r.get("ok") else JSONResponse(r, status_code=400)
+
+
+@app.post("/api/habits/log-date/edit")
+async def api_habit_log_date_edit(request: Request):
+    """Change or clear a saved Log date: {id, old_date?, new_date? (empty = clear)}."""
+    body = await _json_body(request)
+    r = await native.move_habit_log_date(int(body.get("id") or 0), body.get("old_date"), body.get("new_date"))
+    await _bust_native()
+    return r if r.get("ok") else JSONResponse(r, status_code=400)
+
+
+@app.post("/api/todos/checklist/rename")
+async def api_todo_checklist_rename(request: Request):
+    body = await _json_body(request)
+    r = await native.rename_checklist_item("todo", int(body.get("id") or 0), body.get("text", ""))
+    await _bust_native()
+    return r if r.get("ok") else JSONResponse(r, status_code=400)
+
+
+@app.post("/api/todos/checklist/delete")
+async def api_todo_checklist_delete(request: Request):
+    body = await _json_body(request)
+    r = await native.delete_checklist_item("todo", int(body.get("id") or 0))
+    await _bust_native()
+    return r if r.get("ok") else JSONResponse(r, status_code=404)
+
+
+@app.post("/api/habits/edit")
+async def api_habit_edit(request: Request):
+    body = await _json_body(request)
+    kw = {k: body[k] for k in ("name", "field_type", "frequency_kind", "frequency_days", "frequency_count",
+                                  "frequency_count_max", "target_value", "target_max", "unit", "log_date_label") if k in body}
+    r = await native.edit_habit(int(body.get("id") or 0), **kw)
+    await _bust_native()
+    return r if r.get("ok") else JSONResponse(r, status_code=400)
+
+
+@app.post("/api/todos/edit")
+async def api_todo_edit(request: Request):
+    body = await _json_body(request)
+    kw = {k: body[k] for k in ("text", "priority", "due_date") if k in body}
+    r = await native.edit_todo(int(body.get("id") or 0), **kw)
+    await _bust_native()
+    return r if r.get("ok") else JSONResponse(r, status_code=400)
+
+
 @app.post("/api/todos/create")
 async def api_todo_create(request: Request):
     body = await _json_body(request)
@@ -1072,7 +1245,6 @@ async def api_todo_create(request: Request):
             body.get("text", ""), kind=body.get("kind", "tickbox"),
             priority=body.get("priority", "med"), due_date=body.get("due_date"),
             bucket=body.get("bucket"), checklist=body.get("checklist"),
-            is_quest=bool(body.get("is_quest")),
             user_id=_native_uid(request))
         await _bust_native()
         return {"ok": tid is not None, "id": tid}
@@ -3015,7 +3187,7 @@ async def api_planned_costs(request: Request):
     try:
         await _ensure_planned_costs_schema(conn)
         rows = await conn.fetch(
-            "SELECT id, to_char(month,'YYYY-MM') month, category, amount::float8 amount, tag, note "
+            "SELECT id, to_char(month,'YYYY-MM') AS month, category, amount::float8 amount, tag, note "
             "FROM planned_costs ORDER BY month, id")
     finally:
         await conn.close()
@@ -3540,14 +3712,13 @@ async def scrolling_webhook(request: Request):
         logger.error(f"webhook claude error: {e}")
         message = fallback
 
-    try:
-        await send_telegram(message)
-    except Exception as e:
-        logger.error(f"webhook telegram error: {e}")
-        return {"ok": False, "error": "telegram send failed"}
+    pushed = await push_ntfy(message, "Ghost")
+    if not pushed:
+        logger.error("webhook push FAILED: nothing delivered")
+        return {"ok": False, "error": "push failed"}
     try:
         # source 'webhook' (a sixth source beyond the original five) — these are real
-        # Telegram sends and belong in the unified feed, but attributing them to
+        # pushes and belong in the unified feed, but attributing them to
         # 'scheduler' would be false.
         await bot.log_message("webhook", "nudge", message)
     except Exception as e:
@@ -4180,37 +4351,78 @@ async def app_todo_patch(todo_id: int, request: Request):
     return result if result["ok"] else JSONResponse(result, status_code=404)
 
 
+def _food_rank(name, brand, q):
+    """Relevance of a food to the typed query, lower = better: 0 exact name, 1 name starts with q,
+    2 a word in name/brand starts with q, 3 q is contained somewhere, 9 not a match. Multi-word
+    queries match when every word does (so 'chicken breast' ranks 'Breast, Chicken' as a match)."""
+    n, b, ql = (name or "").lower(), (brand or "").lower(), q.lower()
+    hay = f"{n} {b}".strip()
+    if n == ql:
+        return 0
+    if n.startswith(ql):
+        return 1
+    words = ql.split()
+    if all(any(w2.startswith(w) for w2 in hay.replace(",", " ").split()) for w in words):
+        return 2
+    if all(w in hay for w in words):
+        return 3
+    return 9
+
+
+async def _search_foods(q):
+    """Shared by the app route and the dashboard food-log card. q is already normalised, len >= 2."""
+    like = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    conn = await pg_conn()
+    try:
+        await _ensure_app_schema(conn)
+        mine = await conn.fetch(
+            "SELECT f.id, f.name, f.brand, f.serving_desc, f.calories::float8 c, f.protein::float8 p, "
+            "f.source, f.source_id, COUNT(l.id) uses, MAX(l.logged_at) last_used "
+            "FROM foods f LEFT JOIN food_log l ON l.food_id=f.id "
+            "WHERE (f.is_mine OR EXISTS (SELECT 1 FROM food_log x WHERE x.food_id=f.id)) "
+            "AND (f.name ILIKE $1 OR COALESCE(f.brand,'') ILIKE $1) GROUP BY f.id LIMIT 60",
+            like)
+    finally:
+        await conn.close()
+    mine = sorted(mine, key=lambda m: (_food_rank(m["name"], m["brand"], q), -m["uses"],
+                                       -(m["last_used"].timestamp() if m["last_used"] else 0), m["name"]))[:8]
+    results = [{"food_id": m["id"], "name": m["name"], "brand": m["brand"],
+                "serving_desc": m["serving_desc"], "calories": round(m["c"], 1),
+                "protein": round(m["p"], 1), "source": m["source"], "source_id": m["source_id"],
+                "mine": True} for m in mine]
+    seen = {(m["source"], m["source_id"]) for m in mine if m["source_id"]}
+    # OFF/USDA match whole words, so a half-typed last word ("chicken br") finds nothing. Ask them for
+    # the complete words only and pull a deeper page; the relevance filter below applies the full query.
+    words = q.split()
+    partial_tail = len(words) > 1 and len(words[-1]) <= 3
+    ext_q, lim = (" ".join(words[:-1]), 20) if partial_tail else (q, 5)
+    off, usda = await asyncio.gather(_search_off(ext_q, lim), _search_usda(ext_q, lim))
+    ext_all = [e for e in off + usda]
+    ext = [e for e in ext_all if _food_rank(e["name"], e.get("brand"), q) < 9]
+    if not ext and not mine:
+        ext = ext_all          # nothing relevant anywhere: show the raw hits rather than an empty list
+    ext.sort(key=lambda e: _food_rank(e["name"], e.get("brand"), q))   # stable: keeps source order within a rank
+    for e in ext:
+        key = (e["source"], e["source_id"])
+        if e["source_id"] and key in seen:
+            continue
+        seen.add(key)
+        results.append({**e, "food_id": None, "mine": False})
+    return results[:16]
+
+
 @app.get("/api/app/v1/foods/search")
 async def app_foods_search(request: Request, q: str = ""):
+    """Partial, case-insensitive search. Own foods (saved OR previously logged) come first, ranked
+    exact > prefix > word-prefix > contains then by how often they're logged; Open Food Facts and
+    USDA are queried at the same time (not one after the other) and filtered/ranked the same way."""
     if not _app_auth_ok(request):
         return _app_401()
-    q = (q or "").strip()
+    q = " ".join((q or "").split())
     if len(q) < 2:
         return {"ok": True, "query": q, "results": []}
     try:
-        conn = await pg_conn()
-        try:
-            await _ensure_app_schema(conn)
-            mine = await conn.fetch(
-                "SELECT f.id, f.name, f.brand, f.serving_desc, f.calories::float8 c, f.protein::float8 p, "
-                "f.source, f.source_id, COUNT(l.id) uses "
-                "FROM foods f LEFT JOIN food_log l ON l.food_id=f.id "
-                "WHERE f.is_mine AND f.name ILIKE $1 GROUP BY f.id ORDER BY uses DESC, f.name LIMIT 8",
-                f"%{q}%")
-        finally:
-            await conn.close()
-        results = [{"food_id": m["id"], "name": m["name"], "brand": m["brand"],
-                    "serving_desc": m["serving_desc"], "calories": round(m["c"], 1),
-                    "protein": round(m["p"], 1), "source": m["source"], "source_id": m["source_id"],
-                    "mine": True} for m in mine]
-        seen = {(m["source"], m["source_id"]) for m in mine if m["source_id"]}
-        for ext in (await _search_off(q)) + (await _search_usda(q)):
-            key = (ext["source"], ext["source_id"])
-            if ext["source_id"] and key in seen:
-                continue
-            seen.add(key)
-            results.append({**ext, "food_id": None, "mine": False})
-        return {"ok": True, "query": q, "results": results[:16]}
+        return {"ok": True, "query": q, "results": await _search_foods(q)}
     except Exception as e:
         logger.error(f"/api/app/v1/foods/search error: {e}")
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
@@ -4240,6 +4452,31 @@ async def app_foods_mine(request: Request):
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
+async def _do_food_log(conn, data, servings, client_id=None):
+    """Insert one food_log row for today (local). -> (status, result dict). Shared by the app and dashboard."""
+    if data.get("food_id"):
+        food = await conn.fetchrow(
+            "SELECT id, name, calories::float8 c, protein::float8 p FROM foods WHERE id=$1", int(data["food_id"]))
+        if not food:
+            return 404, {"ok": False, "error": "food not found"}
+        fid, fname, per_c, per_p = food["id"], food["name"], food["c"], food["p"]
+    else:
+        if not (data.get("name")):
+            return 400, {"ok": False, "error": "food_id or name required"}
+        fid = await _cache_food(conn, data)
+        fname, per_c, per_p = data.get("name"), _f(data.get("calories")), _f(data.get("protein"))
+    tot_c, tot_p = round(per_c * servings, 1), round(per_p * servings, 1)
+    d = datetime.now(LOCAL_TZ).date()
+    log_id = await conn.fetchval(
+        "INSERT INTO food_log (user_id, food_id, food_name, servings, calories, protein, log_date, client_id) "
+        "VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id",
+        OWNER_ID, fid, fname, servings, tot_c, tot_p, d, client_id)
+    nutrition = await _nutrition_today(conn)
+    result = {"ok": True, "id": log_id, "food_name": fname, "servings": servings,
+              "calories": tot_c, "protein": tot_p, "nutrition": nutrition}
+    return 200, result
+
+
 @app.post("/api/app/v1/food-log")
 async def app_food_log(request: Request):
     """Log a food. Body: {food_id} OR {name,calories,protein,source?,source_id?,serving_desc?,brand?,mine?},
@@ -4261,26 +4498,9 @@ async def app_food_log(request: Request):
         cached = await _idem_get(conn, client_id)
         if cached is not None:
             return cached
-        if data.get("food_id"):
-            food = await conn.fetchrow(
-                "SELECT id, name, calories::float8 c, protein::float8 p FROM foods WHERE id=$1", int(data["food_id"]))
-            if not food:
-                return JSONResponse({"ok": False, "error": "food not found"}, status_code=404)
-            fid, fname, per_c, per_p = food["id"], food["name"], food["c"], food["p"]
-        else:
-            if not (data.get("name")):
-                return JSONResponse({"ok": False, "error": "food_id or name required"}, status_code=400)
-            fid = await _cache_food(conn, data)
-            fname, per_c, per_p = data.get("name"), _f(data.get("calories")), _f(data.get("protein"))
-        tot_c, tot_p = round(per_c * servings, 1), round(per_p * servings, 1)
-        d = datetime.now(LOCAL_TZ).date()
-        log_id = await conn.fetchval(
-            "INSERT INTO food_log (user_id, food_id, food_name, servings, calories, protein, log_date, client_id) "
-            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id",
-            OWNER_ID, fid, fname, servings, tot_c, tot_p, d, client_id)
-        nutrition = await _nutrition_today(conn)
-        result = {"ok": True, "id": log_id, "food_name": fname, "servings": servings,
-                  "calories": tot_c, "protein": tot_p, "nutrition": nutrition}
+        status, result = await _do_food_log(conn, data, servings, client_id)
+        if status != 200:
+            return JSONResponse(result, status_code=status)
         await _idem_put(conn, client_id, "food_log", result)
     finally:
         await conn.close()
@@ -4301,6 +4521,80 @@ async def app_food_log_delete(log_id: int, request: Request):
     finally:
         await conn.close()
     return {"ok": True, "id": log_id, "nutrition": nutrition}
+
+
+# ---- Dashboard food log (S101): the Command Center "Food log" card. Same data and helpers as the app
+# routes above, but without the app bearer token (this dashboard is Tailscale-only, like every other
+# /api/ route the pages call). "Today" is the Melbourne day (LOCAL_TZ).
+@app.get("/api/food-log")
+async def api_food_log(request: Request):
+    raw = (request.query_params.get("date") or "").strip()
+    try:
+        d = date.fromisoformat(raw) if raw else datetime.now(LOCAL_TZ).date()
+    except ValueError:
+        return JSONResponse({"ok": False, "error": "date must be YYYY-MM-DD"}, status_code=400)
+    conn = await pg_conn()
+    try:
+        await _ensure_app_schema(conn)
+        rows = await conn.fetch(
+            "SELECT id, food_name, servings::float8 s, calories::float8 c, protein::float8 p, logged_at "
+            "FROM food_log WHERE user_id=$1 AND log_date=$2 ORDER BY logged_at DESC, id DESC", OWNER_ID, d)
+        tc, tp = await _nutrition_targets(conn)
+    finally:
+        await conn.close()
+    eaten_c = round(sum(r["c"] for r in rows), 1)
+    eaten_p = round(sum(r["p"] for r in rows), 1)
+    return {"ok": True, "date": d.isoformat(),
+            "entries": [{"id": r["id"], "food_name": r["food_name"], "servings": r["s"], "calories": r["c"],
+                         "protein": r["p"], "time": r["logged_at"].astimezone(LOCAL_TZ).strftime("%H:%M")}
+                        for r in rows],
+            "totals": {"calories": eaten_c, "protein": eaten_p, "calorie_target": tc, "protein_target": tp}}
+
+
+@app.get("/api/food-search")
+async def api_food_search(q: str = ""):
+    q = " ".join((q or "").split())
+    if len(q) < 2:
+        return {"ok": True, "query": q, "results": []}
+    try:
+        return {"ok": True, "query": q, "results": await _search_foods(q)}
+    except Exception as e:
+        logger.error(f"/api/food-search error: {e}")
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.post("/api/food-log")
+async def api_food_log_add(request: Request):
+    """Body: a search result item ({food_id} or {name,calories,protein,source,source_id,...}) + servings?."""
+    data = await _json_body(request)
+    try:
+        servings = float(data.get("servings", 1) or 1)
+    except (TypeError, ValueError):
+        servings = 1.0
+    if not (0 < servings <= 20):
+        return JSONResponse({"ok": False, "error": "servings must be between 0 and 20"}, status_code=400)
+    conn = await pg_conn()
+    try:
+        await _ensure_app_schema(conn)
+        status, result = await _do_food_log(conn, data, servings)
+    finally:
+        await conn.close()
+    await _bust_command_center()
+    return result if status == 200 else JSONResponse(result, status_code=status)
+
+
+@app.delete("/api/food-log/{log_id}")
+async def api_food_log_delete(log_id: int):
+    conn = await pg_conn()
+    try:
+        await _ensure_app_schema(conn)
+        status = await conn.execute("DELETE FROM food_log WHERE id=$1 AND user_id=$2", log_id, OWNER_ID)
+        if _changed_zero(status):
+            return JSONResponse({"ok": False, "error": f"no food-log #{log_id}"}, status_code=404)
+    finally:
+        await conn.close()
+    await _bust_command_center()
+    return {"ok": True, "id": log_id}
 
 
 @app.get("/api/app/v1/foods/barcode/{code}")

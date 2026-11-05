@@ -16,7 +16,7 @@ spec:
       containers:
       - name: ghost-dashboard
         image: python:3.12-slim
-        command: ["sh", "-c", "pip install --quiet --no-cache-dir fastapi uvicorn python-telegram-bot redis asyncpg pandas python-multipart httpx && exec python /app/dashboard.py"]
+        command: ["sh", "-c", "pip install --quiet --no-cache-dir fastapi uvicorn redis asyncpg pandas python-multipart httpx && exec python /app/dashboard.py"]
         ports:
         - containerPort: 8080
         env:
@@ -30,17 +30,12 @@ spec:
             secretKeyRef:
               name: ghost-app-secrets
               key: habitica-api-token
-        - name: BOT_TOKEN
-          valueFrom:
-            secretKeyRef:
-              name: ghost-app-secrets
-              key: bot-token
         - name: ANTHROPIC_API_KEY
           valueFrom:
             secretKeyRef:
               name: ghost-app-secrets
               key: anthropic-api-key
-        - name: TELEGRAM_USER_ID
+        - name: GHOST_USER_ID
           valueFrom:
             secretKeyRef:
               name: ghost-app-secrets

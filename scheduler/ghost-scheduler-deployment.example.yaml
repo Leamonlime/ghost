@@ -28,17 +28,12 @@ spec:
             secretKeyRef:
               name: ghost-app-secrets
               key: habitica-api-token
-        - name: BOT_TOKEN
-          valueFrom:
-            secretKeyRef:
-              name: ghost-app-secrets
-              key: bot-token
         - name: ANTHROPIC_API_KEY
           valueFrom:
             secretKeyRef:
               name: ghost-app-secrets
               key: anthropic-api-key
-        - name: TELEGRAM_USER_ID
+        - name: GHOST_USER_ID
           valueFrom:
             secretKeyRef:
               name: ghost-app-secrets

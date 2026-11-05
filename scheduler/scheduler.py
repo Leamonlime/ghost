@@ -19,9 +19,9 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+for _noisy in ("httpx", "httpcore"):   # their INFO lines put full request URLs (tokens, topics) in the logs
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-TELEGRAM_USER_ID = os.environ.get("TELEGRAM_USER_ID", "")
 REDIS_HOST = os.environ.get("REDIS_HOST", "ghost-redis-master.ghost.svc.cluster.local")
 REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
 POSTGRES_HOST = os.environ.get("POSTGRES_HOST", "ghost-postgres-postgresql.ghost.svc.cluster.local")
@@ -55,11 +55,20 @@ def is_quiet_hours() -> bool:
     now = datetime.now(LOCAL_TZ)
     return now.hour >= 22 or now.hour < 6 or (now.hour == 6 and now.minute < 30)
 
-# Routine pattern (confirmed 19/07/2026): office Monday-Wednesday, WFH Thursday-Friday.
+# Routine pattern (changed 05/11/2026): office Tuesday-Thursday, WFH Monday and Friday.
 # A chat override ("I'm home today" / "I'm at the office today") sets Redis
 # `location_override` until local midnight; refreshed into this global each
 # main-loop tick so prompts and movement logic agree.
 _location_override = None
+
+def pattern_location(wd: int) -> tuple:
+    """Pattern assumption for a weekday (0=Mon): office Tue/Wed/Thu, WFH Mon/Fri, else weekend."""
+    if wd in (1, 2, 3):
+        return "office", False
+    if wd in (0, 4):
+        return "wfh", False
+    return "weekend", False
+
 
 def location_today() -> tuple:
     """(location, source). Source is 'manual' (chat override — always wins),
@@ -72,12 +81,7 @@ def location_today() -> tuple:
         return "office", "wifi"
     if _wifi_location == "home":
         return "wfh", "wifi"
-    wd = datetime.now(LOCAL_TZ).weekday()
-    if wd <= 2:
-        return "office", False
-    if wd <= 4:
-        return "wfh", False
-    return "weekend", False
+    return pattern_location(datetime.now(LOCAL_TZ).weekday())
 
 async def refresh_location_override():
     global _location_override
@@ -213,9 +217,9 @@ def time_context() -> str:
     elif source == "wifi":
         location = f"her phone is on the {'work' if loc == 'office' else 'home'} wifi (auto-detected, current)"
     elif loc == "office":
-        location = "usually an office day (Mon-Wed pattern, not confirmed)"
+        location = "usually an office day (Tue-Thu pattern, not confirmed)"
     elif loc == "wfh":
-        location = "usually a WFH day (Thu-Fri pattern, not confirmed)"
+        location = "usually a WFH day (Mon/Fri pattern, not confirmed)"
     else:
         location = "It's the weekend"
     return f"It is {part}, {clock} on {day} local time. {location}."
@@ -236,8 +240,18 @@ async def log_message(source: str, msg_type: str, content: str):
 NTFY_URL = os.environ.get("NTFY_URL", "")          # internal svc, e.g. http://ntfy.ghost.svc.cluster.local
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
 NTFY_TOKEN = os.environ.get("NTFY_TOKEN", "")
-_NTFY_TITLES = {"briefing": "Ghost — morning", "summary": "Ghost — day's end",
-                "nudge": "Ghost", "alert": "Ghost — heads up"}
+_NTFY_TITLES = {"briefing": "Ghost - morning", "summary": "Ghost - day's end",
+                "nudge": "Ghost", "alert": "Ghost - heads up"}
+
+
+def _ascii_header(value: str) -> str:
+    """HTTP header values must be ASCII (an em dash in a Title made every briefing/summary topic
+    publish raise). Fold dashes/quotes to plain ASCII, drop anything else, strip newlines."""
+    v = str(value or "")
+    for src, dst in (("\u2014", "-"), ("\u2013", "-"), ("\u2018", "'"), ("\u2019", "'"),
+                     ("\u201c", '"'), ("\u201d", '"'), ("\u2026", "...")):
+        v = v.replace(src, dst)
+    return " ".join(v.encode("ascii", "ignore").decode("ascii").split()) or "Ghost"
 
 
 def _internal_push_url(endpoint: str) -> str:
@@ -292,39 +306,42 @@ async def push_app_endpoints(message: str, title: str = "Ghost") -> int:
     return ok
 
 
-async def publish_ntfy(message: str, msg_type: str = "nudge"):
+async def publish_ntfy(message: str, msg_type: str = "nudge") -> bool:
     """S92: push Ghost's proactive message to Lea's private ntfy topic (app push), IN ADDITION to
-    Telegram for now. Best-effort — a push failure never blocks the Telegram send. No-op if unset.
-    S93: also delivers to the Ghost app's UnifiedPush endpoints."""
+    the only delivery channel since 01/11/2026. Best-effort, no-op if unset.
+    S93: also delivers to the Ghost app's UnifiedPush endpoints.
+    Returns True if at least one delivery (topic or app endpoint) succeeded."""
+    title = _NTFY_TITLES.get(msg_type, "Ghost")
+    delivered = False
     try:
-        await push_app_endpoints(message, _NTFY_TITLES.get(msg_type, "Ghost"))
+        delivered = (await push_app_endpoints(message, title)) > 0
     except Exception as e:
         logger.error(f"app push error: {e}")
     if not (NTFY_URL and NTFY_TOPIC and NTFY_TOKEN):
-        return
+        return delivered
     try:
         async with httpx.AsyncClient() as client:
             r = await client.post(f"{NTFY_URL.rstrip('/')}/{NTFY_TOPIC}", content=message.encode("utf-8"),
                                   headers={"Authorization": f"Bearer {NTFY_TOKEN}",
-                                           "Title": _NTFY_TITLES.get(msg_type, "Ghost")}, timeout=10.0)
+                                           "Title": _ascii_header(title)}, timeout=10.0)
         if r.status_code != 200:
             logger.error(f"ntfy publish FAILED ({r.status_code}): {r.text[:160]}")
+        else:
+            delivered = True
     except Exception as e:
         logger.error(f"ntfy publish error: {e}")
+    return delivered
 
-
-async def send_telegram(message: str, msg_type: str = "nudge"):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    async with httpx.AsyncClient() as client:
-        response = await client.post(url, json={
-            "chat_id": TELEGRAM_USER_ID,
-            "text": message
-        })
-        if response.status_code != 200:
-            logger.error(f"Telegram send FAILED ({response.status_code}): {response.text[:200]}")
-        else:
-            await log_message("scheduler", msg_type, message)
-    await publish_ntfy(message, msg_type)   # S92: also push to the app (best-effort)
+async def send_push(message: str, msg_type: str = "nudge") -> bool:
+    """Deliver a proactive message to the Ghost app (UnifiedPush endpoints) and the private ntfy
+    topic, and record it in message_log only when something was actually delivered. (Replaced
+    send_telegram on 01/11/2026 when the Telegram layer was removed.)"""
+    delivered = await publish_ntfy(message, msg_type)
+    if delivered:
+        await log_message("scheduler", msg_type, message)
+    else:
+        logger.error(f"push FAILED: nothing delivered ({msg_type})")
+    return delivered
 
 async def get_redis():
     return Redis(host=REDIS_HOST, port=6379, password=REDIS_PASSWORD, decode_responses=True)
@@ -414,7 +431,7 @@ async def call_ollama(prompt: str) -> str:
 # RETIRED. Ghost's proactive job is now three structured, two-way touchpoints a day —
 # morning debrief, lunch check-in, dinner catch-up+summary — plus at most ONE follow-up
 # per anchor if it goes unanswered. Quiet hours (10pm-6:30am, is_quiet_hours) still
-# suppress everything. Lea replies via Telegram at any point (handled in
+# suppress everything. Lea replies in the app chat at any point (handled in
 # bot.process_message: done / swap / edit -> native items), so the anchors only SEND;
 # reply-detection is `last_user_activity` (stamped by the bot on every inbound message)
 # vs the anchor's send time. Voice: sharp, sassy assistant who's got her back — dry,
@@ -619,7 +636,7 @@ async def _anchor_silence_followup():
                   "chase again after this. Ask, never assume what she has or hasn't done. No "
                   "exclamation marks.")
         msg = await call_claude(prompt)
-        await send_telegram(msg, msg_type="nudge")
+        await send_push(msg, msg_type="nudge")
         cur["followed_up"] = 1
         await r.set("anchor:current", json.dumps(cur), ex=16 * 3600)
         logger.info(f"Anchor silence follow-up sent for {cur['name']}")
@@ -635,12 +652,12 @@ async def _native_task_list(limit=8):
                                      password=POSTGRES_PASSWORD, database="ghost_db")
         try:
             rows = await conn.fetch(
-                "SELECT text, is_quest FROM todos WHERE NOT done AND NOT archived "
-                "ORDER BY is_quest DESC, "
+                "SELECT text FROM todos WHERE NOT done AND NOT archived "
+                "ORDER BY "
                 "CASE priority WHEN 'high' THEN 0 WHEN 'med' THEN 1 ELSE 2 END, id LIMIT $1", limit)
         finally:
             await conn.close()
-        return [("[quest] " if r["is_quest"] else "") + r["text"] for r in rows]
+        return [r["text"] for r in rows]
     except Exception as e:
         logger.error(f"_native_task_list error: {e}")
         return []
@@ -741,7 +758,7 @@ async def morning_debrief():
               "a drill sergeant, never a cheerleader, no exclamation marks. Under 5 lines. Use only these "
               "facts, invent nothing; phrase anything unlogged as 'nothing logged', not as a failure.")
     message = await call_claude(prompt, max_tokens=240)
-    await send_telegram(message, msg_type="briefing")
+    await send_push(message, msg_type="briefing")
     r = await get_redis()
     try:
         await r.set("morning_debrief_sent", "1", ex=seconds_to_midnight())
@@ -804,7 +821,7 @@ async def lunch_checkin():
               "motivational-poster energy, never claim she did or didn't do something you can't see. "
               "Under 4 lines. She can reply to redirect or mark things done.")
     message = await call_claude(prompt, max_tokens=200)
-    await send_telegram(message, msg_type="nudge")
+    await send_push(message, msg_type="nudge")
     r = await get_redis()
     try:
         await r.set("lunch_checkin_sent", "1", ex=seconds_to_midnight())
@@ -942,7 +959,7 @@ async def dinner_catchup():
     if send_summary:
         message = await _build_daily_summary(now)
         message += await _pending_decisions_footer()
-        await send_telegram(message, msg_type="summary")
+        await send_push(message, msg_type="summary")
         logger.info("Dinner summary (step 2) sent")
         return
 
@@ -971,7 +988,7 @@ async def dinner_catchup():
               "assistant on her side, dry, no exclamation marks. Two to three lines. She replies to set "
               "the record straight and the summary follows.")
     message = await call_claude(prompt, max_tokens=200)
-    await send_telegram(message, msg_type="summary")
+    await send_push(message, msg_type="summary")
     rr = await get_redis()
     try:
         await rr.set("dinner_step", "asked", ex=seconds_to_midnight())
@@ -1015,26 +1032,39 @@ async def check_missed_meals():
 FOOD_TRACK_INTERVAL = 1800
 _last_food_track_check = 0.0
 
+# the single user's numeric id (keys food_log); same secret value the dashboard uses as OWNER_ID
+GHOST_USER_ID = os.environ.get("GHOST_USER_ID") or os.environ.get("TELEGRAM_USER_ID") or "0"
+
+async def count_app_food_logs_today() -> int:
+    """Entries in the Ghost app's food_log for today (local date). Decision #9 (11/10/2026):
+    the app replaced FatSecret completely, so this is the ONLY food signal 'Track food' reads."""
+    conn = await asyncpg.connect(
+        host=POSTGRES_HOST, port=5432, user="postgres",
+        password=POSTGRES_PASSWORD, database="ghost_db", timeout=15)
+    try:
+        return int(await conn.fetchval(
+            "SELECT COUNT(*) FROM food_log WHERE user_id = $1 AND log_date = $2",
+            int(GHOST_USER_ID or "0"), datetime.now(LOCAL_TZ).date()) or 0)
+    finally:
+        await conn.close()
+
 async def check_food_tracked():
-    """Once FatSecret has a real entry for today, check off the 'Track food'
+    """Once the Ghost app's food log has an entry for today, check off the 'Track food'
     checklist item nested under the 'Bedtime' daily (NOT a same-named top-level
-    daily, which does not exist). Checks at most every 30 min, once per day."""
+    daily, which does not exist). Checks at most every 30 min, once per day.
+    FatSecret is retired and no longer counts (decision #9)."""
     global _last_food_track_check
     import time
     if is_quiet_hours() or time.time() - _last_food_track_check < FOOD_TRACK_INTERVAL:
         return
     _last_food_track_check = time.time()
     try:
-        import fatsecret
-        if not fatsecret.is_configured():
-            return
         r = await get_redis()
         already = await r.get("food_daily_completed")
         await r.aclose()
         if already:
             return
-        summary = await fatsecret.get_today_summary()
-        if not summary or not summary["entries"]:
+        if await count_app_food_logs_today() <= 0:
             return
         from habitica import complete_checklist_item
         ok = await complete_checklist_item("Bedtime", "Track food")
@@ -1042,9 +1072,9 @@ async def check_food_tracked():
         await r.set("food_daily_completed", "1", ex=seconds_to_midnight())
         await r.aclose()
         if ok:
-            logger.info("'Track food' checklist item (under 'Bedtime') auto-checked — FatSecret has entries today")
+            logger.info("'Track food' checklist item (under 'Bedtime') auto-checked — app food log has entries today")
         else:
-            logger.info("FatSecret has entries but 'Track food' item not checkable (already done / not found) — nothing scored")
+            logger.info("App food log has entries but 'Track food' item not checkable (already done / not found) — nothing scored")
     except Exception as e:
         logger.error(f"check_food_tracked error: {e}")
 
@@ -1060,18 +1090,22 @@ _last_health_run = 0.0
 _pg_down_alerted = False
 
 SERVICE_HINTS = {
-    "telegram": "the bot token may have been revoked or rotated",
+    "ntfy": "the push server or its token is failing, so alerts and nudges will not reach the phone",
     "habitica": "the API token may be stale",
     "postgres": "database unreachable — check the pod or the password secret",
     "redis": "redis unreachable — check the pod or the password secret",
-    "fatsecret": "API auth failing — tokens may have been revoked",
     "anthropic": "the Claude API is refusing calls — Ghost's brain is down",
+    "gcal": "Google Calendar access is failing, so calendar answers and event changes will not work",
 }
 
-async def check_telegram_health():
+async def check_ntfy_health():
+    if not (NTFY_URL and NTFY_TOKEN):
+        return "ntfy is not configured (NTFY_URL / NTFY_TOKEN missing)"
     async with httpx.AsyncClient() as client:
-        r = await client.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe", timeout=15)
-        return None if r.status_code == 200 else f"getMe HTTP {r.status_code}"
+        r = await client.get(f"{NTFY_URL.rstrip('/')}/v1/health", timeout=15)
+    if r.status_code != 200:
+        return f"/v1/health HTTP {r.status_code}"
+    return None if r.json().get("healthy") else "ntfy reports unhealthy"
 
 async def check_habitica_health():
     user_id = os.environ.get("HABITICA_USER_ID", "")
@@ -1101,12 +1135,27 @@ async def check_redis_health():
         await r.aclose()
     return None
 
-async def check_fatsecret_health():
-    import fatsecret
-    if not fatsecret.is_configured():
+async def check_gcal_health():
+    """Google Calendar: do a real refresh-token grant (no cache) so a dead refresh token shows up as
+    a failure instead of silently returning no events. 'REAUTH:' details alert on the FIRST
+    occurrence (a revoked or expired token never heals by itself). OAuth apps left in 'Testing'
+    mode have their refresh tokens expire after 7 days."""
+    import gcal
+    if not gcal.is_configured():
         return "unconfigured"
-    summary = await fatsecret.get_today_summary()
-    return None if summary is not None else "fetch failed (see pod log for detail)"
+    async with httpx.AsyncClient() as client:
+        r = await client.post(gcal.TOKEN_URL, data={
+            "client_id": gcal.CLIENT_ID, "client_secret": gcal.CLIENT_SECRET,
+            "refresh_token": gcal.REFRESH_TOKEN, "grant_type": "refresh_token"}, timeout=20)
+    if r.status_code == 200:
+        return None
+    try:
+        err = r.json().get("error", "")
+    except Exception:
+        err = ""
+    if err in ("invalid_grant", "invalid_client", "unauthorized_client"):
+        return f"REAUTH: Google rejected the refresh token ({err})"
+    return f"token refresh HTTP {r.status_code} {err}".strip()
 
 async def check_anthropic_health():
     """Anthropic has no balance endpoint for a standard API key (the usage/cost
@@ -1140,12 +1189,12 @@ async def check_anthropic_health():
     return f"HTTP {r.status_code} {etype}: {emsg[:100]}"
 
 HEALTH_CHECKS = [
-    ("telegram", check_telegram_health),
+    ("ntfy", check_ntfy_health),
     ("habitica", check_habitica_health),
     ("postgres", check_postgres_health),
     ("redis", check_redis_health),
-    ("fatsecret", check_fatsecret_health),
     ("anthropic", check_anthropic_health),
+    ("gcal", check_gcal_health),
 ]
 
 async def run_health_checks() -> dict:
@@ -1166,23 +1215,19 @@ async def run_health_checks() -> dict:
     return results
 
 async def send_alert(text: str, reply_markup: dict | None = None) -> bool:
-    """Telegram send that reports success instead of assuming it. `reply_markup` (an inline
-    keyboard dict) is used by the ghost-runner's decision cards; the bot handles the taps."""
-    try:
-        payload = {"chat_id": TELEGRAM_USER_ID, "text": text}
-        if reply_markup:
-            payload["reply_markup"] = reply_markup
-        async with httpx.AsyncClient() as client:
-            r = await client.post(
-                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                json=payload, timeout=15
-            )
-            if r.status_code == 200:
-                await log_message("scheduler", "alert", text)
-            return r.status_code == 200
-    except Exception as e:
-        logger.error(f"send_alert error: {e}")
-        return False
+    """Alert send that reports success instead of assuming it: health alerts, Postgres-down, the
+    runner's morning report and decision cards, all via ntfy / the Ghost app push. `reply_markup`
+    (the runner's decision-card keyboard) is ignored; the push points at the app's Decisions
+    screen, where the same card is answered. True if at least one delivery succeeded."""
+    push_text = text
+    if reply_markup:
+        push_text = text.rstrip() + "\n\nOpen the Ghost app > Decisions to answer."
+    pushed = await publish_ntfy(push_text, "alert")
+    if pushed:
+        await log_message("scheduler", "alert", text)
+    else:
+        logger.error("send_alert FAILED: nothing delivered")
+    return pushed
 
 def _fmt(ts) -> str:
     local = ts.astimezone(LOCAL_TZ)
@@ -1196,10 +1241,9 @@ async def health_check():
     _last_health_run = time.time()
 
     results = await run_health_checks()
-    telegram_ok = results["telegram"][0] == "ok"
+    ntfy_ok = results["ntfy"][0] == "ok"
     bad = {s: d for s, (st, d) in results.items() if st == "fail"}
-    logger.info(f"Health check: {'all ok' if not bad else 'FAILING: ' + ', '.join(bad)}"
-                + (" (fatsecret unconfigured)" if results["fatsecret"][0] == "unconfigured" else ""))
+    logger.info(f"Health check: {'all ok' if not bad else 'FAILING: ' + ', '.join(bad)}")
 
     try:
         conn = await asyncpg.connect(
@@ -1207,9 +1251,9 @@ async def health_check():
             password=POSTGRES_PASSWORD, database="ghost_db", timeout=15
         )
     except Exception as e:
-        # Can't record state. Alert directly (deduped in-process) if Telegram works.
+        # Can't record state. Alert directly (deduped in-process) if the push channel works.
         logger.error(f"Health check: postgres unreachable, state not recorded: {e}")
-        if telegram_ok and not _pg_down_alerted:
+        if ntfy_ok and not _pg_down_alerted:
             if await send_alert("Postgres is unreachable — I can't record health state. "
                                 "Check the pod or the password secret."):
                 _pg_down_alerted = True
@@ -1236,11 +1280,16 @@ async def health_check():
                 # Running out of credit is a full outage, not a blip — alert on the
                 # first occurrence. Everything else waits for 2 in a row.
                 is_billing = bool(detail and detail.startswith("BILLING:"))
-                if is_billing and streak == 1:
+                is_reauth = bool(detail and detail.startswith("REAUTH:"))
+                if is_reauth and streak == 1:
+                    alerts.append(
+                        f"{service} needs re-authorising — {detail[7:].strip()}. Calendar reads and event "
+                        f"changes will fail until you re-authorise Google access.")
+                elif is_billing and streak == 1:
                     alerts.append(
                         f"Claude API is out of credit — Ghost's brain is down until you top it up. "
                         f"Nudges and chat will fail. Detail: {detail[9:]}")
-                elif streak == 2 and not is_billing:  # confirmed failure — once per episode
+                elif streak == 2 and not is_billing and not is_reauth:  # confirmed failure — once per episode
                     alerts.append(
                         f"{service} has been failing since {_fmt(prev_fail_run[0]['checked_at'])} — "
                         f"{SERVICE_HINTS.get(service, 'check the pod')}. Latest error: {detail}")
@@ -1253,24 +1302,12 @@ async def health_check():
                     first_fail = row["checked_at"]
                 alerts.append(f"{service} recovered — had been failing since {_fmt(first_fail)}.")
 
-        if telegram_ok:
-            pending = await conn.fetch(
-                "SELECT id, message FROM pending_alerts WHERE sent_at IS NULL ORDER BY created_at")
-            if pending:
-                summary = "While Telegram was unreachable:\n" + "\n".join(
-                    f"- {p['message']}" for p in pending)
-                if await send_alert(summary):
-                    await conn.execute(
-                        "UPDATE pending_alerts SET sent_at = NOW() WHERE id = ANY($1)",
-                        [p["id"] for p in pending])
-                    logger.info(f"Health: flushed {len(pending)} pending alert(s)")
-
         for alert in alerts:
-            if telegram_ok and await send_alert(alert):
+            if ntfy_ok and await send_alert(alert):
                 logger.info(f"Health alert sent: {alert}")
             else:
-                await conn.execute("INSERT INTO pending_alerts (message) VALUES ($1)", alert)
-                logger.warning(f"Health alert queued (telegram down): {alert}")
+                # no catch-up queue any more (the pending_alerts table is kept, unused)
+                logger.error(f"Health alert NOT delivered (push channel down): {alert}")
     finally:
         await conn.close()
 
@@ -1279,7 +1316,7 @@ async def monthly_csv_upload_nudge():
     so the spending picture stays current (her bank export caps at ~120 days with no custom range, so
     a monthly upload keeps it from missing transactions). Deliberately a SINGLE plain reminder, not an
     escalating nag — housekeeping, not a tracked habit with streaks. Fires on the 1st ~10:00 local,
-    once per calendar month (Redis-guarded). Uses the normal Telegram nudge channel."""
+    once per calendar month (Redis-guarded). Uses the normal push channel."""
     now = datetime.now(LOCAL_TZ)
     if not (now.day == 1 and now.hour == 10 and now.minute < 10):
         return
@@ -1294,7 +1331,7 @@ async def monthly_csv_upload_nudge():
     msg = ("Start-of-month check: export your latest bank CSV and upload it on the Bills dashboard so "
            "your spending picture stays current. Your bank export only goes back about 120 days, so a "
            "monthly upload keeps it from missing anything.")
-    await send_telegram(msg, msg_type="nudge")
+    await send_push(msg, msg_type="nudge")
     logger.info("Monthly CSV-upload nudge sent")
 
 DASHBOARD_INTERNAL_URL = os.environ.get("DASHBOARD_INTERNAL_URL", "http://ghost-dashboard.ghost.svc.cluster.local:8080")
@@ -1302,7 +1339,7 @@ DASHBOARD_INTERNAL_URL = os.environ.get("DASHBOARD_INTERNAL_URL", "http://ghost-
 
 def budget_cap_message(hits, warn_pct, data_through=None):
     """Deterministic heads-up text for categories that newly crossed a threshold. Names the category
-    and which threshold only — never a dollar figure (Telegram is outside the money boundary)."""
+    and which threshold only — never a dollar figure (a push notification is outside the money boundary)."""
     if not hits:
         return ""
     def phrase(h):
@@ -1318,7 +1355,7 @@ def budget_cap_message(hits, warn_pct, data_through=None):
 
 
 async def check_budget_caps():
-    """Telegram heads-up when a capped category crosses the warning threshold, and again at 100%.
+    """Push heads-up when a capped category crosses the warning threshold, and again at 100%.
     One message per threshold per category per month (Redis-guarded), combined when several cross
     in the same tick. Not a block, no escalation. Spend comes from the dashboard's live summary, so
     it only moves when a CSV is imported. Quiet hours respected."""
@@ -1351,7 +1388,7 @@ async def check_budget_caps():
         await r.aclose()
     msg = budget_cap_message(hits, data.get("warn_pct", 80), data.get("data_through"))
     if msg:
-        await send_telegram(msg, msg_type="nudge")
+        await send_push(msg, msg_type="nudge")
         logger.info(f"Budget cap heads-up sent ({len(hits)} categor{'y' if len(hits) == 1 else 'ies'})")
 
 
@@ -1472,7 +1509,7 @@ async def check_bad_guys():
                 names = ", ".join(BADGUY_LABELS[n] for n in newly)
                 msg = (f"A few obstacles showing up at once — {names}. One mention, not a nag: "
                        "worth a pause and a small reset when you can.")
-            await send_telegram(msg, msg_type="nudge")
+            await send_push(msg, msg_type="nudge")
             logger.info(f"bad guys triggered: {newly}")
     finally:
         await r.aclose()

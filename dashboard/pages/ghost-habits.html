@@ -6,10 +6,10 @@
 <link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAzMiAzMic+PHBhdGggZD0nTTYgMTVhMTAgMTAgMCAwIDEgMjAgMHYxMC42bC0zLjM1LTIuMy0zLjMgMi4zLTMuMzUtMi4zLTMuMzUgMi4zLTMuMy0yLjNMNiAyNS42WicgZmlsbD0nbm9uZScgc3Ryb2tlPScjZWFiOGMwJyBzdHJva2Utd2lkdGg9JzEuNycgc3Ryb2tlLWxpbmVqb2luPSdyb3VuZCcvPjxjaXJjbGUgY3g9JzEyLjQnIGN5PScxNC42JyByPScxLjUnIGZpbGw9JyNlYWI4YzAnLz48Y2lyY2xlIGN4PScxOS42JyBjeT0nMTQuNicgcj0nMS41JyBmaWxsPScjZWFiOGMwJy8+PC9zdmc+">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ghost — Habits &amp; Todos</title>
-<!-- Ghost 2.0 Phase 1 (native Habits & Todos). Built to the "Habits & Todos" + "Level Up"
-     artboards on the Ghost 2.0 Screens canvas, in the confirmed gothic-monochrome design
+<!-- Ghost 2.0 Phase 1 (native Habits & Todos). Built to the "Habits & Todos"
+     artboard on the Ghost 2.0 Screens canvas, in the confirmed gothic-monochrome design
      system. Served live from the vault; data comes from the native.py-backed /api/habits,
-     /api/todos, /api/level (same code path the Telegram bot uses). Styling reuses the shared
+     /api/todos (same code path the Telegram bot uses). Styling reuses the shared
      tokens/base/grain/watermark from ghost-common.css; component styles below are lifted from
      the artboards. -->
 <link rel="stylesheet" href="/assets/ghost-common.css?v=61">
@@ -69,12 +69,12 @@
   /* S77: habit row is a FIXED-TRACK grid so the streak pill forms a straight column regardless of
      which tap-control (tickbox / single / dual / none-for-checklist) precedes it. Tracks:
      icon | name(flex) | tap-controls(fixed) | streak(fixed) | archive. */
-  .habit-row{display:grid;grid-template-columns:28px 1fr 62px 54px 24px;align-items:center;gap:10px;padding:10px 4px;border-bottom:1px solid var(--border-2);}
+  .habit-row{display:grid;grid-template-columns:28px minmax(0,1fr) 62px 54px 24px 24px;align-items:center;gap:10px;padding:10px 4px;border-bottom:1px solid var(--border-2);}
   .habit-row .tap-btns{justify-content:flex-end;}   /* buttons hug the streak column within their fixed track */
   .habit-row:last-child,.todo-row:last-child{border-bottom:none;}
   .row-icon{width:28px;height:28px;border-radius:3px;flex-shrink:0;display:flex;align-items:center;justify-content:center;border:1px solid var(--border);color:var(--ink-dim);font-size:13px;}
   .row-main{flex:1;min-width:0;}
-  .row-name{font-size:13.5px;font-weight:500;color:var(--ink);}
+  .row-name{font-size:13.5px;font-weight:500;color:var(--ink);overflow-wrap:anywhere;word-break:break-word;}
   .row-name.done{color:var(--ink-faint);text-decoration:line-through;}
   .row-meta{font-size:9.5px;color:var(--ink-faint);margin-top:2px;font-variant:small-caps;letter-spacing:0.02em;}
 
@@ -88,10 +88,12 @@
   .tap-btn.minus{color:var(--alert);}
   .tap-btn.check{color:var(--ok);border-color:rgba(143,201,163,0.4);}
   .tap-btn.check.on{background:var(--ok);color:#150e14;}
+  .tap-btn.minus.on{background:var(--alert);color:#150e14;}
+  .tap-btn.plus.on{background:var(--ok);color:#150e14;}
   .tap-btn:active{transform:scale(0.92);}
 
   .checklist-mini{padding-left:38px;margin-top:-2px;padding-bottom:8px;}
-  .checklist-item{display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--ink-dim);padding:3px 0;cursor:pointer;}
+  .checklist-item{overflow-wrap:anywhere;display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--ink-dim);padding:3px 0;cursor:pointer;}
   .checklist-item .box{width:12px;height:12px;border-radius:2px;border:1.5px solid var(--ink-faintest);flex-shrink:0;}
   .checklist-item.done{color:var(--ink-faint);text-decoration:line-through;}
   .checklist-item.done .box{background:var(--ink);border-color:var(--ink);}
@@ -111,6 +113,22 @@
   /* S64: hairline delete (archive) button — restrained, not a red delete-everywhere pattern */
   .row-del{width:24px;height:24px;border-radius:3px;flex-shrink:0;display:flex;align-items:center;justify-content:center;border:1px solid var(--border);color:var(--ink-faintest);cursor:pointer;font-size:12px;line-height:1;}
   .row-del:hover{color:var(--alert);border-color:rgba(217,122,140,0.4);}
+  .pickrow{display:flex;gap:6px;align-items:center;font-size:11px;color:var(--ink-dim);flex-wrap:wrap;}
+  .pickrow label{display:flex;gap:2px;align-items:center;}
+  .habit-row.off-day{display:none;} .show-off .habit-row.off-day{display:grid;opacity:0.55;}
+  .bonus{color:var(--ok);font-weight:700;}
+  .slip{color:var(--alert);font-weight:700;}
+  .logdate-edit{margin-left:8px;background:rgba(0,0,0,0.35);border:1px solid var(--border);border-radius:4px;color:var(--ink);font-size:10px;padding:2px 4px;font-family:inherit;}
+  .chk-line{display:flex;align-items:center;gap:6px;}
+  .chk-line .checklist-item{flex:1;min-width:0;}
+  .opt-tag{font-size:8.5px;color:var(--ink-faintest);font-variant:small-caps;letter-spacing:0.04em;margin-left:4px;}
+  .logdate-btn{display:inline-block;margin-top:5px;font-size:10px;font-variant:small-caps;letter-spacing:0.04em;color:var(--ink-dim);border:1px solid var(--border);border-radius:12px;padding:2px 9px;cursor:pointer;}
+  .logdate-btn.on{color:#150e14;background:var(--accent);border-color:var(--accent);}
+  .item-opt{font-size:9px;line-height:1;color:var(--ink-faintest);cursor:pointer;padding:2px 4px;flex-shrink:0;} .item-opt:hover{color:var(--ink);}
+  .item-edit,.item-del{font-size:10px;line-height:1;color:var(--ink-faintest);cursor:pointer;padding:2px 4px;border-radius:3px;flex-shrink:0;}
+  .item-edit:hover{color:var(--ink);} .item-del:hover{color:var(--alert);}
+  .row-edit{width:24px;height:24px;border-radius:3px;flex-shrink:0;display:flex;align-items:center;justify-content:center;border:1px solid var(--border);color:var(--ink-faintest);cursor:pointer;font-size:12px;line-height:1;}
+  .row-edit:hover{color:var(--ink);border-color:rgba(255,255,255,0.25);}
   /* S64: add-item control for checklist habits */
   .chk-add{display:inline-block;font-size:10px;color:var(--ink-faint);cursor:pointer;padding:4px 0 2px 0;font-variant:small-caps;letter-spacing:0.04em;}
   .chk-add:hover{color:var(--ink-dim);}
@@ -125,27 +143,6 @@
   .create-form input[type="text"]{flex:1;min-width:150px;}
   .create-form .go{font-family:var(--gc-serif);font-variant:small-caps;letter-spacing:0.05em;background:var(--ink);color:#150e14;border:none;border-radius:4px;padding:6px 12px;cursor:pointer;}
 
-  /* ===== Level Up view ===== */
-  #levelView{display:none;flex-direction:column;gap:14px;align-items:center;}
-  #levelView.on{display:flex;}
-  .sigil-wrap{position:relative;width:200px;height:200px;margin:10px auto 2px;}
-  .sigil-wrap svg.sigil-bg{position:absolute;inset:0;width:100%;height:100%;color:var(--ink-faintest);opacity:0.55;}
-  .sigil-wrap svg.sigil-ring{position:absolute;inset:0;width:100%;height:100%;}
-  .sigil-main{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;}
-  .sigil-level{font-family:var(--gc-serif);font-size:42px;font-weight:700;color:var(--ink);line-height:1;font-variant:small-caps;}
-  .sigil-sub{font-size:9.5px;letter-spacing:0.14em;text-transform:uppercase;font-variant:small-caps;color:var(--accent);margin-top:5px;font-weight:700;}
-  .headline{text-align:center;}
-  .headline-title{font-family:var(--gc-serif);font-size:18px;font-weight:700;color:var(--ink);font-variant:small-caps;letter-spacing:0.03em;}
-  .headline-sub{font-size:11px;color:var(--ink-dim);margin-top:6px;line-height:1.6;}
-  .lvlpanel{width:100%;}
-  .bucket-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:6px;}
-  .bucket{display:flex;flex-direction:column;align-items:center;}
-  .mon-ring{position:relative;width:60px;height:60px;}
-  .mon-ring svg{width:100%;height:100%;transform:rotate(-90deg);}
-  .mon-ring-track{fill:none;stroke:rgba(255,255,255,0.07);stroke-width:3;}
-  .mon-ring-fill{fill:none;stroke-width:3;stroke-linecap:round;}
-  .mon-ring-val{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:var(--ink);}
-  .bucket-label{font-size:8.5px;color:var(--ink-faint);text-transform:uppercase;font-variant:small-caps;letter-spacing:0.03em;margin-top:7px;text-align:center;}
   .streak-summary{display:flex;gap:10px;margin-top:4px;}
   .streak-stat{flex:1;text-align:center;padding:11px 4px;border:1px solid var(--border-2);border-radius:4px;}
   .streak-stat-val{font-size:15px;font-weight:700;color:var(--warn);}
@@ -161,7 +158,6 @@
   <div class="spacer"></div>
   <div class="nav-pill panel" data-role="nav-item">
     <button id="tabHabits" class="active" onclick="showView('habits')">Habits &amp; Todos</button>
-    <button id="tabLevel" onclick="showView('level')">Level Up</button>
   </div>
 </div>
 
@@ -187,13 +183,22 @@
           <option value="negative">negative</option>
           <option value="both">positive + negative</option>
           <option value="checklist">checklist</option>
+          <option value="value">value (hours, reps…)</option>
         </select>
-        <select id="hFreq">
+        <select id="hFreq" onchange="syncHabitForm()">
           <option value="weekdays">every day</option>
+          <option value="days">specific days</option>
           <option value="count">N×/week</option>
+          <option value="monthly">monthly</option>
         </select>
-        <input type="text" id="hItems" placeholder="checklist items, comma-separated (optional)">
-        <button class="go" onclick="createHabit()">Add</button>
+        <span id="hDays" class="pickrow" style="display:none;">
+          <label><input type="checkbox" value="0">Mon</label><label><input type="checkbox" value="1">Tue</label><label><input type="checkbox" value="2">Wed</label><label><input type="checkbox" value="3">Thu</label><label><input type="checkbox" value="4">Fri</label><label><input type="checkbox" value="5">Sat</label><label><input type="checkbox" value="6">Sun</label>
+        </span>
+        <span id="hCount" class="pickrow" style="display:none;">times <input type="number" id="hCountMin" min="1" max="31" placeholder="min" style="width:56px"> to <input type="number" id="hCountMax" min="1" max="31" placeholder="max (opt.)" style="width:84px"></span>
+        <span id="hTarget" class="pickrow" style="display:none;">target <input type="number" id="hTargetMin" min="0" step="any" placeholder="min" style="width:60px"> to <input type="number" id="hTargetMax" min="0" step="any" placeholder="max (opt.)" style="width:84px"> <input type="text" id="hUnit" placeholder="unit (hrs)" style="width:80px;flex:none;min-width:0"></span>
+        <input type="text" id="hItems" placeholder="checklist items, comma-separated; end an item with ? to make it optional">
+        <span class="pickrow"><label><input type="checkbox" id="hLogOn" onchange="syncHabitForm()">second tick</label><input type="text" id="hLogLabel" placeholder="label" value="Log date" style="width:90px;flex:none;min-width:0;display:none"></span>
+        <button class="go" id="hGo" onclick="createHabit()">Add</button>
       </div>
     </div>
 
@@ -210,96 +215,91 @@
         <input type="text" id="tText" placeholder="Todo text">
         <select id="tPriority"><option value="med">Med</option><option value="high">High</option><option value="low">Low</option></select>
         <input type="date" id="tDue">
-        <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--ink-dim);white-space:nowrap;"><input type="checkbox" id="tQuest"> ⚔ This is a quest</label>
-        <button class="go" onclick="createTodo()">Add</button>
+        <button class="go" id="tGo" onclick="createTodo()">Add</button>
       </div>
     </div>
 
-  </div>
-
-  <!-- ===== Level Up view ===== -->
-  <div id="levelView" data-role="level-panel">
-    <div class="sigil-wrap">
-      <svg class="sigil-bg" viewBox="0 0 200 200" fill="none" stroke="currentColor" stroke-width="0.7">
-        <circle cx="100" cy="100" r="80"/><circle cx="100" cy="100" r="55"/>
-        <polygon points="100,35 155,140 45,140"/>
-        <line x1="100" y1="16" x2="100" y2="35"/><line x1="100" y1="165" x2="100" y2="184"/>
-        <line x1="16" y1="100" x2="35" y2="100"/><line x1="165" y1="100" x2="184" y2="100"/>
-      </svg>
-      <svg class="sigil-ring" viewBox="0 0 200 200" style="transform:rotate(-90deg);">
-        <circle cx="100" cy="100" r="90" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="1.5"/>
-        <circle id="levelRing" cx="100" cy="100" r="90" fill="none" stroke="#eab8c0" stroke-width="1.5"
-                stroke-linecap="round" stroke-dasharray="565" stroke-dashoffset="565"/>
-      </svg>
-      <div class="sigil-main">
-        <div class="sigil-level" id="levelNum">–</div>
-        <div class="sigil-sub">Level</div>
-      </div>
-    </div>
-    <div class="headline">
-      <div class="headline-title" id="levelHeadline">Your level</div>
-      <div class="headline-sub" id="levelSubline"></div>
-    </div>
-
-    <!-- S76: bad-guy notices (threshold triggers off existing data) -->
-    <div id="badguyRow" style="display:none;margin:0 0 4px;"></div>
-
-    <div class="panel section lvlpanel">
-      <div class="card-title">Bucket Stats</div>
-      <div class="bucket-grid" id="bucketGrid"></div>
-    </div>
-    <div class="panel section lvlpanel">
-      <div class="card-title" style="margin-bottom:9px;">Since Last Level</div>
-      <div class="streak-summary" id="sinceStats"></div>
-    </div>
-    <div class="stub-note" id="stubNote"></div>
   </div>
 
 </div>
 
 <script>
 (function(){
-  var BUCKET_COLORS = {
-    "Maintenance":"#8fc9a3","Habits":"#eab8c0","Work":"#d9b872",
-    "Business":"#a8949e","Sidequests":"#d97a8c","Creative/Relax":"#8fc9a3"
-  };
   function esc(s){ return (s==null?"":String(s)).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];}); }
   function post(url, body){ return fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body||{})}); }
 
   window.showView = function(v){
     document.getElementById("habitsView").style.display = (v==="habits")?"block":"none";
-    document.getElementById("levelView").classList.toggle("on", v==="level");
     document.getElementById("tabHabits").classList.toggle("active", v==="habits");
-    document.getElementById("tabLevel").classList.toggle("active", v==="level");
-    if(v==="level") loadLevel();
   };
-  window.toggleForm = function(id){ document.getElementById(id).classList.toggle("open"); };
+  window.toggleForm = function(id){
+    // opening or closing a form always leaves "edit" mode, so a half-finished edit can't turn the next Add into a save
+    if(id==="habitForm") resetHabitForm();
+    if(id==="todoForm"){ editingTodo=null; document.getElementById("tGo").textContent="Add"; document.getElementById("tText").value=""; document.getElementById("tDue").value=""; }
+    document.getElementById(id).classList.toggle("open");
+  };
 
   // ---- Habits ----
+  function fmt(n){ return (Math.round(Number(n)*100)/100).toString(); }
+  function progressText(h){
+    var p = h.period;
+    if(p){
+      var tgt = p.target==null ? "" : (" of " + fmt(p.target) + (p.max && p.max!==p.target ? "–"+fmt(p.max) : ""));
+      var u = h.unit ? " "+esc(h.unit) : "";
+      return ' · <span class="'+(p.bonus?"bonus":"")+'">'+fmt(p.done)+tgt+u+' this '+p.kind+(p.bonus?" · bonus":"")+(p.met&&!p.bonus?" ✓":"")+'</span>';
+    }
+    if(h.field_type==="negative") return h.today_down>0 ? ' · <span class="slip">'+h.today_down+' slip'+(h.today_down>1?"s":"")+' today</span>' : ' · clean so far today';
+    if(h.field_type==="positive") return h.today_up>0 ? ' · '+h.today_up+' today' : "";
+    if(h.field_type==="both") return (h.today_up||h.today_down) ? ' · +'+h.today_up+' / −'+h.today_down+' today' : "";
+    if(h.field_type==="value") return ' · '+fmt(h.today_value)+(h.unit?" "+esc(h.unit):"")+' today';
+    if(h.field_type==="checklist"){
+      var cl=h.checklist||[]; if(!cl.length) return "";
+      var req=cl.filter(function(c){return !c.optional;}), od=cl.filter(function(c){return c.optional&&c.done;}).length;
+      return ' · '+req.filter(function(c){return c.done;}).length+' of '+req.length+(od?' (+'+od+' optional)':"");
+    }
+    return "";
+  }
+  window.tapValue = function(id, unit){
+    var raw = prompt("How much" + (unit ? " ("+unit+")" : "") + "?"); if(raw===null) return;
+    var v = Number(raw); if(!(v>0)) return;
+    fetch("/api/habits/tap",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:id,direction:"up",value:v})}).then(function(){ loadHabits(); });
+  };
+  window.editLogDate = function(id, el){
+    post("/api/habits/log-date/edit",{id:id,old_date:el.getAttribute("data-old")||"",new_date:el.value||""}).then(function(){ loadHabits(); });
+  };
+  window.logDate = function(id, on){ post("/api/habits/log-date",{id:id,on:on}).then(function(){ loadHabits(); }); };
+  window.toggleOptional = function(id, opt){ post("/api/habits/checklist/optional",{id:id,optional:opt}).then(function(){ loadHabits(); }); };
+  window.toggleOffDays = function(){ document.getElementById("habitsList").classList.toggle("show-off"); loadHabits(); };
   function habitRow(h){
-    var streakCls = h.done_today ? "done" : ((h.due_today && h.streak>0) ? "risk" : "");
-    var meta = esc(h.frequency_label) + " · " + esc(h.field_label);
+    var streakCls = (h.period ? h.period.met : h.done_today) ? "done" : ((h.due_today && h.streak>0) ? "risk" : "");
+    var meta = esc(h.frequency_label) + " · " + esc(h.field_label) + progressText(h);
     var taps = "";
     if(h.field_type==="tickbox"){
-      taps = '<div class="tap-btns"><div class="tap-btn check '+(h.done_today?"on":"")+'" title="tick" onclick="tap('+h.id+',\'check\')">✓</div></div>';
+      taps = '<div class="tap-btns"><div class="tap-btn check '+(h.done_today?"on":"")+'" title="'+(h.done_today?"un-tick":"tick")+'" onclick="tap('+h.id+',\''+(h.done_today?"uncheck":"check")+'\')">✓</div></div>';
+    } else if(h.field_type==="value"){
+      taps = '<div class="tap-btns"><div class="tap-btn plus" title="log '+esc(h.unit||"value")+'" onclick="tapValue('+h.id+',\''+esc(h.unit||"")+'\')">+</div></div>';
     } else if(h.field_type==="checklist"){
       taps = '<div class="tap-btns"></div>';   // S77: empty cell keeps the 5-track grid aligned
     } else if(h.field_type==="positive"){
-      taps = '<div class="tap-btns"><div class="tap-btn plus" onclick="tap('+h.id+',\'up\')">+</div></div>';
+      taps = '<div class="tap-btns"><div class="tap-btn plus '+(h.today_up>0?"on":"")+'" onclick="tap('+h.id+',\'up\')">+</div></div>';
     } else if(h.field_type==="negative"){
-      taps = '<div class="tap-btns"><div class="tap-btn minus" onclick="tap('+h.id+',\'down\')">−</div></div>';
+      taps = '<div class="tap-btns"><div class="tap-btn minus '+(h.today_down>0?"on":"")+'" title="log a slip" onclick="tap('+h.id+',\'down\')">−</div></div>';
     } else { // both
-      taps = '<div class="tap-btns"><div class="tap-btn minus" onclick="tap('+h.id+',\'down\')">−</div><div class="tap-btn plus" onclick="tap('+h.id+',\'up\')">+</div></div>';
+      taps = '<div class="tap-btns"><div class="tap-btn minus '+(h.today_down>0?"on":"")+'" onclick="tap('+h.id+',\'down\')">−</div><div class="tap-btn plus '+(h.today_up>0?"on":"")+'" onclick="tap('+h.id+',\'up\')">+</div></div>';
     }
     var del = '<div class="row-del" title="Archive this habit" onclick="delHabit('+h.id+',\''+esc(h.name).replace(/'/g,"\\'")+'\')">✕</div>';
     // S77: grid column order — icon | name | tap-controls | streak pill | archive. taps now
     // precedes the streak pill so the pill sits in its own fixed track (a straight column).
-    var row = '<div class="habit-row">'
+    window.__habits = window.__habits || {}; window.__habits[h.id] = h;
+    var edit = '<div class="row-edit" title="Edit" onclick="editHabit('+h.id+')">✎</div>';
+    var row = '<div class="habit-row'+(h.due_today?'':' off-day')+'">'
       + '<div class="row-icon">◈</div>'
-      + '<div class="row-main"><div class="row-name">'+esc(h.name)+'</div><div class="row-meta">'+meta+(h.streak_rule==="min_taps"?(" · needs "+h.streak_min_taps+" taps"):"")+'</div></div>'
+      + '<div class="row-main"><div class="row-name">'+esc(h.name)+'</div><div class="row-meta">'+meta+(h.streak_rule==="min_taps"?(" · needs "+h.streak_min_taps+" taps"):"")+'</div>'
+        + (h.log_date_label ? '<div><span class="logdate-btn '+(h.logged_today?"on":"")+'" title="records today\'s date; a normal tick does not" onclick="logDate('+h.id+','+(!h.logged_today)+')">'+esc(h.log_date_label)+(h.logged_today?" ✓":"")+'</span>'+'<span class="row-meta" style="margin-left:8px">last:</span><input type="date" class="logdate-edit" title="change or clear the saved date" value="'+esc(h.last_logged||"")+'" data-old="'+esc(h.last_logged||"")+'" onchange="editLogDate('+h.id+',this)"></div>' : "")
+        + '</div>'
       + taps
       + '<div class="streak-pill '+streakCls+'">🔥 '+h.streak+'</div>'
-      + del
+      + edit + del
       + '</div>';
     if(h.field_type==="checklist"){
       // S64: render the checklist area for EVERY checklist habit (even with 0 items) so the
@@ -307,7 +307,8 @@
       // so checklist habits had nothing to tick and no way to add.
       row += '<div class="checklist-mini">';
       (h.checklist||[]).forEach(function(c){
-        row += '<div class="checklist-item '+(c.done?"done":"")+'" onclick="checkHabitItem('+c.id+','+(!c.done)+')"><span class="box"></span>'+esc(c.text)+'</div>';
+        row += '<div class="chk-line"><div class="checklist-item '+(c.done?"done":"")+(c.optional?" optional":"")+'" onclick="checkHabitItem('+c.id+','+(!c.done)+')"><span class="box"></span>'+esc(c.text)+(c.optional?' <span class="opt-tag">optional</span>':"")+'</div>'
+          + '<span class="item-opt" title="'+(c.optional?"Make required":"Make optional")+'" onclick="toggleOptional('+c.id+','+(!c.optional)+')">'+(c.optional?"●":"○")+'</span><span class="item-edit" title="Rename item" onclick="renameItem(\'habit\','+c.id+')">✎</span><span class="item-del" title="Remove item" onclick="delItem(\'habit\','+c.id+')">✕</span></div>';
       });
       row += '<span class="chk-add" onclick="addChecklistItem('+h.id+')">+ add item</span>';
       row += '</div>';
@@ -319,31 +320,88 @@
       var list = d.habits||[];
       var el = document.getElementById("habitsList");
       if(!list.length){ el.innerHTML = '<div class="empty">No native habits yet — add one, or tell Ghost "create habit: ...".</div>'; document.getElementById("habitsSub").textContent=""; return; }
-      var touched = list.filter(function(h){return h.done_today||h.today_up||h.today_check;}).length;
-      document.getElementById("habitsSub").textContent = touched + " of " + list.length + " touched";
+      var due = list.filter(function(h){return h.due_today;});
+      var touched = due.filter(function(h){return h.done_today||h.today_up||h.today_check||h.ticked_today;}).length;
+      var off = list.length - due.length;
+      var showing = el.classList.contains("show-off");
+      document.getElementById("habitsSub").innerHTML = touched + " of " + due.length + " touched today"
+        + (off ? ' · <a href="#" id="offToggle" onclick="toggleOffDays();return false;" style="text-decoration:underline">'+(showing?"hide":"show")+' '+off+' off-day</a>' : "");
       el.innerHTML = list.map(habitRow).join("");
     }).catch(function(){ document.getElementById("habitsList").innerHTML='<div class="empty">Could not load habits.</div>'; });
   }
   window.tap = function(id, dir){ post("/api/habits/tap",{id:id,direction:dir}).then(function(){ loadHabits(); }); };
   window.checkHabitItem = function(id, done){ post("/api/habits/checklist",{id:id,done:done}).then(function(){ loadHabits(); }); };
   window.addChecklistItem = function(habitId){
-    var text = prompt("New checklist item:"); if(!text || !text.trim()) return;
+    var text = prompt("New checklist item (end with ? to make it optional):"); if(!text || !text.trim()) return;
     post("/api/habits/checklist/add",{id:habitId,text:text.trim()}).then(function(){ loadHabits(); });
   };
   window.delHabit = function(id, name){
     if(!confirm('Archive habit "'+name+'"? It stops showing here; its history is kept.')) return;
     post("/api/habits/delete",{id:id}).then(function(){ loadHabits(); });
   };
+  var editingHabit = null;
+  window.syncHabitForm = function(){
+    var f=document.getElementById("hFreq").value, t=document.getElementById("hField").value;
+    document.getElementById("hDays").style.display = (f==="days")?"flex":"none";
+    document.getElementById("hCount").style.display = (f==="count"||f==="monthly")?"flex":"none";
+    document.getElementById("hTarget").style.display = (t==="value")?"flex":"none";
+    document.getElementById("hLogLabel").style.display = document.getElementById("hLogOn").checked ? "" : "none";
+  };
+  document.getElementById("hField").addEventListener("change", function(){ window.syncHabitForm(); });
+  function dayBoxes(){ return Array.prototype.slice.call(document.querySelectorAll("#hDays input")); }
+  function habitBody(){
+    var f=document.getElementById("hFreq").value, t=document.getElementById("hField").value, b={field_type:t};
+    var num=function(id){ var v=document.getElementById(id).value; return v===""?null:Number(v); };
+    if(f==="days"){
+      b.frequency_kind="weekdays";
+      b.frequency_days=dayBoxes().filter(function(x){return x.checked;}).map(function(x){return Number(x.value);});
+      if(!b.frequency_days.length) b.frequency_days=[0,1,2,3,4,5,6];
+    } else if(f==="weekdays"){ b.frequency_kind="weekdays"; b.frequency_days=[0,1,2,3,4,5,6]; }
+    else { b.frequency_kind=f; b.frequency_count=num("hCountMin")||(f==="monthly"?1:3); b.frequency_count_max=num("hCountMax"); }
+    b.log_date_label = document.getElementById("hLogOn").checked ? (document.getElementById("hLogLabel").value.trim()||"Log date") : "";
+    if(t==="value"){ b.target_value=num("hTargetMin"); b.target_max=num("hTargetMax"); b.unit=document.getElementById("hUnit").value.trim(); }
+    return b;
+  }
+  window.editHabit = function(id){
+    var h = window.__habits[id]; if(!h) return;
+    editingHabit = id;
+    document.getElementById("habitForm").classList.add("open");
+    document.getElementById("hName").value = h.name;
+    document.getElementById("hField").value = h.field_type;
+    var f = h.frequency_kind==="weekdays" ? ((h.frequency_days||[]).length===7 ? "weekdays" : "days") : h.frequency_kind;
+    document.getElementById("hFreq").value = f;
+    dayBoxes().forEach(function(x){ x.checked = (h.frequency_days||[]).indexOf(Number(x.value))>=0; });
+    document.getElementById("hCountMin").value = h.frequency_count||""; document.getElementById("hCountMax").value = h.frequency_count_max||"";
+    document.getElementById("hTargetMin").value = h.target_value||""; document.getElementById("hTargetMax").value = h.target_max||""; document.getElementById("hUnit").value = h.unit||"";
+    document.getElementById("hItems").style.display = "none";
+    document.getElementById("hLogOn").checked = !!h.log_date_label; document.getElementById("hLogLabel").value = h.log_date_label || "Log date";
+    document.getElementById("hGo").textContent = "Save";
+    window.syncHabitForm();
+    document.getElementById("hName").focus();
+  };
+  function resetHabitForm(){
+    editingHabit = null;
+    ["hName","hItems","hCountMin","hCountMax","hTargetMin","hTargetMax","hUnit"].forEach(function(i){ document.getElementById(i).value=""; });
+    dayBoxes().forEach(function(x){ x.checked=false; });
+    document.getElementById("hLogOn").checked = false; document.getElementById("hLogLabel").value = "Log date";
+    document.getElementById("hItems").style.display = "";
+    document.getElementById("hGo").textContent = "Add";
+    window.syncHabitForm();
+  }
   window.createHabit = function(){
     var name=document.getElementById("hName").value.trim(); if(!name) return;
-    var body={name:name,field_type:document.getElementById("hField").value,frequency_kind:document.getElementById("hFreq").value};
-    if(body.frequency_kind==="count") body.frequency_count=3;
+    var body=habitBody(); body.name=name;
+    if(editingHabit !== null){
+      body.id=editingHabit;
+      post("/api/habits/edit",body).then(function(){ resetHabitForm(); document.getElementById("habitForm").classList.remove("open"); loadHabits(); });
+      return;
+    }
     // S64: collect checklist items at create time (comma-separated) — only meaningful for a checklist habit
     if(body.field_type==="checklist"){
       var raw=(document.getElementById("hItems").value||"").split(",").map(function(s){return s.trim();}).filter(Boolean);
       if(raw.length) body.checklist=raw;
     }
-    post("/api/habits/create",body).then(function(){ document.getElementById("hName").value=""; document.getElementById("hItems").value=""; toggleForm("habitForm"); loadHabits(); });
+    post("/api/habits/create",body).then(function(){ resetHabitForm(); toggleForm("habitForm"); loadHabits(); });
   };
 
   // ---- Todos ----
@@ -358,30 +416,36 @@
       ? ('<div class="row-meta">checklist · '+cl.filter(function(c){return c.done;}).length+' of '+cl.length+'</div>')
       : "";
     var del = '<div class="row-del" title="Archive this todo" onclick="delTodo('+t.id+',\''+esc(t.text).replace(/'/g,"\\'")+'\')">✕</div>';
-    // S78: per-row quest toggle (the todo "edit" — there's no edit modal). ⚔ = quest, dim
-    // outline = tap to make it a quest. (The quest currency tier was removed 19/10/2026.)
-    var q = '<div class="row-del" title="'+(t.is_quest?"Quest — tap to unflag":"Mark as a quest")+'" onclick="toggleTodoQuest('+t.id+','+(!t.is_quest)+')" style="'+(t.is_quest?"color:#e0bd85;border-color:rgba(224,189,133,0.45);":"")+'">⚔</div>';
-    var nameQ = t.is_quest ? '<span style="color:#e0bd85;" title="quest">⚔ </span>' : "";
+    window.__todos = window.__todos || {}; window.__todos[t.id] = t;
+    var edit = '<div class="row-edit" title="Edit" onclick="editTodo('+t.id+')">✎</div>';
     var row = '<div class="todo-row">'
       + '<div class="todo-check '+(t.done?"done":"")+'" onclick="completeTodo('+t.id+','+(!t.done)+')"></div>'
-      + '<div class="row-main"><div class="row-name '+(t.done?"done":"")+'">'+nameQ+esc(t.text)+'</div>'+meta+'</div>'
+      + '<div class="row-main"><div class="row-name '+(t.done?"done":"")+'">'+esc(t.text)+'</div>'+meta+'</div>'
       + (t.priority?'<div class="todo-p '+t.priority+'">'+t.priority.charAt(0).toUpperCase()+t.priority.slice(1)+'</div>':"")
-      + due + q + del + '</div>';
+      + due + edit + del + '</div>';
     // S77: mirror the S64 habit-checklist UI onto checklist todos — render the mini-list for EVERY
     // checklist todo (even 0-item) so the "+ add item" control is always reachable; tick wires to
     // the existing /api/todos/checklist endpoint (all-ticked completes the todo).
     if(t.kind==="checklist"){
       row += '<div class="checklist-mini">';
       cl.forEach(function(c){
-        row += '<div class="checklist-item '+(c.done?"done":"")+'" onclick="checkTodoItem('+c.id+','+(!c.done)+')"><span class="box"></span>'+esc(c.text)+'</div>';
+        row += '<div class="chk-line"><div class="checklist-item '+(c.done?"done":"")+'" onclick="checkTodoItem('+c.id+','+(!c.done)+')"><span class="box"></span>'+esc(c.text)+'</div>'
+          + '<span class="item-edit" title="Rename item" onclick="renameItem(\'todo\','+c.id+')">✎</span><span class="item-del" title="Remove item" onclick="delItem(\'todo\','+c.id+')">✕</span></div>';
       });
       row += '<span class="chk-add" onclick="addTodoChecklistItem('+t.id+')">+ add item</span>';
       row += '</div>';
     }
     return row;
   }
-  window.toggleTodoQuest = function(id, val){ post("/api/todos/quest",{id:id,is_quest:val}).then(function(){ loadTodos(); }); };
-  window.checkTodoItem = function(id, done){ post("/api/todos/checklist",{id:id,done:done}).then(function(){ loadTodos(); if(document.getElementById("levelView").classList.contains("on")) loadLevel(); }); };
+  window.renameItem = function(kind, id){
+    var text = prompt("Rename item:"); if(!text || !text.trim()) return;
+    post("/api/"+(kind==="habit"?"habits":"todos")+"/checklist/rename",{id:id,text:text.trim()}).then(function(){ kind==="habit"?loadHabits():loadTodos(); });
+  };
+  window.delItem = function(kind, id){
+    if(!confirm("Remove this checklist item?")) return;
+    post("/api/"+(kind==="habit"?"habits":"todos")+"/checklist/delete",{id:id}).then(function(){ kind==="habit"?loadHabits():loadTodos(); });
+  };
+  window.checkTodoItem = function(id, done){ post("/api/todos/checklist",{id:id,done:done}).then(function(){ loadTodos(); }); };
   window.addTodoChecklistItem = function(todoId){
     var text = prompt("New checklist item:"); if(!text || !text.trim()) return;
     post("/api/todos/checklist/add",{id:todoId,text:text.trim()}).then(function(){ loadTodos(); });
@@ -396,59 +460,34 @@
       el.innerHTML = list.map(todoRow).join("");
     }).catch(function(){ document.getElementById("todosList").innerHTML='<div class="empty">Could not load todos.</div>'; });
   }
-  window.completeTodo = function(id, done){ post("/api/todos/complete",{id:id,done:done}).then(function(){ loadTodos(); if(document.getElementById("levelView").classList.contains("on")) loadLevel(); }); };
+  window.completeTodo = function(id, done){ post("/api/todos/complete",{id:id,done:done}).then(function(){ loadTodos(); }); };
   window.delTodo = function(id, text){
     if(!confirm('Archive todo "'+text+'"? It stops showing here; its record is kept.')) return;
     post("/api/todos/delete",{id:id}).then(function(){ loadTodos(); });
   };
+  var editingTodo = null;
+  window.editTodo = function(id){
+    var t = window.__todos[id]; if(!t) return;
+    editingTodo = id;
+    document.getElementById("todoForm").classList.add("open");
+    document.getElementById("tText").value = t.text;
+    document.getElementById("tPriority").value = t.priority || "med";
+    document.getElementById("tDue").value = t.due_date || "";
+    document.getElementById("tGo").textContent = "Save";
+    document.getElementById("tText").focus();
+  };
   window.createTodo = function(){
     var text=document.getElementById("tText").value.trim(); if(!text) return;
-    var body={text:text,priority:document.getElementById("tPriority").value,is_quest:document.getElementById("tQuest").checked};
+    if(editingTodo !== null){
+      var eb={id:editingTodo,text:text,priority:document.getElementById("tPriority").value,due_date:document.getElementById("tDue").value||""};
+      post("/api/todos/edit",eb).then(function(){ editingTodo=null; document.getElementById("tText").value=""; document.getElementById("tDue").value=""; document.getElementById("tGo").textContent="Add"; document.getElementById("todoForm").classList.remove("open"); loadTodos(); });
+      return;
+    }
+    var body={text:text,priority:document.getElementById("tPriority").value};
     var due=document.getElementById("tDue").value; if(due) body.due_date=due;
-    post("/api/todos/create",body).then(function(){ document.getElementById("tText").value=""; document.getElementById("tDue").value=""; document.getElementById("tQuest").checked=false; toggleForm("todoForm"); loadTodos(); });
+    post("/api/todos/create",body).then(function(){ document.getElementById("tText").value=""; document.getElementById("tDue").value=""; toggleForm("todoForm"); loadTodos(); });
   };
 
-  // ---- Level ----
-  function ring(pct, color){
-    var C = 2*Math.PI*26; var off = C*(1-(pct/100));
-    return '<div class="mon-ring"><svg viewBox="0 0 62 62"><circle class="mon-ring-track" cx="31" cy="31" r="26"/>'
-      + '<circle class="mon-ring-fill" cx="31" cy="31" r="26" stroke="'+color+'" stroke-dasharray="'+C.toFixed(0)+'" stroke-dashoffset="'+off.toFixed(0)+'"/></svg>'
-      + '<div class="mon-ring-val">'+pct+'%</div></div>';
-  }
-  window.loadLevel = function(){
-    fetch("/api/level").then(function(r){return r.json();}).then(function(d){
-      if(!d || d.error){ return; }
-      document.getElementById("levelNum").textContent = d.level;
-      document.getElementById("levelHeadline").textContent = "Level " + d.level;
-      document.getElementById("levelSubline").innerHTML = d.total_completions + " completions logged · " + d.pct_to_next + "% toward level " + (d.level+1);
-      // overall ring (circumference for r=90)
-      var C = 2*Math.PI*90; document.getElementById("levelRing").setAttribute("stroke-dasharray", C.toFixed(0));
-      document.getElementById("levelRing").setAttribute("stroke-dashoffset", (C*(1-(d.pct_to_next/100))).toFixed(0));
-      var grid = (d.buckets||[]).map(function(b){
-        return '<div class="bucket">'+ring(b.pct, BUCKET_COLORS[b.bucket]||"#a8949e")+'<div class="bucket-label">'+esc(b.bucket.replace("/","/<br>"))+'</div></div>';
-      }).join("");
-      document.getElementById("bucketGrid").innerHTML = grid;
-      var s = d.since||{};
-      document.getElementById("sinceStats").innerHTML =
-        '<div class="streak-stat"><div class="streak-stat-val">'+(s.longest_streak||0)+'</div><div class="streak-stat-label">Longest streak</div></div>'
-        + '<div class="streak-stat"><div class="streak-stat-val">'+(s.days_active||0)+'</div><div class="streak-stat-label">Days active</div></div>'
-        + '<div class="streak-stat"><div class="streak-stat-val">'+(s.todos_done||0)+'</div><div class="streak-stat-label">Todos done</div></div>';
-      document.getElementById("stubNote").textContent = d._placeholder || "";
-    }).catch(function(){});
-    loadBadguys();
-  };
-
-  window.loadBadguys = function(){
-    fetch("/api/badguys").then(function(r){return r.json();}).then(function(d){
-      var row = document.getElementById("badguyRow");
-      var a = (d && d.active) || [];
-      if(!a.length){ row.style.display="none"; row.innerHTML=""; return; }
-      row.style.display="";
-      row.innerHTML = a.map(function(b){
-        return '<span style="display:inline-block;border:1px solid #d97a8c;color:#d97a8c;border-radius:12px;padding:2px 10px;margin:2px;font-size:11px;">⚔ '+esc(b.label)+'</span>';
-      }).join(" ");
-    }).catch(function(){});
-  };
 
   loadHabits(); loadTodos();
 })();

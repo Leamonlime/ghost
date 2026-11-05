@@ -40,7 +40,14 @@ MEAL_GROUPS = {"breakfast": "breakfast", "lunch": "lunch", "dinner": "dinner", "
 
 _HTTP_TIMEOUT = httpx.Timeout(15.0)
 
+# RETIRED 11/10/2026 (decision #9): the Ghost app's food log replaces FatSecret completely.
+# Every read/write path gates on is_configured(), so this one switch turns the whole
+# integration off. Code and the FatSecret diary data are deliberately kept, not deleted.
+RETIRED = True
+
 def is_configured() -> bool:
+    if RETIRED:
+        return False
     return bool(CONSUMER_KEY and CONSUMER_SECRET and ACCESS_TOKEN and ACCESS_SECRET)
 
 def _pct(s: str) -> str:
