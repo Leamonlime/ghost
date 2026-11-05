@@ -55,11 +55,20 @@ def is_quiet_hours() -> bool:
     now = datetime.now(LOCAL_TZ)
     return now.hour >= 22 or now.hour < 6 or (now.hour == 6 and now.minute < 30)
 
-# Routine pattern (confirmed 19/07/2026): office Monday-Wednesday, WFH Thursday-Friday.
+# Routine pattern (changed 05/11/2026): office Tuesday-Thursday, WFH Monday and Friday.
 # A chat override ("I'm home today" / "I'm at the office today") sets Redis
 # `location_override` until local midnight; refreshed into this global each
 # main-loop tick so prompts and movement logic agree.
 _location_override = None
+
+def pattern_location(wd: int) -> tuple:
+    """Pattern assumption for a weekday (0=Mon): office Tue/Wed/Thu, WFH Mon/Fri, else weekend."""
+    if wd in (1, 2, 3):
+        return "office", False
+    if wd in (0, 4):
+        return "wfh", False
+    return "weekend", False
+
 
 def location_today() -> tuple:
     """(location, source). Source is 'manual' (chat override — always wins),
@@ -72,12 +81,7 @@ def location_today() -> tuple:
         return "office", "wifi"
     if _wifi_location == "home":
         return "wfh", "wifi"
-    wd = datetime.now(LOCAL_TZ).weekday()
-    if wd <= 2:
-        return "office", False
-    if wd <= 4:
-        return "wfh", False
-    return "weekend", False
+    return pattern_location(datetime.now(LOCAL_TZ).weekday())
 
 async def refresh_location_override():
     global _location_override
@@ -213,9 +217,9 @@ def time_context() -> str:
     elif source == "wifi":
         location = f"her phone is on the {'work' if loc == 'office' else 'home'} wifi (auto-detected, current)"
     elif loc == "office":
-        location = "usually an office day (Mon-Wed pattern, not confirmed)"
+        location = "usually an office day (Tue-Thu pattern, not confirmed)"
     elif loc == "wfh":
-        location = "usually a WFH day (Thu-Fri pattern, not confirmed)"
+        location = "usually a WFH day (Mon/Fri pattern, not confirmed)"
     else:
         location = "It's the weekend"
     return f"It is {part}, {clock} on {day} local time. {location}."
