@@ -647,6 +647,55 @@ def _mask_command_center(data: dict) -> dict:
     d["demo"] = True
     return d
 
+def _fmtn(n):
+    return f"{round(float(n), 2):g}"
+
+
+def _habit_progress(h):
+    """Short progress text for a native habit, mirroring ghost-habits.html."""
+    p = h.get("period")
+    if p:
+        tgt = "" if p["target"] is None else f" of {_fmtn(p['target'])}" + (f"-{_fmtn(p['max'])}" if p.get("max") and p["max"] != p["target"] else "")
+        unit = f" {h['unit']}" if h.get("unit") else ""
+        return f"{_fmtn(p['done'])}{tgt}{unit} this {p['kind']}" + (" (bonus)" if p.get("bonus") else "")
+    ft = h["field_type"]
+    if ft == "negative":
+        return f"{h['today_down']} slip{'s' if h['today_down'] != 1 else ''} today" if h["today_down"] else "clean so far today"
+    if ft == "positive":
+        return f"{h['today_up']} today" if h["today_up"] else ""
+    if ft == "both":
+        return f"+{h['today_up']} / -{h['today_down']} today" if (h["today_up"] or h["today_down"]) else ""
+    if ft == "value":
+        return f"{_fmtn(h['today_value'])}{(' ' + h['unit']) if h.get('unit') else ''} today"
+    if ft == "checklist":
+        req = [c for c in h["checklist"] if not c.get("optional")]
+        od = sum(1 for c in h["checklist"] if c.get("optional") and c["done"])
+        return f"{sum(1 for c in req if c['done'])} of {len(req)}" + (f" (+{od} optional)" if od else "")
+    return ""
+
+
+async def _native_home(uid):
+    """Today's native habits (due today only: weekday-limited ones such as the office add-on drop out
+    on other days) and open todos (priority High>Med>Low, then due date), in the Command Center shape."""
+    habits, todos = [], []
+    for h in await native.list_habits(uid):
+        if not h["due_today"]:
+            continue
+        pn = {"negative": "negative", "both": "both"}.get(h["field_type"], "positive")
+        done = bool(h["period"]["met"]) if h.get("period") else (False if pn == "negative" else bool(h["done_today"]))
+        unit = {"count": "week", "monthly": "month"}.get(h["frequency_kind"], "day")
+        habits.append({"name": h["name"], "type": "habit", "positiveNegative": pn, "kind": h["field_type"],
+                       "streak": h["streak"], "streakUnit": unit, "doneToday": done,
+                       "atRisk": bool(h["streak"] > 0 and not done and pn != "negative" and not h.get("period")),
+                       "progress": _habit_progress(h), "frequency": h["frequency_label"]})
+    for t in await native.list_todos(uid, include_done=False):
+        cl = t.get("checklist") or []
+        todos.append({"text": t["text"], "priority": {"high": 2, "med": 1.5, "low": 1}.get(t["priority"], 1),
+                      "priorityLabel": t["priority"], "done": False, "due": t["due_date"], "overdue": bool(t["overdue"]),
+                      "progress": (f"{sum(1 for c in cl if c['done'])} of {len(cl)}" if t["kind"] == "checklist" else "")})
+    return habits, todos
+
+
 @app.get("/api/command-center")
 async def api_command_center(request: Request):
     """Read-only. Serves the v8 dashboard data contract from real Postgres/Redis/
@@ -665,18 +714,15 @@ async def api_command_center(request: Request):
         pass
     out = {"time": now.strftime("%A %d %B %Y, %I:%M %p").replace(" 0", " "), "errors": [],
            "_meta": {"derived": {
-               "habits.streak/doneToday/atRisk": "approximated from Habitica history/counterUp/value — habits have no native streak/done/at-risk",
+               "habits/todos": "native rebuilt habits + todos (same data as ghost-habits.html); habits = due today only; vitals still from Habitica",
                "nutrition": "from the Ghost app food_log (calories + protein only; carbs/fat/fiber null)", "nutrition.caloriesTarget": "from GHOST_CALORIE_TARGET env (0 = not set)",
            }}}
-    # Habitica: habits, todos, vitals
+    # Habits + todos: the NATIVE rebuilt data (same source as /ghost-habits.html), not Habitica.
+    # Vitals (hp/xp/gold/level) still come from Habitica below.
     try:
-        out["habits"] = await habitica.get_habits_detailed()
+        out["habits"], out["todos"] = await _native_home(_native_uid(request))
     except Exception as e:
-        out["errors"].append(f"habits: {e}"); out["habits"] = []
-    try:
-        out["todos"] = await habitica.get_todos_detailed()
-    except Exception as e:
-        out["errors"].append(f"todos: {e}"); out["todos"] = []
+        out["errors"].append(f"habits/todos: {e}"); out["habits"] = []; out["todos"] = []
     try:
         out["vitals"] = await habitica.get_user_stats()
     except Exception as e:

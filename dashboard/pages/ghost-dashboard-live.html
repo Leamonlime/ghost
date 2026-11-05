@@ -260,12 +260,12 @@
            only the parent cards' grid positions changed. -->
       <div class="row1">
         <div class="card panel" id="cardHabits">
-          <div class="card-title">Habits — Habitica</div>
+          <div class="card-title">Habits — today</div>
           <div class="scroll-list" id="habitsList" data-role="habits"></div>
         </div>
 
         <div class="card panel" id="cardTodos">
-          <div class="card-title">ToDos — Habitica</div>
+          <div class="card-title">ToDos</div>
           <div class="scroll-list" id="todosList" data-role="todos"></div>
         </div>
       </div>
@@ -452,8 +452,10 @@ function renderHabits(d){
   document.getElementById("navHabitCount").textContent = habits.length;
   document.getElementById("habitsList").innerHTML = habits.map(h => {
     const streakCls = h.atRisk ? "risk" : (h.doneToday ? "done" : "");
-    const streakTxt = h.atRisk ? "at risk" : (h.doneToday ? "done" : (h.streak+"d"));
-    return `<div class="habit-row" data-role="habit-row"><span class="htype ${esc(h.positiveNegative)}">${h.positiveNegative==="negative"?"−":(h.positiveNegative==="both"?"±":"+")}</span>${esc(h.name)}<span class="streak-pill ${streakCls}">${esc(streakTxt)}</span></div>`;
+    const u = h.streakUnit==="week" ? "w" : (h.streakUnit==="month" ? "mo" : "d");
+    const streakTxt = h.atRisk ? "at risk" : (h.doneToday ? "done" : (h.streak+u));
+    const prog = h.progress ? `<span class="hprog" style="margin-left:8px;font-size:10px;opacity:.6;">${esc(h.progress)}</span>` : "";
+    return `<div class="habit-row" data-role="habit-row"><span class="htype ${esc(h.positiveNegative)}">${h.positiveNegative==="negative"?"−":(h.positiveNegative==="both"?"±":"+")}</span>${esc(h.name)}${prog}<span class="streak-pill ${streakCls}">${esc(streakTxt)}</span></div>`;
   }).join("");
 }
 
@@ -462,7 +464,9 @@ function renderTodos(d){
   document.getElementById("navTodoCount").textContent = todos.filter(t=>!t.done).length;
   document.getElementById("todosList").innerHTML = todos.map(t => {
     const p = priorityBucket(t.priority);
-    return `<div class="todo-row" data-role="todo-row"><span class="todo-p ${p.cls}">${p.lbl}</span><span style="${t.done?'text-decoration:line-through;opacity:.5;':''}">${esc(t.text)}</span></div>`;
+    const due = t.due ? `<span class="tdue" style="margin-left:8px;font-size:10px;${t.overdue?'color:#ff7a9c;font-weight:700;':'opacity:.6;'}">due ${esc(t.due.slice(5))}</span>` : "";
+    const prog = t.progress ? `<span class="tprog" style="margin-left:8px;font-size:10px;opacity:.6;">${esc(t.progress)}</span>` : "";
+    return `<div class="todo-row" data-role="todo-row"><span class="todo-p ${p.cls}">${p.lbl}</span><span style="${t.done?'text-decoration:line-through;opacity:.5;':''}">${esc(t.text)}</span>${prog}${due}</div>`;
   }).join("");
 }
 
@@ -491,7 +495,8 @@ function ringStyle(pct, color){
 
 function renderMonitor(d){
   const habits = d.habits||[];
-  const todayPct = habits.length ? Math.round(100*habits.filter(h=>h.doneToday).length/habits.length) : 0;
+  const tickable = habits.filter(h=>h.positiveNegative!=="negative");   // a slip-free day is not a tick
+  const todayPct = tickable.length ? Math.round(100*tickable.filter(h=>h.doneToday).length/tickable.length) : 0;
   const cal = d.nutrition || {};
   const calTxt = cal.caloriesTarget ? Math.round(100*cal.caloriesLogged/cal.caloriesTarget)+"%" : (cal.caloriesLogged||0);
   // S70: Budget gauge removed (conversational budget retired — spending is CSV-only on the Bills page).
@@ -524,7 +529,7 @@ function renderTop(d){
     document.getElementById("clockDate").textContent = parts[0] || d.time;
     document.getElementById("clockTime").textContent = parts[1] || "";
   }
-  const maxStreak = (d.habits||[]).reduce((m,h)=>Math.max(m,h.streak||0),0);
+  const maxStreak = (d.habits||[]).filter(h=>!h.streakUnit||h.streakUnit==="day").reduce((m,h)=>Math.max(m,h.streak||0),0);
   document.getElementById("dockStreak").textContent = `✦ ${maxStreak} day streak`;
   document.getElementById("dockSub").textContent = (d.errors||[]).length ? "needs attention" : "watching";
   if(d.escalation){
