@@ -233,13 +233,65 @@ def test_habits_counter_untick_or_undo_last_increment(page, api):
 
 
 # ====================================================================== HABITS: edit
-@ABSENT
-@pytest.mark.parametrize("what", ["rename", "change-type", "change-frequency"])
-def test_habits_edit_saves_and_persists(page, api, what):
-    name = unique(f"edit-{what}")
-    api.create_habit(name)
+def _habit_edit(page, name, new_name=None, ftype=None, freq=None):
+    row = habit_row(page, name)
+    row.locator(".row-edit").click()
+    if new_name:
+        page.fill("#hName", new_name)
+    if ftype:
+        page.select_option("#hField", ftype)
+    if freq:
+        page.select_option("#hFreq", freq)
+    after_post(page, "/api/habits/edit", lambda: page.click("#habitForm .go"))
+
+
+def test_habits_edit_rename_saves_and_persists(page, api):
+    name, new = unique("edit-rename"), unique("renamed")
+    h = api.create_habit(name)
+    api.tap(h, "check")
     load(page)
-    need_control(habit_row(page, name), ".row-edit, [data-role='edit'], [title*='Edit' i]", "edit")
+    _habit_edit(page, name, new_name=new)
+    reload(page)
+    expect(habit_row(page, new)).to_have_count(1)
+    expect(habit_row(page, name)).to_have_count(0)
+    s = api.habit(h)
+    assert s["name"] == new and s["streak"] == 1 and s["done_today"], "rename must keep the streak/history"
+
+
+def test_habits_edit_change_type_saves_and_persists(page, api):
+    name = unique("edit-type")
+    h = api.create_habit(name, "tickbox")
+    load(page)
+    _habit_edit(page, name, ftype="both")
+    reload(page)
+    assert api.habit(h)["field_type"] == "both"
+    expect(habit_row(page, name).locator(".tap-btn.plus")).to_have_count(1)
+    expect(habit_row(page, name).locator(".tap-btn.minus")).to_have_count(1)
+
+
+def test_habits_edit_change_frequency_saves_and_persists(page, api):
+    name = unique("edit-freq")
+    h = api.create_habit(name)
+    load(page)
+    _habit_edit(page, name, freq="count")
+    reload(page)
+    s = api.habit(h)
+    assert s["frequency_kind"] == "count" and s["frequency_label"] == "3x / week", s
+    expect(habit_row(page, name).locator(".row-meta")).to_contain_text("3x / week")
+
+
+def test_habits_edit_cancel_by_closing_form_does_not_turn_add_into_save(page, api):
+    name = unique("edit-cancel")
+    h = api.create_habit(name)
+    load(page)
+    habit_row(page, name).locator(".row-edit").click()
+    page.click("button:has-text('+ New habit')")        # close the form (cancel)
+    page.click("button:has-text('+ New habit')")        # reopen as a fresh Add
+    other = unique("fresh")
+    page.fill("#hName", other)
+    after_post(page, "/api/habits/create", lambda: page.click("#habitForm .go"))
+    expect(habit_row(page, name)).to_have_count(1)
+    expect(habit_row(page, other)).to_have_count(1)
 
 
 # ====================================================================== HABITS: delete
@@ -342,16 +394,34 @@ def test_habits_checklist_unticking_an_item_reopens_parent(page, api):
     assert api.habit(h)["done_today"] is False and streak_of(habit_row(page, name)) == 0
 
 
-@ABSENT
-def test_habits_checklist_rename_item(page, api):
+def test_habits_checklist_rename_item_persists(page, api):
     name, h = _checklist_habit(page, api)
-    need_control(mini(habit_row(page, name)), ".item-edit, [data-role='edit-item'], [title*='Rename' i]", "rename-item")
+    page.once("dialog", lambda d: d.accept("renamed-item"))
+    line = mini(habit_row(page, name)).locator(".chk-line").filter(has_text="item2")
+    after_post(page, "/api/habits/checklist/rename", lambda: line.locator(".item-edit").click())
+    reload(page)
+    assert [c["text"] for c in api.habit(h)["checklist"]] == ["item1", "renamed-item", "item3"]
+    expect(item(mini(habit_row(page, name)), "renamed-item")).to_have_count(1)
 
 
-@ABSENT
-def test_habits_checklist_delete_item(page, api):
-    name, h = _checklist_habit(page, api)
-    need_control(mini(habit_row(page, name)), ".item-del, [data-role='delete-item'], [title*='Remove' i]", "delete-item")
+def test_habits_checklist_delete_item_persists_and_parent_recomputes(page, api):
+    name, h = _checklist_habit(page, api, n=2)
+    api.req.post(f"{BASE}/api/habits/checklist", data={"id": api.habit(h)["checklist"][0]["id"], "done": True})
+    page.once("dialog", lambda d: d.accept())
+    line = mini(habit_row(page, name)).locator(".chk-line").filter(has_text="item2")
+    after_post(page, "/api/habits/checklist/delete", lambda: line.locator(".item-del").click())
+    reload(page)
+    assert [c["text"] for c in api.habit(h)["checklist"]] == ["item1"]
+    assert api.habit(h)["done_today"] is True, "deleting the only unticked item leaves all remaining ticked = complete"
+    expect(item(mini(habit_row(page, name)), "item2")).to_have_count(0)
+
+
+def test_habits_checklist_delete_item_cancel_keeps_it(page, api):
+    name, h = _checklist_habit(page, api, n=2)
+    page.once("dialog", lambda d: d.dismiss())
+    mini(habit_row(page, name)).locator(".chk-line").filter(has_text="item2").locator(".item-del").click()
+    reload(page)
+    assert len(api.habit(h)["checklist"]) == 2
 
 
 @ABSENT
@@ -422,13 +492,58 @@ def test_todos_edit_clear_due_date_via_app_api(page, api, requires_app_token):
     assert api.todo(t)["due_date"] is None
 
 
-@ABSENT
-@pytest.mark.parametrize("what", ["name", "priority", "due-date"])
-def test_todos_edit_in_dashboard_ui(page, api, what):
-    name = unique(f"edit-ui-{what}")
-    api.create_todo(name)
+def _todo_edit(page, name, new_name=None, prio=None, due=None):
+    todo_row(page, name).locator(".row-edit").click()
+    if new_name:
+        page.fill("#tText", new_name)
+    if prio:
+        page.select_option("#tPriority", prio)
+    if due is not None:
+        page.fill("#tDue", due)
+    after_post(page, "/api/todos/edit", lambda: page.click("#todoForm .go"))
+
+
+def test_todos_edit_name_in_dashboard_ui_persists(page, api):
+    name, new = unique("tedit-name"), unique("tedit-renamed")
+    t = api.create_todo(name, priority="high", due_date=FUTURE)
     load(page)
-    need_control(todo_row(page, name), ".row-edit, [data-role='edit'], [title*='Edit' i]", "edit")
+    _todo_edit(page, name, new_name=new)
+    reload(page)
+    expect(todo_row(page, new)).to_have_count(1)
+    expect(todo_row(page, name)).to_have_count(0)
+    s = api.todo(t)
+    assert (s["text"], s["priority"], s["due_date"]) == (new, "high", FUTURE), "editing the name must not disturb other fields"
+
+
+def test_todos_edit_priority_in_dashboard_ui_persists(page, api):
+    name = unique("tedit-prio")
+    t = api.create_todo(name, priority="low")
+    load(page)
+    _todo_edit(page, name, prio="high")
+    reload(page)
+    expect(todo_row(page, name).locator(".todo-p.high")).to_have_count(1)
+    assert api.todo(t)["priority"] == "high"
+
+
+def test_todos_edit_due_date_set_change_and_clear_in_dashboard_ui(page, api):
+    name = unique("tedit-due")
+    t = api.create_todo(name)
+    load(page)
+    _todo_edit(page, name, due=FUTURE)
+    assert api.todo(t)["due_date"] == FUTURE
+    _todo_edit(page, name, due="2098-06-01")
+    assert api.todo(t)["due_date"] == "2098-06-01"
+    _todo_edit(page, name, due="")
+    reload(page)
+    assert api.todo(t)["due_date"] is None
+    expect(todo_row(page, name).locator(".todo-due")).to_have_count(0)
+
+
+def test_todos_edit_empty_name_is_rejected(page, api):
+    name = unique("tedit-empty")
+    t = api.create_todo(name)
+    r = api.req.post(f"{BASE}/api/todos/edit", data={"id": t.id, "text": "   "})
+    assert r.status == 400 and api.todo(t)["text"] == name
 
 
 # ====================================================================== TODOS: complete / delete
@@ -543,16 +658,26 @@ def test_todos_checklist_unticking_item_reopens_completed_parent(page, api):
     expect(todo_row(page, name).locator(".todo-check")).not_to_have_class(re.compile(r"\bdone\b"))
 
 
-@ABSENT
-def test_todos_checklist_rename_item(page, api):
+def test_todos_checklist_rename_item_persists(page, api):
     name, t = _checklist_todo(page, api)
-    need_control(mini(todo_row(page, name)), ".item-edit, [data-role='edit-item'], [title*='Rename' i]", "rename-item")
+    page.once("dialog", lambda d: d.accept("renamed-step"))
+    line = mini(todo_row(page, name)).locator(".chk-line").filter(has_text="step2")
+    after_post(page, "/api/todos/checklist/rename", lambda: line.locator(".item-edit").click())
+    reload(page)
+    assert [c["text"] for c in api.todo(t)["checklist"]] == ["step1", "renamed-step", "step3"]
 
 
-@ABSENT
-def test_todos_checklist_delete_item(page, api):
-    name, t = _checklist_todo(page, api)
-    need_control(mini(todo_row(page, name)), ".item-del, [data-role='delete-item'], [title*='Remove' i]", "delete-item")
+def test_todos_checklist_delete_item_updates_count_and_completes_parent(page, api):
+    name, t = _checklist_todo(page, api, n=2)
+    api.req.post(f"{BASE}/api/todos/checklist", data={"id": api.todo(t)["checklist"][0]["id"], "done": True})
+    page.once("dialog", lambda d: d.accept())
+    load(page)
+    line = mini(todo_row(page, name)).locator(".chk-line").filter(has_text="step2")
+    after_post(page, "/api/todos/checklist/delete", lambda: line.locator(".item-del").click())
+    reload(page)
+    assert [c["text"] for c in api.todo(t)["checklist"]] == ["step1"]
+    assert api.todo(t)["done"] is True
+    expect(todo_row(page, name).locator(".row-meta")).to_have_text("checklist · 1 of 1")
 
 
 def test_todos_checklist_delete_parent_removes_it_and_its_items(page, api):

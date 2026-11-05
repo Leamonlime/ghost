@@ -1106,6 +1106,56 @@ async def api_todo_checklist_add(request: Request):
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
+@app.post("/api/habits/checklist/rename")
+async def api_habit_checklist_rename(request: Request):
+    body = await _json_body(request)
+    r = await native.rename_checklist_item("habit", int(body.get("id") or 0), body.get("text", ""))
+    await _bust_native()
+    return r if r.get("ok") else JSONResponse(r, status_code=400)
+
+
+@app.post("/api/habits/checklist/delete")
+async def api_habit_checklist_delete(request: Request):
+    body = await _json_body(request)
+    r = await native.delete_checklist_item("habit", int(body.get("id") or 0))
+    await _bust_native()
+    return r if r.get("ok") else JSONResponse(r, status_code=404)
+
+
+@app.post("/api/todos/checklist/rename")
+async def api_todo_checklist_rename(request: Request):
+    body = await _json_body(request)
+    r = await native.rename_checklist_item("todo", int(body.get("id") or 0), body.get("text", ""))
+    await _bust_native()
+    return r if r.get("ok") else JSONResponse(r, status_code=400)
+
+
+@app.post("/api/todos/checklist/delete")
+async def api_todo_checklist_delete(request: Request):
+    body = await _json_body(request)
+    r = await native.delete_checklist_item("todo", int(body.get("id") or 0))
+    await _bust_native()
+    return r if r.get("ok") else JSONResponse(r, status_code=404)
+
+
+@app.post("/api/habits/edit")
+async def api_habit_edit(request: Request):
+    body = await _json_body(request)
+    kw = {k: body[k] for k in ("name", "field_type", "frequency_kind", "frequency_days", "frequency_count") if k in body}
+    r = await native.edit_habit(int(body.get("id") or 0), **kw)
+    await _bust_native()
+    return r if r.get("ok") else JSONResponse(r, status_code=400)
+
+
+@app.post("/api/todos/edit")
+async def api_todo_edit(request: Request):
+    body = await _json_body(request)
+    kw = {k: body[k] for k in ("text", "priority", "due_date") if k in body}
+    r = await native.edit_todo(int(body.get("id") or 0), **kw)
+    await _bust_native()
+    return r if r.get("ok") else JSONResponse(r, status_code=400)
+
+
 @app.post("/api/todos/create")
 async def api_todo_create(request: Request):
     body = await _json_body(request)

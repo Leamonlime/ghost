@@ -98,6 +98,9 @@ ALTER TABLE habit_taps ADD COLUMN IF NOT EXISTS value NUMERIC;
 -- S92: optional per-habit numeric target + unit so a value-entry habit can show "X of TARGET unit".
 ALTER TABLE habits ADD COLUMN IF NOT EXISTS target_value NUMERIC;
 ALTER TABLE habits ADD COLUMN IF NOT EXISTS unit TEXT;
+-- checklist item delete is a SOFT delete (same policy as habit/todo archive: history is kept)
+ALTER TABLE habit_checklist ADD COLUMN IF NOT EXISTS deleted BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE todo_checklist ADD COLUMN IF NOT EXISTS deleted BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE TABLE IF NOT EXISTS habit_checklist_state (
     checklist_id BIGINT NOT NULL REFERENCES habit_checklist(id) ON DELETE CASCADE,
     state_date DATE NOT NULL,
@@ -458,13 +461,13 @@ async def _today_taps(conn, habit_id, d):
 
 
 async def _checklist_all_done(conn, habit_id, d):
-    total = await conn.fetchval("SELECT COUNT(*) FROM habit_checklist WHERE habit_id=$1", habit_id)
+    total = await conn.fetchval("SELECT COUNT(*) FROM habit_checklist WHERE habit_id=$1 AND NOT deleted", habit_id)
     if not total:
         return False
     done = await conn.fetchval(
         """SELECT COUNT(*) FROM habit_checklist hc
            JOIN habit_checklist_state s ON s.checklist_id=hc.id AND s.state_date=$2
-           WHERE hc.habit_id=$1 AND s.done=TRUE""", habit_id, d)
+           WHERE hc.habit_id=$1 AND NOT hc.deleted AND s.done=TRUE""", habit_id, d)
     return done >= total
 
 
@@ -614,8 +617,8 @@ async def set_todo_checklist_item(item_id, done=True):
             return {"ok": False, "error": "checklist item not found"}
         tid = row["todo_id"]
         await conn.execute("UPDATE todo_checklist SET done=$1 WHERE id=$2", bool(done), item_id)
-        total = await conn.fetchval("SELECT COUNT(*) FROM todo_checklist WHERE todo_id=$1", tid)
-        ndone = await conn.fetchval("SELECT COUNT(*) FROM todo_checklist WHERE todo_id=$1 AND done=TRUE", tid)
+        total = await conn.fetchval("SELECT COUNT(*) FROM todo_checklist WHERE todo_id=$1 AND NOT deleted", tid)
+        ndone = await conn.fetchval("SELECT COUNT(*) FROM todo_checklist WHERE todo_id=$1 AND done=TRUE AND NOT deleted", tid)
         todo = await conn.fetchrow("SELECT done, bucket FROM todos WHERE id=$1", tid)
         was_done = bool(todo["done"]) if todo else False
         complete = total > 0 and ndone >= total
@@ -671,6 +674,127 @@ async def add_habit_checklist_item(habit_id, text):
             "INSERT INTO habit_checklist (habit_id, text, position) VALUES ($1,$2,$3) RETURNING id",
             habit_id, text, pos)
         return {"ok": True, "id": cid, "text": text}
+    finally:
+        await conn.close()
+
+
+async def rename_checklist_item(kind, item_id, text):
+    """Rename one checklist item. kind: 'habit' | 'todo'."""
+    text = (text or "").strip()
+    if not text:
+        return {"ok": False, "error": "empty item text"}
+    tbl = "habit_checklist" if kind == "habit" else "todo_checklist"
+    conn = await pg_conn()
+    try:
+        await ensure_schema(conn)
+        st = await conn.execute(f"UPDATE {tbl} SET text=$1 WHERE id=$2 AND NOT deleted", text, item_id)
+        if st.endswith(" 0"):
+            return {"ok": False, "error": "checklist item not found"}
+        return {"ok": True, "id": item_id, "text": text}
+    finally:
+        await conn.close()
+
+
+async def delete_checklist_item(kind, item_id):
+    """Soft-delete one checklist item (kept in the table, hidden everywhere, no longer counted).
+    For a todo this re-evaluates completion: removing the last unticked item completes it."""
+    conn = await pg_conn()
+    try:
+        await ensure_schema(conn)
+        if kind == "habit":
+            row = await conn.fetchrow("SELECT habit_id FROM habit_checklist WHERE id=$1 AND NOT deleted", item_id)
+            if not row:
+                return {"ok": False, "error": "checklist item not found"}
+            await conn.execute("UPDATE habit_checklist SET deleted=TRUE WHERE id=$1", item_id)
+            habit = await conn.fetchrow("SELECT * FROM habits WHERE id=$1", row["habit_id"])
+            await _reconcile_streak(conn, habit, today_local())
+            return {"ok": True, "id": item_id}
+        row = await conn.fetchrow("SELECT todo_id FROM todo_checklist WHERE id=$1 AND NOT deleted", item_id)
+        if not row:
+            return {"ok": False, "error": "checklist item not found"}
+        await conn.execute("UPDATE todo_checklist SET deleted=TRUE WHERE id=$1", item_id)
+        total = await conn.fetchval("SELECT COUNT(*) FROM todo_checklist WHERE todo_id=$1 AND NOT deleted", row["todo_id"])
+        ndone = await conn.fetchval("SELECT COUNT(*) FROM todo_checklist WHERE todo_id=$1 AND done AND NOT deleted", row["todo_id"])
+        if total > 0 and ndone >= total:
+            await conn.execute("UPDATE todos SET done=TRUE, completed_at=COALESCE(completed_at, now()) WHERE id=$1", row["todo_id"])
+        return {"ok": True, "id": item_id}
+    finally:
+        await conn.close()
+
+
+async def edit_todo(todo_id, text=None, priority=None, due_date="__keep__"):
+    """Edit a todo's name / priority / due date. due_date: ISO string or date to set, None or ''
+    to clear, omitted to keep. Archived todos are not editable."""
+    sets, args = [], []
+    if text is not None:
+        text = text.strip()
+        if not text:
+            return {"ok": False, "error": "empty name"}
+        args.append(text); sets.append(f"text=${len(args)}")
+    if priority is not None:
+        if priority not in PRIORITIES:
+            return {"ok": False, "error": "bad priority"}
+        args.append(priority); sets.append(f"priority=${len(args)}")
+    if due_date != "__keep__":
+        if due_date in (None, ""):
+            sets.append("due_date=NULL")
+        else:
+            try:
+                dd = due_date if isinstance(due_date, date) else date.fromisoformat(str(due_date)[:10])
+            except ValueError:
+                return {"ok": False, "error": "due_date must be YYYY-MM-DD"}
+            args.append(dd); sets.append(f"due_date=${len(args)}")
+    if not sets:
+        return {"ok": False, "error": "nothing to update"}
+    conn = await pg_conn()
+    try:
+        await ensure_schema(conn)
+        args.append(todo_id)
+        st = await conn.execute(f"UPDATE todos SET {', '.join(sets)} WHERE id=${len(args)} AND archived=FALSE", *args)
+        return {"ok": not st.endswith(" 0"), "id": todo_id}
+    finally:
+        await conn.close()
+
+
+async def edit_habit(habit_id, name=None, field_type=None, frequency_kind=None,
+                     frequency_days="__keep__", frequency_count="__keep__"):
+    """Edit a habit's name / type / frequency. Streak and history are kept. Changing the type or
+    frequency re-reconciles today's streak against the new rule."""
+    sets, args = [], []
+    if name is not None:
+        name = name.strip()
+        if not name:
+            return {"ok": False, "error": "empty name"}
+        args.append(name); sets.append(f"name=${len(args)}")
+    if field_type is not None:
+        if field_type not in FIELD_TYPES:
+            return {"ok": False, "error": "bad field_type"}
+        args.append(field_type); sets.append(f"field_type=${len(args)}")
+    if frequency_kind is not None:
+        if frequency_kind not in FREQ_KINDS:
+            return {"ok": False, "error": "bad frequency_kind"}
+        args.append(frequency_kind); sets.append(f"frequency_kind=${len(args)}")
+    if frequency_days != "__keep__":
+        args.append(frequency_days or None); sets.append(f"frequency_days=${len(args)}")
+    if frequency_count != "__keep__":
+        args.append(int(frequency_count) if frequency_count else None); sets.append(f"frequency_count=${len(args)}")
+    if not sets:
+        return {"ok": False, "error": "nothing to update"}
+    conn = await pg_conn()
+    try:
+        await ensure_schema(conn)
+        args.append(habit_id)
+        st = await conn.execute(f"UPDATE habits SET {', '.join(sets)} WHERE id=${len(args)} AND active=TRUE", *args)
+        if st.endswith(" 0"):
+            return {"ok": False, "error": "habit not found"}
+        habit = await conn.fetchrow("SELECT * FROM habits WHERE id=$1", habit_id)
+        if habit["frequency_kind"] == "weekdays" and not habit["frequency_days"]:
+            await conn.execute("UPDATE habits SET frequency_days=$1 WHERE id=$2", [0, 1, 2, 3, 4, 5, 6], habit_id)
+        if habit["frequency_kind"] == "count" and not habit["frequency_count"]:
+            await conn.execute("UPDATE habits SET frequency_count=3 WHERE id=$1", habit_id)
+        habit = await conn.fetchrow("SELECT * FROM habits WHERE id=$1", habit_id)
+        await _reconcile_streak(conn, habit, today_local())
+        return {"ok": True, "id": habit_id}
     finally:
         await conn.close()
 
@@ -773,7 +897,7 @@ async def list_habits(user_id=None, conn=None):
                               COALESCE(s.done, FALSE) AS done
                        FROM habit_checklist hc
                        LEFT JOIN habit_checklist_state s ON s.checklist_id=hc.id AND s.state_date=$2
-                       WHERE hc.habit_id=$1 ORDER BY hc.position, hc.id""", h["id"], d)
+                       WHERE hc.habit_id=$1 AND NOT hc.deleted ORDER BY hc.position, hc.id""", h["id"], d)
                 item["checklist"] = [{"id": c["id"], "text": c["text"], "done": c["done"]} for c in citems]
             out.append(item)
         return out
@@ -805,7 +929,7 @@ async def list_todos(user_id=None, include_done=True, conn=None):
             }
             if t["kind"] == "checklist":
                 citems = await conn.fetch(
-                    "SELECT id, text, done FROM todo_checklist WHERE todo_id=$1 ORDER BY position, id", t["id"])
+                    "SELECT id, text, done FROM todo_checklist WHERE todo_id=$1 AND NOT deleted ORDER BY position, id", t["id"])
                 item["checklist"] = [{"id": c["id"], "text": c["text"], "done": c["done"]} for c in citems]
             out.append(item)
         return out

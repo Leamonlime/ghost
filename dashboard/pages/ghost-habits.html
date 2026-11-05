@@ -69,7 +69,7 @@
   /* S77: habit row is a FIXED-TRACK grid so the streak pill forms a straight column regardless of
      which tap-control (tickbox / single / dual / none-for-checklist) precedes it. Tracks:
      icon | name(flex) | tap-controls(fixed) | streak(fixed) | archive. */
-  .habit-row{display:grid;grid-template-columns:28px minmax(0,1fr) 62px 54px 24px;align-items:center;gap:10px;padding:10px 4px;border-bottom:1px solid var(--border-2);}
+  .habit-row{display:grid;grid-template-columns:28px minmax(0,1fr) 62px 54px 24px 24px;align-items:center;gap:10px;padding:10px 4px;border-bottom:1px solid var(--border-2);}
   .habit-row .tap-btns{justify-content:flex-end;}   /* buttons hug the streak column within their fixed track */
   .habit-row:last-child,.todo-row:last-child{border-bottom:none;}
   .row-icon{width:28px;height:28px;border-radius:3px;flex-shrink:0;display:flex;align-items:center;justify-content:center;border:1px solid var(--border);color:var(--ink-dim);font-size:13px;}
@@ -111,6 +111,12 @@
   /* S64: hairline delete (archive) button — restrained, not a red delete-everywhere pattern */
   .row-del{width:24px;height:24px;border-radius:3px;flex-shrink:0;display:flex;align-items:center;justify-content:center;border:1px solid var(--border);color:var(--ink-faintest);cursor:pointer;font-size:12px;line-height:1;}
   .row-del:hover{color:var(--alert);border-color:rgba(217,122,140,0.4);}
+  .chk-line{display:flex;align-items:center;gap:6px;}
+  .chk-line .checklist-item{flex:1;min-width:0;}
+  .item-edit,.item-del{font-size:10px;line-height:1;color:var(--ink-faintest);cursor:pointer;padding:2px 4px;border-radius:3px;flex-shrink:0;}
+  .item-edit:hover{color:var(--ink);} .item-del:hover{color:var(--alert);}
+  .row-edit{width:24px;height:24px;border-radius:3px;flex-shrink:0;display:flex;align-items:center;justify-content:center;border:1px solid var(--border);color:var(--ink-faintest);cursor:pointer;font-size:12px;line-height:1;}
+  .row-edit:hover{color:var(--ink);border-color:rgba(255,255,255,0.25);}
   /* S64: add-item control for checklist habits */
   .chk-add{display:inline-block;font-size:10px;color:var(--ink-faint);cursor:pointer;padding:4px 0 2px 0;font-variant:small-caps;letter-spacing:0.04em;}
   .chk-add:hover{color:var(--ink-dim);}
@@ -171,7 +177,7 @@
           <option value="count">N×/week</option>
         </select>
         <input type="text" id="hItems" placeholder="checklist items, comma-separated (optional)">
-        <button class="go" onclick="createHabit()">Add</button>
+        <button class="go" id="hGo" onclick="createHabit()">Add</button>
       </div>
     </div>
 
@@ -188,7 +194,7 @@
         <input type="text" id="tText" placeholder="Todo text">
         <select id="tPriority"><option value="med">Med</option><option value="high">High</option><option value="low">Low</option></select>
         <input type="date" id="tDue">
-        <button class="go" onclick="createTodo()">Add</button>
+        <button class="go" id="tGo" onclick="createTodo()">Add</button>
       </div>
     </div>
 
@@ -205,7 +211,12 @@
     document.getElementById("habitsView").style.display = (v==="habits")?"block":"none";
     document.getElementById("tabHabits").classList.toggle("active", v==="habits");
   };
-  window.toggleForm = function(id){ document.getElementById(id).classList.toggle("open"); };
+  window.toggleForm = function(id){
+    // opening or closing a form always leaves "edit" mode, so a half-finished edit can't turn the next Add into a save
+    if(id==="habitForm") resetHabitForm();
+    if(id==="todoForm"){ editingTodo=null; document.getElementById("tGo").textContent="Add"; document.getElementById("tText").value=""; document.getElementById("tDue").value=""; }
+    document.getElementById(id).classList.toggle("open");
+  };
 
   // ---- Habits ----
   function habitRow(h){
@@ -226,12 +237,14 @@
     var del = '<div class="row-del" title="Archive this habit" onclick="delHabit('+h.id+',\''+esc(h.name).replace(/'/g,"\\'")+'\')">✕</div>';
     // S77: grid column order — icon | name | tap-controls | streak pill | archive. taps now
     // precedes the streak pill so the pill sits in its own fixed track (a straight column).
+    window.__habits = window.__habits || {}; window.__habits[h.id] = h;
+    var edit = '<div class="row-edit" title="Edit" onclick="editHabit('+h.id+')">✎</div>';
     var row = '<div class="habit-row">'
       + '<div class="row-icon">◈</div>'
       + '<div class="row-main"><div class="row-name">'+esc(h.name)+'</div><div class="row-meta">'+meta+(h.streak_rule==="min_taps"?(" · needs "+h.streak_min_taps+" taps"):"")+'</div></div>'
       + taps
       + '<div class="streak-pill '+streakCls+'">🔥 '+h.streak+'</div>'
-      + del
+      + edit + del
       + '</div>';
     if(h.field_type==="checklist"){
       // S64: render the checklist area for EVERY checklist habit (even with 0 items) so the
@@ -239,7 +252,8 @@
       // so checklist habits had nothing to tick and no way to add.
       row += '<div class="checklist-mini">';
       (h.checklist||[]).forEach(function(c){
-        row += '<div class="checklist-item '+(c.done?"done":"")+'" onclick="checkHabitItem('+c.id+','+(!c.done)+')"><span class="box"></span>'+esc(c.text)+'</div>';
+        row += '<div class="chk-line"><div class="checklist-item '+(c.done?"done":"")+'" onclick="checkHabitItem('+c.id+','+(!c.done)+')"><span class="box"></span>'+esc(c.text)+'</div>'
+          + '<span class="item-edit" title="Rename item" onclick="renameItem(\'habit\','+c.id+')">✎</span><span class="item-del" title="Remove item" onclick="delItem(\'habit\','+c.id+')">✕</span></div>';
       });
       row += '<span class="chk-add" onclick="addChecklistItem('+h.id+')">+ add item</span>';
       row += '</div>';
@@ -266,8 +280,32 @@
     if(!confirm('Archive habit "'+name+'"? It stops showing here; its history is kept.')) return;
     post("/api/habits/delete",{id:id}).then(function(){ loadHabits(); });
   };
+  var editingHabit = null;
+  window.editHabit = function(id){
+    var h = window.__habits[id]; if(!h) return;
+    editingHabit = id;
+    document.getElementById("habitForm").classList.add("open");
+    document.getElementById("hName").value = h.name;
+    document.getElementById("hField").value = h.field_type;
+    document.getElementById("hFreq").value = (h.frequency_kind==="count") ? "count" : "weekdays";
+    document.getElementById("hItems").style.display = "none";
+    document.getElementById("hGo").textContent = "Save";
+    document.getElementById("hName").focus();
+  };
+  function resetHabitForm(){
+    editingHabit = null;
+    document.getElementById("hName").value=""; document.getElementById("hItems").value="";
+    document.getElementById("hItems").style.display = "";
+    document.getElementById("hGo").textContent = "Add";
+  }
   window.createHabit = function(){
     var name=document.getElementById("hName").value.trim(); if(!name) return;
+    if(editingHabit !== null){
+      var eb={id:editingHabit,name:name,field_type:document.getElementById("hField").value,frequency_kind:document.getElementById("hFreq").value};
+      if(eb.frequency_kind==="count") eb.frequency_count=3; else eb.frequency_days=[0,1,2,3,4,5,6];
+      post("/api/habits/edit",eb).then(function(){ resetHabitForm(); document.getElementById("habitForm").classList.remove("open"); loadHabits(); });
+      return;
+    }
     var body={name:name,field_type:document.getElementById("hField").value,frequency_kind:document.getElementById("hFreq").value};
     if(body.frequency_kind==="count") body.frequency_count=3;
     // S64: collect checklist items at create time (comma-separated) — only meaningful for a checklist habit
@@ -275,7 +313,7 @@
       var raw=(document.getElementById("hItems").value||"").split(",").map(function(s){return s.trim();}).filter(Boolean);
       if(raw.length) body.checklist=raw;
     }
-    post("/api/habits/create",body).then(function(){ document.getElementById("hName").value=""; document.getElementById("hItems").value=""; toggleForm("habitForm"); loadHabits(); });
+    post("/api/habits/create",body).then(function(){ resetHabitForm(); toggleForm("habitForm"); loadHabits(); });
   };
 
   // ---- Todos ----
@@ -290,24 +328,35 @@
       ? ('<div class="row-meta">checklist · '+cl.filter(function(c){return c.done;}).length+' of '+cl.length+'</div>')
       : "";
     var del = '<div class="row-del" title="Archive this todo" onclick="delTodo('+t.id+',\''+esc(t.text).replace(/'/g,"\\'")+'\')">✕</div>';
+    window.__todos = window.__todos || {}; window.__todos[t.id] = t;
+    var edit = '<div class="row-edit" title="Edit" onclick="editTodo('+t.id+')">✎</div>';
     var row = '<div class="todo-row">'
       + '<div class="todo-check '+(t.done?"done":"")+'" onclick="completeTodo('+t.id+','+(!t.done)+')"></div>'
       + '<div class="row-main"><div class="row-name '+(t.done?"done":"")+'">'+esc(t.text)+'</div>'+meta+'</div>'
       + (t.priority?'<div class="todo-p '+t.priority+'">'+t.priority.charAt(0).toUpperCase()+t.priority.slice(1)+'</div>':"")
-      + due + del + '</div>';
+      + due + edit + del + '</div>';
     // S77: mirror the S64 habit-checklist UI onto checklist todos — render the mini-list for EVERY
     // checklist todo (even 0-item) so the "+ add item" control is always reachable; tick wires to
     // the existing /api/todos/checklist endpoint (all-ticked completes the todo).
     if(t.kind==="checklist"){
       row += '<div class="checklist-mini">';
       cl.forEach(function(c){
-        row += '<div class="checklist-item '+(c.done?"done":"")+'" onclick="checkTodoItem('+c.id+','+(!c.done)+')"><span class="box"></span>'+esc(c.text)+'</div>';
+        row += '<div class="chk-line"><div class="checklist-item '+(c.done?"done":"")+'" onclick="checkTodoItem('+c.id+','+(!c.done)+')"><span class="box"></span>'+esc(c.text)+'</div>'
+          + '<span class="item-edit" title="Rename item" onclick="renameItem(\'todo\','+c.id+')">✎</span><span class="item-del" title="Remove item" onclick="delItem(\'todo\','+c.id+')">✕</span></div>';
       });
       row += '<span class="chk-add" onclick="addTodoChecklistItem('+t.id+')">+ add item</span>';
       row += '</div>';
     }
     return row;
   }
+  window.renameItem = function(kind, id){
+    var text = prompt("Rename item:"); if(!text || !text.trim()) return;
+    post("/api/"+(kind==="habit"?"habits":"todos")+"/checklist/rename",{id:id,text:text.trim()}).then(function(){ kind==="habit"?loadHabits():loadTodos(); });
+  };
+  window.delItem = function(kind, id){
+    if(!confirm("Remove this checklist item?")) return;
+    post("/api/"+(kind==="habit"?"habits":"todos")+"/checklist/delete",{id:id}).then(function(){ kind==="habit"?loadHabits():loadTodos(); });
+  };
   window.checkTodoItem = function(id, done){ post("/api/todos/checklist",{id:id,done:done}).then(function(){ loadTodos(); }); };
   window.addTodoChecklistItem = function(todoId){
     var text = prompt("New checklist item:"); if(!text || !text.trim()) return;
@@ -328,8 +377,24 @@
     if(!confirm('Archive todo "'+text+'"? It stops showing here; its record is kept.')) return;
     post("/api/todos/delete",{id:id}).then(function(){ loadTodos(); });
   };
+  var editingTodo = null;
+  window.editTodo = function(id){
+    var t = window.__todos[id]; if(!t) return;
+    editingTodo = id;
+    document.getElementById("todoForm").classList.add("open");
+    document.getElementById("tText").value = t.text;
+    document.getElementById("tPriority").value = t.priority || "med";
+    document.getElementById("tDue").value = t.due_date || "";
+    document.getElementById("tGo").textContent = "Save";
+    document.getElementById("tText").focus();
+  };
   window.createTodo = function(){
     var text=document.getElementById("tText").value.trim(); if(!text) return;
+    if(editingTodo !== null){
+      var eb={id:editingTodo,text:text,priority:document.getElementById("tPriority").value,due_date:document.getElementById("tDue").value||""};
+      post("/api/todos/edit",eb).then(function(){ editingTodo=null; document.getElementById("tText").value=""; document.getElementById("tDue").value=""; document.getElementById("tGo").textContent="Add"; document.getElementById("todoForm").classList.remove("open"); loadTodos(); });
+      return;
+    }
     var body={text:text,priority:document.getElementById("tPriority").value};
     var due=document.getElementById("tDue").value; if(due) body.due_date=due;
     post("/api/todos/create",body).then(function(){ document.getElementById("tText").value=""; document.getElementById("tDue").value=""; toggleForm("todoForm"); loadTodos(); });
