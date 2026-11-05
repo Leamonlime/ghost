@@ -3126,7 +3126,7 @@ async def api_planned_costs(request: Request):
     try:
         await _ensure_planned_costs_schema(conn)
         rows = await conn.fetch(
-            "SELECT id, to_char(month,'YYYY-MM') month, category, amount::float8 amount, tag, note "
+            "SELECT id, to_char(month,'YYYY-MM') AS month, category, amount::float8 amount, tag, note "
             "FROM planned_costs ORDER BY month, id")
     finally:
         await conn.close()
