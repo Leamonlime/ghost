@@ -995,7 +995,7 @@ async def _json_body(request: Request) -> dict:
 async def api_habit_tap(request: Request):
     body = await _json_body(request)
     try:
-        res = await native.tap_habit(int(body.get("id")), body.get("direction", "up"))
+        res = await native.tap_habit(int(body.get("id")), body.get("direction", "up"), value=body.get("value"))
         await _bust_native()
         return res
     except Exception as e:
@@ -1061,6 +1061,8 @@ async def api_habit_create(request: Request):
             frequency_days=body.get("frequency_days"), frequency_count=body.get("frequency_count"),
             bucket=body.get("bucket"), streak_rule=body.get("streak_rule", "net_positive"),
             streak_min_taps=body.get("streak_min_taps"), checklist=body.get("checklist"),
+            frequency_count_max=body.get("frequency_count_max"), target_value=body.get("target_value"),
+            target_max=body.get("target_max"), unit=body.get("unit"),
             user_id=_native_uid(request))
         await _bust_native()
         return {"ok": hid is not None, "id": hid}
@@ -1141,7 +1143,8 @@ async def api_todo_checklist_delete(request: Request):
 @app.post("/api/habits/edit")
 async def api_habit_edit(request: Request):
     body = await _json_body(request)
-    kw = {k: body[k] for k in ("name", "field_type", "frequency_kind", "frequency_days", "frequency_count") if k in body}
+    kw = {k: body[k] for k in ("name", "field_type", "frequency_kind", "frequency_days", "frequency_count",
+                                  "frequency_count_max", "target_value", "target_max", "unit") if k in body}
     r = await native.edit_habit(int(body.get("id") or 0), **kw)
     await _bust_native()
     return r if r.get("ok") else JSONResponse(r, status_code=400)

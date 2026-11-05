@@ -111,6 +111,10 @@
   /* S64: hairline delete (archive) button — restrained, not a red delete-everywhere pattern */
   .row-del{width:24px;height:24px;border-radius:3px;flex-shrink:0;display:flex;align-items:center;justify-content:center;border:1px solid var(--border);color:var(--ink-faintest);cursor:pointer;font-size:12px;line-height:1;}
   .row-del:hover{color:var(--alert);border-color:rgba(217,122,140,0.4);}
+  .pickrow{display:flex;gap:6px;align-items:center;font-size:11px;color:var(--ink-dim);flex-wrap:wrap;}
+  .pickrow label{display:flex;gap:2px;align-items:center;}
+  .habit-row.off-day{display:none;} .show-off .habit-row.off-day{display:grid;opacity:0.55;}
+  .bonus{color:var(--ok);font-weight:700;}
   .chk-line{display:flex;align-items:center;gap:6px;}
   .chk-line .checklist-item{flex:1;min-width:0;}
   .item-edit,.item-del{font-size:10px;line-height:1;color:var(--ink-faintest);cursor:pointer;padding:2px 4px;border-radius:3px;flex-shrink:0;}
@@ -171,11 +175,19 @@
           <option value="negative">negative</option>
           <option value="both">positive + negative</option>
           <option value="checklist">checklist</option>
+          <option value="value">value (hours, reps…)</option>
         </select>
-        <select id="hFreq">
+        <select id="hFreq" onchange="syncHabitForm()">
           <option value="weekdays">every day</option>
+          <option value="days">specific days</option>
           <option value="count">N×/week</option>
+          <option value="monthly">monthly</option>
         </select>
+        <span id="hDays" class="pickrow" style="display:none;">
+          <label><input type="checkbox" value="0">Mon</label><label><input type="checkbox" value="1">Tue</label><label><input type="checkbox" value="2">Wed</label><label><input type="checkbox" value="3">Thu</label><label><input type="checkbox" value="4">Fri</label><label><input type="checkbox" value="5">Sat</label><label><input type="checkbox" value="6">Sun</label>
+        </span>
+        <span id="hCount" class="pickrow" style="display:none;">times <input type="number" id="hCountMin" min="1" max="31" placeholder="min" style="width:56px"> to <input type="number" id="hCountMax" min="1" max="31" placeholder="max (opt.)" style="width:84px"></span>
+        <span id="hTarget" class="pickrow" style="display:none;">target <input type="number" id="hTargetMin" min="0" step="any" placeholder="min" style="width:60px"> to <input type="number" id="hTargetMax" min="0" step="any" placeholder="max (opt.)" style="width:84px"> <input type="text" id="hUnit" placeholder="unit (hrs)" style="width:80px;flex:none;min-width:0"></span>
         <input type="text" id="hItems" placeholder="checklist items, comma-separated (optional)">
         <button class="go" id="hGo" onclick="createHabit()">Add</button>
       </div>
@@ -219,12 +231,35 @@
   };
 
   // ---- Habits ----
+  function fmt(n){ return (Math.round(Number(n)*100)/100).toString(); }
+  function progressText(h){
+    var p = h.period;
+    if(p){
+      var tgt = p.target==null ? "" : (" of " + fmt(p.target) + (p.max && p.max!==p.target ? "–"+fmt(p.max) : ""));
+      var u = h.unit ? " "+esc(h.unit) : "";
+      return ' · <span class="'+(p.bonus?"bonus":"")+'">'+fmt(p.done)+tgt+u+' this '+p.kind+(p.bonus?" · bonus":"")+(p.met&&!p.bonus?" ✓":"")+'</span>';
+    }
+    if(h.field_type==="value") return ' · '+fmt(h.today_value)+(h.unit?" "+esc(h.unit):"")+' today';
+    if(h.field_type==="checklist"){
+      var cl=h.checklist||[]; if(!cl.length) return "";
+      return ' · '+cl.filter(function(c){return c.done;}).length+' of '+cl.length;
+    }
+    return "";
+  }
+  window.tapValue = function(id, unit){
+    var raw = prompt("How much" + (unit ? " ("+unit+")" : "") + "?"); if(raw===null) return;
+    var v = Number(raw); if(!(v>0)) return;
+    fetch("/api/habits/tap",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:id,direction:"up",value:v})}).then(function(){ loadHabits(); });
+  };
+  window.toggleOffDays = function(){ document.getElementById("habitsList").classList.toggle("show-off"); loadHabits(); };
   function habitRow(h){
-    var streakCls = h.done_today ? "done" : ((h.due_today && h.streak>0) ? "risk" : "");
-    var meta = esc(h.frequency_label) + " · " + esc(h.field_label);
+    var streakCls = (h.period ? h.period.met : h.done_today) ? "done" : ((h.due_today && h.streak>0) ? "risk" : "");
+    var meta = esc(h.frequency_label) + " · " + esc(h.field_label) + progressText(h);
     var taps = "";
     if(h.field_type==="tickbox"){
       taps = '<div class="tap-btns"><div class="tap-btn check '+(h.done_today?"on":"")+'" title="'+(h.done_today?"un-tick":"tick")+'" onclick="tap('+h.id+',\''+(h.done_today?"uncheck":"check")+'\')">✓</div></div>';
+    } else if(h.field_type==="value"){
+      taps = '<div class="tap-btns"><div class="tap-btn plus" title="log '+esc(h.unit||"value")+'" onclick="tapValue('+h.id+',\''+esc(h.unit||"")+'\')">+</div></div>';
     } else if(h.field_type==="checklist"){
       taps = '<div class="tap-btns"></div>';   // S77: empty cell keeps the 5-track grid aligned
     } else if(h.field_type==="positive"){
@@ -239,7 +274,7 @@
     // precedes the streak pill so the pill sits in its own fixed track (a straight column).
     window.__habits = window.__habits || {}; window.__habits[h.id] = h;
     var edit = '<div class="row-edit" title="Edit" onclick="editHabit('+h.id+')">✎</div>';
-    var row = '<div class="habit-row">'
+    var row = '<div class="habit-row'+(h.due_today?'':' off-day')+'">'
       + '<div class="row-icon">◈</div>'
       + '<div class="row-main"><div class="row-name">'+esc(h.name)+'</div><div class="row-meta">'+meta+(h.streak_rule==="min_taps"?(" · needs "+h.streak_min_taps+" taps"):"")+'</div></div>'
       + taps
@@ -265,8 +300,12 @@
       var list = d.habits||[];
       var el = document.getElementById("habitsList");
       if(!list.length){ el.innerHTML = '<div class="empty">No native habits yet — add one, or tell Ghost "create habit: ...".</div>'; document.getElementById("habitsSub").textContent=""; return; }
-      var touched = list.filter(function(h){return h.done_today||h.today_up||h.today_check;}).length;
-      document.getElementById("habitsSub").textContent = touched + " of " + list.length + " touched";
+      var due = list.filter(function(h){return h.due_today;});
+      var touched = due.filter(function(h){return h.done_today||h.today_up||h.today_check||h.ticked_today;}).length;
+      var off = list.length - due.length;
+      var showing = el.classList.contains("show-off");
+      document.getElementById("habitsSub").innerHTML = touched + " of " + due.length + " touched today"
+        + (off ? ' · <a href="#" id="offToggle" onclick="toggleOffDays();return false;" style="text-decoration:underline">'+(showing?"hide":"show")+' '+off+' off-day</a>' : "");
       el.innerHTML = list.map(habitRow).join("");
     }).catch(function(){ document.getElementById("habitsList").innerHTML='<div class="empty">Could not load habits.</div>'; });
   }
@@ -281,33 +320,58 @@
     post("/api/habits/delete",{id:id}).then(function(){ loadHabits(); });
   };
   var editingHabit = null;
+  window.syncHabitForm = function(){
+    var f=document.getElementById("hFreq").value, t=document.getElementById("hField").value;
+    document.getElementById("hDays").style.display = (f==="days")?"flex":"none";
+    document.getElementById("hCount").style.display = (f==="count"||f==="monthly")?"flex":"none";
+    document.getElementById("hTarget").style.display = (t==="value")?"flex":"none";
+  };
+  document.getElementById("hField").addEventListener("change", function(){ window.syncHabitForm(); });
+  function dayBoxes(){ return Array.prototype.slice.call(document.querySelectorAll("#hDays input")); }
+  function habitBody(){
+    var f=document.getElementById("hFreq").value, t=document.getElementById("hField").value, b={field_type:t};
+    var num=function(id){ var v=document.getElementById(id).value; return v===""?null:Number(v); };
+    if(f==="days"){
+      b.frequency_kind="weekdays";
+      b.frequency_days=dayBoxes().filter(function(x){return x.checked;}).map(function(x){return Number(x.value);});
+      if(!b.frequency_days.length) b.frequency_days=[0,1,2,3,4,5,6];
+    } else if(f==="weekdays"){ b.frequency_kind="weekdays"; b.frequency_days=[0,1,2,3,4,5,6]; }
+    else { b.frequency_kind=f; b.frequency_count=num("hCountMin")||(f==="monthly"?1:3); b.frequency_count_max=num("hCountMax"); }
+    if(t==="value"){ b.target_value=num("hTargetMin"); b.target_max=num("hTargetMax"); b.unit=document.getElementById("hUnit").value.trim(); }
+    return b;
+  }
   window.editHabit = function(id){
     var h = window.__habits[id]; if(!h) return;
     editingHabit = id;
     document.getElementById("habitForm").classList.add("open");
     document.getElementById("hName").value = h.name;
     document.getElementById("hField").value = h.field_type;
-    document.getElementById("hFreq").value = (h.frequency_kind==="count") ? "count" : "weekdays";
+    var f = h.frequency_kind==="weekdays" ? ((h.frequency_days||[]).length===7 ? "weekdays" : "days") : h.frequency_kind;
+    document.getElementById("hFreq").value = f;
+    dayBoxes().forEach(function(x){ x.checked = (h.frequency_days||[]).indexOf(Number(x.value))>=0; });
+    document.getElementById("hCountMin").value = h.frequency_count||""; document.getElementById("hCountMax").value = h.frequency_count_max||"";
+    document.getElementById("hTargetMin").value = h.target_value||""; document.getElementById("hTargetMax").value = h.target_max||""; document.getElementById("hUnit").value = h.unit||"";
     document.getElementById("hItems").style.display = "none";
     document.getElementById("hGo").textContent = "Save";
+    window.syncHabitForm();
     document.getElementById("hName").focus();
   };
   function resetHabitForm(){
     editingHabit = null;
-    document.getElementById("hName").value=""; document.getElementById("hItems").value="";
+    ["hName","hItems","hCountMin","hCountMax","hTargetMin","hTargetMax","hUnit"].forEach(function(i){ document.getElementById(i).value=""; });
+    dayBoxes().forEach(function(x){ x.checked=false; });
     document.getElementById("hItems").style.display = "";
     document.getElementById("hGo").textContent = "Add";
+    window.syncHabitForm();
   }
   window.createHabit = function(){
     var name=document.getElementById("hName").value.trim(); if(!name) return;
+    var body=habitBody(); body.name=name;
     if(editingHabit !== null){
-      var eb={id:editingHabit,name:name,field_type:document.getElementById("hField").value,frequency_kind:document.getElementById("hFreq").value};
-      if(eb.frequency_kind==="count") eb.frequency_count=3; else eb.frequency_days=[0,1,2,3,4,5,6];
-      post("/api/habits/edit",eb).then(function(){ resetHabitForm(); document.getElementById("habitForm").classList.remove("open"); loadHabits(); });
+      body.id=editingHabit;
+      post("/api/habits/edit",body).then(function(){ resetHabitForm(); document.getElementById("habitForm").classList.remove("open"); loadHabits(); });
       return;
     }
-    var body={name:name,field_type:document.getElementById("hField").value,frequency_kind:document.getElementById("hFreq").value};
-    if(body.frequency_kind==="count") body.frequency_count=3;
     // S64: collect checklist items at create time (comma-separated) — only meaningful for a checklist habit
     if(body.field_type==="checklist"){
       var raw=(document.getElementById("hItems").value||"").split(",").map(function(s){return s.trim();}).filter(Boolean);

@@ -38,7 +38,7 @@ POSTGRES_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "")
 LOCAL_TZ = zoneinfo.ZoneInfo(os.environ.get("GHOST_TZ", "UTC"))
 DEFAULT_USER_ID = int(os.environ.get("GHOST_USER_ID") or os.environ.get("TELEGRAM_USER_ID") or "0")
 
-FIELD_TYPES = ("positive", "negative", "both", "tickbox", "checklist")
+FIELD_TYPES = ("positive", "negative", "both", "tickbox", "checklist", "value")
 FREQ_KINDS = ("weekdays", "monthly", "count")
 PRIORITIES = ("high", "med", "low")
 BUCKETS = ["Maintenance", "Habits", "Work", "Business", "Creative/Relax", "unsorted"]
@@ -98,6 +98,9 @@ ALTER TABLE habit_taps ADD COLUMN IF NOT EXISTS value NUMERIC;
 -- S92: optional per-habit numeric target + unit so a value-entry habit can show "X of TARGET unit".
 ALTER TABLE habits ADD COLUMN IF NOT EXISTS target_value NUMERIC;
 ALTER TABLE habits ADD COLUMN IF NOT EXISTS unit TEXT;
+-- period targets: a weekly count can be a range (min..max), a value habit has target_value..target_max
+ALTER TABLE habits ADD COLUMN IF NOT EXISTS frequency_count_max INT;
+ALTER TABLE habits ADD COLUMN IF NOT EXISTS target_max NUMERIC;
 -- checklist item delete is a SOFT delete (same policy as habit/todo archive: history is kept)
 ALTER TABLE habit_checklist ADD COLUMN IF NOT EXISTS deleted BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE todo_checklist ADD COLUMN IF NOT EXISTS deleted BOOLEAN NOT NULL DEFAULT FALSE;
@@ -205,11 +208,22 @@ async def _record_momentum(conn, item_id, source, bucket):
 # ---------------------------------------------------------------------------
 # Create
 # ---------------------------------------------------------------------------
+def _num(v, cast=float):
+    if v in (None, ""):
+        return None
+    try:
+        n = cast(v)
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
 async def create_habit(name, field_type="tickbox", frequency_kind="weekdays",
                        frequency_days=None, frequency_count=None, bucket=None,
                        streak_rule="net_positive", streak_min_taps=None,
                        checklist=None, user_id=None,
-                       streak_count=0, habitica_source_id=None):
+                       streak_count=0, habitica_source_id=None,
+                       frequency_count_max=None, target_value=None, target_max=None, unit=None):
     """Create a native habit. Returns the new row id, or None on invalid input.
     streak_count seeds the visible streak (Session 75 Habitica import carries the existing streak
     over so momentum isn't lost); when >0, last_streak_date is set to today so it reads as a live
@@ -230,6 +244,15 @@ async def create_habit(name, field_type="tickbox", frequency_kind="weekdays",
         frequency_days = [0, 1, 2, 3, 4, 5, 6]   # every day
     if frequency_kind == "count" and not frequency_count:
         frequency_count = 3
+    if frequency_kind == "monthly" and not frequency_count:
+        frequency_count = 1
+    frequency_count_max = _num(frequency_count_max, int)
+    if frequency_count_max is not None and frequency_count and frequency_count_max < frequency_count:
+        frequency_count_max = None
+    target_value, target_max = _num(target_value), _num(target_max)
+    if target_max is not None and target_value is not None and target_max < target_value:
+        target_max = None
+    unit = (unit or "").strip() or None
     try:
         streak_count = max(0, int(streak_count or 0))
     except (TypeError, ValueError):
@@ -243,11 +266,13 @@ async def create_habit(name, field_type="tickbox", frequency_kind="weekdays",
         hid = await conn.fetchval(
             """INSERT INTO habits (user_id, name, field_type, frequency_kind, frequency_days,
                    frequency_count, bucket, streak_rule, streak_min_taps,
-                   streak_count, streak_best, last_streak_date, habitica_source_id)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,$11,$12) RETURNING id""",
+                   streak_count, streak_best, last_streak_date, habitica_source_id,
+                   frequency_count_max, target_value, target_max, unit)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,$11,$12,$13,$14,$15,$16) RETURNING id""",
             uid, name, field_type, frequency_kind, frequency_days, frequency_count,
             bucket, streak_rule, streak_min_taps,
-            streak_count, last_streak_date, habitica_source_id)
+            streak_count, last_streak_date, habitica_source_id,
+            frequency_count_max, target_value, target_max, unit)
         if field_type == "checklist" and checklist:
             for i, item in enumerate(checklist):
                 item = (item or "").strip()
@@ -476,6 +501,8 @@ async def _qualifies_today(conn, habit, d):
     agg = await _today_taps(conn, habit["id"], d)
     if ft == "tickbox":
         return agg["check"] > 0
+    if ft == "value":
+        return agg["value"] > 0
     if ft == "checklist":
         return await _checklist_all_done(conn, habit["id"], d)
     if ft == "positive":
@@ -490,7 +517,100 @@ async def _qualifies_today(conn, habit, d):
     return (agg["up"] - agg["down"]) > 0
 
 
+# ---------------------------------------------------------------------------
+# Period habits: frequency_kind 'count' (N per Mon-Sun week) and 'monthly' (once a calendar month).
+# Progress = qualifying DAYS in the period (value habits: SUM of logged values). Streak = consecutive
+# periods that met the target; the in-progress period never breaks it, it only extends it once met.
+# ---------------------------------------------------------------------------
+def _period_bounds(kind, d):
+    if kind == "monthly":
+        first = d.replace(day=1)
+        nxt = (first.replace(day=28) + timedelta(days=4)).replace(day=1)
+        return first, nxt - timedelta(days=1)
+    start = d - timedelta(days=d.weekday())
+    return start, start + timedelta(days=6)
+
+
+def _prev_period_day(kind, d):
+    first, _ = _period_bounds(kind, d)
+    return first - timedelta(days=1)
+
+
+def _period_target(h):
+    if h["field_type"] == "value":
+        return (float(h["target_value"]) if h["target_value"] is not None else None,
+                float(h["target_max"]) if h["target_max"] is not None else None)
+    if h["frequency_kind"] == "monthly":
+        return (h["frequency_count"] or 1), h["frequency_count_max"]
+    return h["frequency_count"], h["frequency_count_max"]
+
+
+async def _period_done(conn, h, a, b):
+    ft, hid = h["field_type"], h["id"]
+    if ft == "value":
+        v = await conn.fetchval(
+            "SELECT COALESCE(SUM(value),0) FROM habit_taps WHERE habit_id=$1 AND tap_date BETWEEN $2 AND $3 "
+            "AND direction IN ('up','check')", hid, a, b)
+        return float(v or 0)
+    if ft == "tickbox":
+        rows = await conn.fetch(
+            """SELECT DISTINCT t.tap_date FROM habit_taps t WHERE t.habit_id=$1 AND t.tap_date BETWEEN $2 AND $3
+               AND t.direction='check' AND t.id > COALESCE((SELECT MAX(u.id) FROM habit_taps u WHERE u.habit_id=t.habit_id
+                    AND u.tap_date=t.tap_date AND u.direction='uncheck'), 0)""", hid, a, b)
+        return len(rows)
+    if ft == "checklist":
+        rows = await conn.fetch(
+            """SELECT s.state_date FROM habit_checklist_state s JOIN habit_checklist hc ON hc.id=s.checklist_id
+               WHERE hc.habit_id=$1 AND NOT hc.deleted AND s.done AND s.state_date BETWEEN $2 AND $3
+               GROUP BY s.state_date
+               HAVING COUNT(*) >= (SELECT COUNT(*) FROM habit_checklist WHERE habit_id=$1 AND NOT deleted)""", hid, a, b)
+        return len(rows)
+    rows = await conn.fetch(
+        "SELECT DISTINCT tap_date FROM habit_taps WHERE habit_id=$1 AND tap_date BETWEEN $2 AND $3 AND direction='up'",
+        hid, a, b)
+    return len(rows)
+
+
+async def _period_progress(conn, h, d):
+    a, b = _period_bounds(h["frequency_kind"], d)
+    done = await _period_done(conn, h, a, b)
+    tmin, tmax = _period_target(h)
+    met = tmin is not None and done >= tmin
+    bonus = bool(met and tmax is not None and done > tmax)
+    return {"kind": "month" if h["frequency_kind"] == "monthly" else "week", "start": a.isoformat(),
+            "end": b.isoformat(), "done": done, "target": tmin, "max": tmax, "unit": h["unit"],
+            "met": met, "bonus": bonus}
+
+
+async def _reconcile_period(conn, habit, d):
+    kind = habit["frequency_kind"]
+    cur = await _period_progress(conn, habit, d)
+    streak, day, guard = 0, d, 0
+    if not cur["met"]:
+        day = _prev_period_day(kind, d)
+    else:
+        streak, day = 1, _prev_period_day(kind, d)
+    while guard < 520:
+        guard += 1
+        a, b = _period_bounds(kind, day)
+        tmin, _tmax = _period_target(habit)
+        if tmin is None or await _period_done(conn, habit, a, b) < tmin:
+            break
+        streak += 1
+        day = _prev_period_day(kind, day)
+    best = max(habit["streak_best"], streak)
+    await conn.execute("UPDATE habits SET streak_count=$1, streak_best=$2, last_streak_date=$3 WHERE id=$4",
+                       streak, best, d if cur["met"] else None, habit["id"])
+    return streak
+
+
 async def _reconcile_streak(conn, habit, d):
+    if habit["frequency_kind"] in ("count", "monthly"):
+        return await _reconcile_period(conn, habit, d)
+    return await _reconcile_streak_daily(conn, habit, d)
+
+
+async def _reconcile_streak_daily(conn, habit, d):
     """Update streak_count/best/last_streak_date from today's qualification. Returns new streak."""
     qualifies = await _qualifies_today(conn, habit, d)
     last = habit["last_streak_date"]
@@ -540,6 +660,8 @@ async def tap_habit(habit_id, direction="up", value=None):
         if not habit:
             return {"ok": False, "error": "habit not found"}
         d = today_local()
+        if habit["field_type"] == "value" and direction in ("up", "check") and not (value and value > 0):
+            return {"ok": False, "error": "a value habit needs a positive value"}
         await conn.execute(
             "INSERT INTO habit_taps (habit_id, direction, tap_date, value) VALUES ($1,$2,$3,$4)",
             habit_id, direction, d, value)
@@ -757,7 +879,8 @@ async def edit_todo(todo_id, text=None, priority=None, due_date="__keep__"):
 
 
 async def edit_habit(habit_id, name=None, field_type=None, frequency_kind=None,
-                     frequency_days="__keep__", frequency_count="__keep__"):
+                     frequency_days="__keep__", frequency_count="__keep__", frequency_count_max="__keep__",
+                     target_value="__keep__", target_max="__keep__", unit="__keep__"):
     """Edit a habit's name / type / frequency. Streak and history are kept. Changing the type or
     frequency re-reconciles today's streak against the new rule."""
     sets, args = [], []
@@ -778,6 +901,12 @@ async def edit_habit(habit_id, name=None, field_type=None, frequency_kind=None,
         args.append(frequency_days or None); sets.append(f"frequency_days=${len(args)}")
     if frequency_count != "__keep__":
         args.append(int(frequency_count) if frequency_count else None); sets.append(f"frequency_count=${len(args)}")
+    for col, val, cast in (("frequency_count_max", frequency_count_max, int), ("target_value", target_value, float),
+                           ("target_max", target_max, float)):
+        if val != "__keep__":
+            args.append(_num(val, cast)); sets.append(f"{col}=${len(args)}")
+    if unit != "__keep__":
+        args.append((unit or "").strip() or None); sets.append(f"unit=${len(args)}")
     if not sets:
         return {"ok": False, "error": "nothing to update"}
     conn = await pg_conn()
@@ -837,12 +966,19 @@ async def archive_todo(todo_id):
 _WD = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
+def _rng(lo, hi):
+    return f"{lo}-{hi}" if hi and hi != lo else f"{lo}"
+
+
 def _freq_label(h):
     if h["frequency_kind"] == "count":
-        return f"{h['frequency_count']}x / week"
+        if h["field_type"] == "value" and h["target_value"] is not None:
+            t = _rng(f"{float(h['target_value']):g}", f"{float(h['target_max']):g}" if h["target_max"] is not None else None)
+            return f"{t} {h['unit'] or ''} / week".replace("  ", " ")
+        return f"{_rng(h['frequency_count'], h['frequency_count_max'])}x / week"
     if h["frequency_kind"] == "monthly":
-        days = h["frequency_days"] or []
-        return "monthly" + (f" (day {', '.join(map(str, days))})" if days else "")
+        n = h["frequency_count"] or 1
+        return "monthly" if n == 1 else f"{n}x / month"
     days = h["frequency_days"] or []
     if len(days) == 7:
         return "every day"
@@ -853,14 +989,12 @@ def _freq_label(h):
 
 def _field_label(ft):
     return {"positive": "positive", "negative": "negative", "both": "positive + negative",
-            "tickbox": "tickbox", "checklist": "checklist"}.get(ft, ft)
+            "tickbox": "tickbox", "checklist": "checklist", "value": "value"}.get(ft, ft)
 
 
 def _due_today(h, d):
-    if h["frequency_kind"] == "count":
-        return True   # flexible count — available any day
-    if h["frequency_kind"] == "monthly":
-        return d.day in (h["frequency_days"] or [])
+    if h["frequency_kind"] in ("count", "monthly"):
+        return True   # period habits (N per week / once a month) are available any day
     return d.weekday() in (h["frequency_days"] or list(range(7)))
 
 
@@ -888,9 +1022,27 @@ async def list_habits(user_id=None, conn=None):
                 "today_up": agg["up"], "today_down": agg["down"], "today_check": agg["check"],
                 "today_value": agg["value"],                                   # S92
                 "target_value": float(h["target_value"]) if h["target_value"] is not None else None,  # S92
+                "target_max": float(h["target_max"]) if h["target_max"] is not None else None,
                 "unit": h["unit"],                                             # S92
+                "frequency_days": list(h["frequency_days"] or []),
+                "frequency_count": h["frequency_count"], "frequency_count_max": h["frequency_count_max"],
+                "ticked_today": (agg["check"] > 0 or agg["up"] > 0 or agg["value"] > 0),
+                "period": None,
                 "checklist": [],
             }
+            if h["field_type"] == "tickbox":
+                item["ticked_today"] = agg["check"] > 0
+            if h["frequency_kind"] in ("count", "monthly"):
+                item["period"] = await _period_progress(conn, h, d)
+                item["done_today"] = item["ticked_today"]      # "lit" = acted on today; the period verdict is period.met
+            if h["field_type"] == "negative":
+                # clean days since the last 'down' tap (or since creation); credited automatically,
+                # no 'up' tap needed. Today only counts once it is over, so a new habit starts at 0.
+                last_down = await conn.fetchval(
+                    "SELECT MAX(tap_date) FROM habit_taps WHERE habit_id=$1 AND direction='down'", h["id"])
+                start = (last_down + timedelta(days=1)) if last_down else h["created_at"].astimezone(LOCAL_TZ).date()
+                item["streak"] = 0 if last_down == d else max(0, (d - start).days)
+                item["streak_best"] = max(h["streak_best"], item["streak"])
             if h["field_type"] == "checklist":
                 citems = await conn.fetch(
                     """SELECT hc.id, hc.text,

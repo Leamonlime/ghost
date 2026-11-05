@@ -361,14 +361,12 @@ def test_habits_checklist_untick_item_persists(page, api):
     assert [c["done"] for c in api.habit(h)["checklist"]] == [False, False, False]
 
 
-@ABSENT
 def test_habits_checklist_parent_shows_progress_1_of_3(page, api):
     name, h = _checklist_habit(page, api)
     after_post(page, "/api/habits/checklist", lambda: item(mini(habit_row(page, name)), "item1").click())
     reload(page)
     text = habit_row(page, name).inner_text() + mini(habit_row(page, name)).inner_text()
-    if not re.search(r"\b1\s*(of|/)\s*3\b", text):
-        raise FeatureAbsent(f"no '1 of 3' progress on the checklist habit (todos have it); text={text!r}")
+    assert re.search(r"\b1\s*(of|/)\s*3\b", text), f"no '1 of 3' progress on the checklist habit; text={text!r}"
 
 
 def test_habits_checklist_ticking_all_items_completes_parent(page, api):
