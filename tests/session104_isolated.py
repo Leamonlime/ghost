@@ -120,8 +120,19 @@ async def db_half():
         archived = await conn.fetchval("SELECT archived FROM todos WHERE id=$1", b)
         await conn.close()
         check("todo delete is soft (archived flag, row kept); sibling untouched", archived is True and a in todos and b not in todos)
+        # exact name in one list is NOT made ambiguous by a loose word hit in another list
+        th = await native.create_todo("Quux dentist booking", user_id=U)
+        hh = await native.create_habit("Quux stretching", user_id=U)
+        r = await native.route_message("delete Quux dentist booking", U)
+        check("chat: exact todo name wins over loose habit word-overlap", r and r.get("removed") == ["todo", "Quux dentist booking"], str(r))
+        conn = await native.pg_conn()
+        ha = await conn.fetchval("SELECT active FROM habits WHERE id=$1", hh)
+        await conn.close()
+        check("...and the habit sharing a word is untouched", ha is True)
+        await native.create_todo("Quux other errand", user_id=U)
+        r = await native.route_message("remove quux", U)
+        check("chat: loose shared word across lists asks which (nothing deleted)", r and r["action"] == "ambiguous", str(r))
         # habits are not tracker-polluted: a normal habit with a similar name still works
-        r = await native.route_message("add a habit for Zebra stretching", U) if False else None
         # --- todo create via chat with due + notes ---
         r = await native.route_message("add todo: Book vet due 20/11 high notes: ask about shots", U)
         check("chat: create_todo returns due + notes", r and r["ok"] and r["due_date"] and r["notes"] == "ask about shots", str(r))

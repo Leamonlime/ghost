@@ -1519,20 +1519,22 @@ async def route_message(text, user_id=None):
         finally:
             await conn.close()
         target = _clean_edit_name(rem_m.group("n"))
-        tmatch = _edit_match(target, todos, "text")
-        hmatch = _edit_match(target, habits, "name")
-        if len(tmatch) + len(hmatch) > 1:
+        # ONE tiered match over todos + habits + trackers together (S104): an exact name in one list
+        # must not be made "ambiguous" by a loose word-overlap hit in another.
+        pool = ([{"kind": "todo", "label": t["text"], "obj": t} for t in todos]
+                + [{"kind": "tracker" if h.get("is_tracker") else "habit", "label": h["name"], "obj": h} for h in habits])
+        hits = _edit_match(target, pool, "label")
+        if len(hits) > 1:
             return {"action": "ambiguous", "intent": "delete",
-                    "candidates": [t["text"] for t in tmatch] + [h["name"] + (" (tracker)" if h.get("is_tracker") else "")
-                                                                 for h in hmatch]}
+                    "candidates": [x["label"] + (f" ({x['kind']})" if x["kind"] != "todo" else "") for x in hits]}
         removed = None
-        if tmatch:                                  # prefer the to-do list; habits are recurring
-            r = await archive_todo(tmatch[0]["id"])
-            removed = ["todo", tmatch[0]["text"]] if r.get("ok") else None
-        elif hmatch:
-            r = await archive_habit(hmatch[0]["id"])
-            kind = "tracker" if hmatch[0].get("is_tracker") else "habit"
-            removed = [kind, hmatch[0]["name"]] if r.get("ok") else None
+        if hits:
+            x = hits[0]
+            if x["kind"] == "todo":
+                r = await archive_todo(x["obj"]["id"])
+            else:
+                r = await archive_habit(x["obj"]["id"])
+            removed = [x["kind"], x["label"]] if r.get("ok") else None
         added = None
         add_m = _EDIT_ADD_RE.search(text)
         if add_m:
