@@ -4,6 +4,11 @@ Auto-generated from the project build log; titles only. Newest session first.
 
 | Session | Date | Summary |
 | ------: | :--- | :------ |
+| 106 | 06/11/2026 | Chat trackers, delete-by-name, todo due date and notes, decision sent marker |
+| 105 | 06/11/2026 | Google Calendar credentials restored |
+| 104 | 05/11/2026 | Briefing todo sort and bot office days |
+| 103 | 05/11/2026 | Follow-up fixes to the habits and todos rebuild (PR #3) |
+| 102 | 05/11/2026 | Habits and todos rebuilt to a new plan (new capabilities + reseed) |
 | 101 | 03/11/2026 | Dashboard food log |
 | 100 | 03/11/2026 | Phone-test fixes: food search fixed; dashboard food log and chat spacing held for a decision |
 | 99 | 03/11/2026 | Cleanup: leftover quest layer and dead game tables removed |
