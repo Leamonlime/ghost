@@ -301,6 +301,44 @@ try:
     o = buf.getvalue()
     check("10: card per pending decision, recommendation + Other… button", sent >= 1 and "Recommended: Retire" in o or "Other…" in o)
     check("10: callback data is deterministic dec:<id>:<key>", "dec:" in o and ":other" in o)
+
+    # 11) S104 sent marker: push on creation, nightly skips marked cards, explicit resend ignores it
+    def run_cards(**kw):
+        b = io.StringIO()
+        with contextlib.redirect_stdout(b):
+            n = R.send_pending_cards(cfg, "stdout", **kw)
+        return n, b.getvalue()
+    def pushed(did):
+        async def q(conn, D):
+            return await conn.fetchval("SELECT pushed_at FROM decisions WHERE id=$1", did)
+        return R.db_run(cfg, q)
+    R.db_run(cfg, lambda conn, D: conn.execute("UPDATE decisions SET pushed_at=NULL"))
+    n, _ = run_cards()                                   # nightly path: all unmarked cards go once
+    check("11: nightly sends unmarked pending cards", n >= 1, str(n))
+    n2, o2 = run_cards()
+    check("11: second nightly run re-sends NOTHING (marker set on delivery)", n2 == 0 and "dec:" not in o2, f"{n2} {o2[:80]}")
+    pend = R.db_run(cfg, lambda conn, D: D.list_decisions(conn, "pending"))
+    one = pend[0]["id"]
+    n3, o3 = run_cards(only_ids={one}, force=True)       # explicit resend of a marked card
+    check("11: explicit resend (force) sends a marked card", n3 == 1 and f"dec:{one}:" in o3, f"{n3}")
+    n4, _ = run_cards(only_ids={one})                    # ids WITHOUT force still respect the marker
+    check("11: ids alone (creation push path) still respect the marker", n4 == 0)
+    R._NOTIFIER = "stdout"
+    b = io.StringIO()
+    with contextlib.redirect_stdout(b):
+        ids, _n = R.record_decisions(cfg, "newcard", None, "n/a", [{"question": "Brand new card?", "options": [{"key": "y", "label": "Yes", "consequence": ""}]}])
+    check("11: new card pushed immediately on creation", f"dec:{ids[0]}:y" in b.getvalue() and pushed(ids[0]) is not None, b.getvalue()[:80])
+    b = io.StringIO()
+    with contextlib.redirect_stdout(b):
+        ids2, _n = R.record_decisions(cfg, "newcard", None, "n/a", [{"question": "Brand new card?", "options": [{"key": "y", "label": "Yes", "consequence": ""}]}])
+    check("11: idempotent re-record does NOT re-push", ids2 == ids and "dec:" not in b.getvalue(), b.getvalue()[:80])
+    R._NOTIFIER = None
+    def failing(text, markup=None):
+        return False, "boom"
+    R.NOTIFIERS["failing"] = failing
+    ids3, _n = R.db_run(cfg, lambda conn, D: D.insert_decision(conn, "failcard", "Will this fail?", [], None)), None
+    n5 = R.send_pending_cards(cfg, "failing", only_ids={ids3[0]})
+    check("11: failed delivery leaves the card unmarked (nightly retries it)", n5 == 0 and pushed(ids3[0]) is None)
 finally:
     async def drop():
         import asyncpg

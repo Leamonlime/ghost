@@ -53,6 +53,9 @@ CREATE TABLE IF NOT EXISTS decisions (
     UNIQUE (prompt_slug, question_hash)
 );
 CREATE INDEX IF NOT EXISTS decisions_status_idx ON decisions(status);
+-- S104: when a card was pushed to the phone. The nightly run only sends cards where this is NULL;
+-- an explicit resend ignores it. (Existing pending cards were backfilled by migrations/2026-11-06_01.)
+ALTER TABLE decisions ADD COLUMN IF NOT EXISTS pushed_at TIMESTAMPTZ;
 """
 
 _READY = False
@@ -187,6 +190,20 @@ async def insert_decision(conn, prompt_slug, question, options=None, recommended
     existing = await conn.fetchval("SELECT id FROM decisions WHERE prompt_slug=$1 AND question_hash=$2",
                                    prompt_slug, h)
     return existing, False
+
+
+async def list_unpushed(conn):
+    """Pending cards that have never been pushed (NULL pushed_at) — what the nightly run may send."""
+    await ensure_schema(conn)
+    rows = await conn.fetch("SELECT * FROM decisions WHERE status='pending' AND pushed_at IS NULL ORDER BY id")
+    return [_row(r) for r in rows]
+
+
+async def mark_pushed(conn, ids):
+    """Stamp pushed_at for cards that were actually delivered. Never un-stamps."""
+    await ensure_schema(conn)
+    if ids:
+        await conn.execute("UPDATE decisions SET pushed_at=now() WHERE id = ANY($1::bigint[])", list(ids))
 
 
 async def get_decision(conn, did):

@@ -2753,8 +2753,12 @@ async def handle_native_create(user_id: int, user_message: str) -> str | None:
                 hid = await native.create_habit(c["name"], field_type=c.get("field_type", "tickbox"), user_id=user_id)
                 (made if hid else failed).append(f"habit “{c['name']}”" + (f" ({native._field_label(c['field_type'])})" if hid else ""))
             else:
-                tid = await native.create_todo(c["text"], priority=c.get("priority", "med"), user_id=user_id)
-                (made if tid else failed).append(f"to-do “{c['text']}”")
+                tid = await native.create_todo(c["text"], priority=c.get("priority", "med"),
+                                               due_date=c.get("due_date"), notes=c.get("notes"), user_id=user_id)
+                extra = ""
+                if tid and c.get("due_date"):
+                    extra = f", due {c['due_date'].strftime('%a %d/%m')}"
+                (made if tid else failed).append(f"to-do “{c['text']}”{extra}")
         except Exception as e:
             logger.error(f"native create write error ({c}): {e}")
             failed.append(f"{c['kind']} “{c.get('name') or c.get('text')}”")
@@ -3177,7 +3181,14 @@ async def process_message(user_id: int, user_message: str, source: str = "app") 
             nres = None
         if nres and nres.get("action") == "ambiguous":
             names = ", ".join(f"'{n}'" for n in nres["candidates"][:5])
+            if nres.get("intent") == "delete":
+                return await call_claude(user_id, f"{user_message} [AMBIGUOUS native delete: {names} all match — ask her which one to remove, name them, NOTHING has been deleted yet]", route_text=user_message)
             return await call_claude(user_id, f"{user_message} [AMBIGUOUS native match: {names} — ask her which one to mark, do not guess or write anything]", route_text=user_message)
+        if nres and nres.get("action") == "create_tracker":
+            if nres.get("ok"):
+                await _bust_native_cache()
+                return await call_claude(user_id, f"{user_message} [Tracker '{nres['name']}' created (one-off, no schedule; say 'did {nres['name']}' to count it, 'delete {nres['name']}' to archive it) — confirm briefly]", route_text=user_message)
+            return await call_claude(user_id, f"{user_message} [Tracker creation FAILED — tell her it did not save, do not claim success]", route_text=user_message)
         if nres and nres.get("action") == "tap_habit":
             if nres.get("ok"):
                 await _bust_native_cache()

@@ -4243,16 +4243,23 @@ async def app_habit_log(habit_id: int, request: Request):
 
 @app.post("/api/app/v1/todos")
 async def app_todo_create(request: Request):
-    """Quick-add a todo. Body {text, priority?, due_date?:YYYY-MM-DD, client_id?}."""
+    """Quick-add a todo. Body {text (or title), priority?: high|med|low, due_date?:YYYY-MM-DD, notes?, client_id?}."""
     if not _app_auth_ok(request):
         return _app_401()
     try:
         data = await request.json()
     except Exception:
         return JSONResponse({"ok": False, "error": "bad request"}, status_code=400)
-    text = (data.get("text") or "").strip()
+    text = (data.get("text") or data.get("title") or "").strip()
     if not text:
         return JSONResponse({"ok": False, "error": "text required"}, status_code=400)
+    prio = str(data.get("priority") or "med").strip().lower()
+    prio = {"medium": "med", "normal": "med"}.get(prio, prio)
+    if prio not in native.PRIORITIES:
+        return JSONResponse({"ok": False, "error": "priority must be High, Med or Low"}, status_code=400)
+    notes = data.get("notes")
+    if notes is not None and not isinstance(notes, str):
+        return JSONResponse({"ok": False, "error": "notes must be text"}, status_code=400)
     client_id = data.get("client_id")
     conn = await pg_conn()
     try:
@@ -4268,8 +4275,7 @@ async def app_todo_create(request: Request):
             due = date.fromisoformat(str(data["due_date"]))
         except ValueError:
             return JSONResponse({"ok": False, "error": "due_date must be YYYY-MM-DD"}, status_code=400)
-    tid = await native.create_todo(text, priority=(data.get("priority") or "med"),
-                                   due_date=due, user_id=OWNER_ID)
+    tid = await native.create_todo(text, priority=prio, due_date=due, notes=notes, user_id=OWNER_ID)
     result = {"ok": tid is not None, "id": tid, "text": text}
     if result["ok"] and client_id:
         conn = await pg_conn()

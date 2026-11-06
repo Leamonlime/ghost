@@ -114,7 +114,6 @@ CREATE TABLE IF NOT EXISTS habit_date_log (
 );
 -- checklist item delete is a SOFT delete (same policy as habit/todo archive: history is kept)
 ALTER TABLE habit_checklist ADD COLUMN IF NOT EXISTS deleted BOOLEAN NOT NULL DEFAULT FALSE;
-ALTER TABLE todo_checklist ADD COLUMN IF NOT EXISTS deleted BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE TABLE IF NOT EXISTS habit_checklist_state (
     checklist_id BIGINT NOT NULL REFERENCES habit_checklist(id) ON DELETE CASCADE,
     state_date DATE NOT NULL,
@@ -142,6 +141,8 @@ CREATE TABLE IF NOT EXISTS todo_checklist (
     done BOOLEAN NOT NULL DEFAULT FALSE,
     position INT NOT NULL DEFAULT 0
 );
+-- (S104: moved below its CREATE TABLE so ensure_schema works on a fresh database)
+ALTER TABLE todo_checklist ADD COLUMN IF NOT EXISTS deleted BOOLEAN NOT NULL DEFAULT FALSE;
 -- shared with the Session-57 momentum signal; created here too so native can write it
 -- even if the dashboard/scheduler haven't run yet this deploy.
 CREATE TABLE IF NOT EXISTS momentum_events (
@@ -159,6 +160,11 @@ ALTER TABLE habits ADD COLUMN IF NOT EXISTS habitica_source_id TEXT;
 ALTER TABLE todos  ADD COLUMN IF NOT EXISTS habitica_source_id TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS habits_habitica_src_idx ON habits(habitica_source_id) WHERE habitica_source_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS todos_habitica_src_idx  ON todos(habitica_source_id)  WHERE habitica_source_id IS NOT NULL;
+-- Session 104: one-off tracked items made from chat ("N=1 trackers") are ordinary habits rows flagged
+-- is_tracker; list_habits() hides them unless asked, so no page / ring / briefing changes.
+ALTER TABLE habits ADD COLUMN IF NOT EXISTS is_tracker BOOLEAN NOT NULL DEFAULT FALSE;
+-- Session 104: optional free-text notes on a todo (phone/chat creation).
+ALTER TABLE todos ADD COLUMN IF NOT EXISTS notes TEXT;
 """
 
 
@@ -246,7 +252,7 @@ async def create_habit(name, field_type="tickbox", frequency_kind="weekdays",
                        checklist=None, user_id=None,
                        streak_count=0, habitica_source_id=None,
                        frequency_count_max=None, target_value=None, target_max=None, unit=None,
-                       log_date_label=None):
+                       log_date_label=None, is_tracker=False):
     """Create a native habit. Returns the new row id, or None on invalid input.
     streak_count seeds the visible streak (Session 75 Habitica import carries the existing streak
     over so momentum isn't lost); when >0, last_streak_date is set to today so it reads as a live
@@ -290,12 +296,13 @@ async def create_habit(name, field_type="tickbox", frequency_kind="weekdays",
             """INSERT INTO habits (user_id, name, field_type, frequency_kind, frequency_days,
                    frequency_count, bucket, streak_rule, streak_min_taps,
                    streak_count, streak_best, last_streak_date, habitica_source_id,
-                   frequency_count_max, target_value, target_max, unit, log_date_label)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id""",
+                   frequency_count_max, target_value, target_max, unit, log_date_label, is_tracker)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING id""",
             uid, name, field_type, frequency_kind, frequency_days, frequency_count,
             bucket, streak_rule, streak_min_taps,
             streak_count, last_streak_date, habitica_source_id,
-            frequency_count_max, target_value, target_max, unit, (log_date_label or "").strip() or None)
+            frequency_count_max, target_value, target_max, unit, (log_date_label or "").strip() or None,
+            bool(is_tracker))
         if field_type == "checklist" and checklist:
             for i, spec in enumerate(checklist):
                 item, optional = _parse_item(spec)
@@ -309,7 +316,7 @@ async def create_habit(name, field_type="tickbox", frequency_kind="weekdays",
 
 
 async def create_todo(text, kind="tickbox", priority="med", due_date=None,
-                      bucket=None, checklist=None, user_id=None, habitica_source_id=None):
+                      bucket=None, checklist=None, user_id=None, habitica_source_id=None, notes=None):
     """Create a native todo. due_date may be a date or an ISO 'YYYY-MM-DD' string. Returns id.
     habitica_source_id records Session-75 import provenance (idempotency key)."""
     text = (text or "").strip()
@@ -332,9 +339,10 @@ async def create_todo(text, kind="tickbox", priority="med", due_date=None,
     try:
         await ensure_schema(conn)
         tid = await conn.fetchval(
-            """INSERT INTO todos (user_id, text, kind, priority, due_date, bucket, habitica_source_id)
-               VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id""",
-            uid, text, kind, priority, due_date, bucket, habitica_source_id)
+            """INSERT INTO todos (user_id, text, kind, priority, due_date, bucket, habitica_source_id, notes)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id""",
+            uid, text, kind, priority, due_date, bucket, habitica_source_id,
+            (notes or "").strip() or None)
         if kind == "checklist" and checklist:
             for i, item in enumerate(checklist):
                 item = (item or "").strip()
@@ -1099,7 +1107,13 @@ def _due_today(h, d):
     return d.weekday() in (h["frequency_days"] or list(range(7)))
 
 
-async def list_habits(user_id=None, conn=None):
+async def create_tracker(name, user_id=None):
+    """S104: a one-off tracked item (single count, no schedule). Just a habit row (field 'positive',
+    every-day default frequency that nothing displays) flagged is_tracker. Returns the id."""
+    return await create_habit(name, field_type="positive", user_id=user_id, is_tracker=True, bucket="Habits")
+
+
+async def list_habits(user_id=None, conn=None, include_trackers=False):
     own = conn is None
     if own:
         conn = await pg_conn()
@@ -1107,13 +1121,15 @@ async def list_habits(user_id=None, conn=None):
         await ensure_schema(conn)
         uid = user_id if user_id is not None else DEFAULT_USER_ID
         rows = await conn.fetch(
-            "SELECT * FROM habits WHERE user_id=$1 AND active=TRUE ORDER BY id", uid)
+            "SELECT * FROM habits WHERE user_id=$1 AND active=TRUE AND ($2 OR NOT is_tracker) ORDER BY id",
+            uid, include_trackers)
         d = today_local()
         out = []
         for h in rows:
             agg = await _today_taps(conn, h["id"], d)
             item = {
                 "id": h["id"], "name": h["name"], "field_type": h["field_type"],
+                "is_tracker": h["is_tracker"],
                 "field_label": _field_label(h["field_type"]),
                 "frequency_kind": h["frequency_kind"], "frequency_label": _freq_label(h),
                 "bucket": h["bucket"], "streak": h["streak_count"], "streak_best": h["streak_best"],
@@ -1185,7 +1201,7 @@ async def list_todos(user_id=None, include_done=True, conn=None):
             overdue = bool(t["due_date"] and (not t["done"]) and t["due_date"] < d)
             item = {
                 "id": t["id"], "text": t["text"], "kind": t["kind"], "priority": t["priority"],
-                "bucket": t["bucket"], "done": t["done"],
+                "bucket": t["bucket"], "done": t["done"], "notes": t["notes"],
                 "due_date": t["due_date"].isoformat() if t["due_date"] else None,
                 "overdue": overdue, "checklist": [],
             }
@@ -1211,11 +1227,85 @@ async def list_todos(user_id=None, include_done=True, conn=None):
 # Ambient signals with no action verb ("drank water") are never claimed here.
 # ---------------------------------------------------------------------------
 _CREATE_HABIT_RE = re.compile(r'^\s*(?:create|start|track)\s+(?:a\s+)?habit[:\s]+(.+)$', re.I)
+_CREATE_TRACKER_RE = re.compile(
+    r'^\s*(?:create|start|add|new|set\s*up)\s+(?:a\s+|an\s+)?(?:new\s+)?(?:one[- ]?off\s+)?tracker'
+    r'(?:\s+(?:for|called|named|to\s+track)|\s*:)?\s*(?P<n>.+)$', re.I)
+_TRACK_ONCE_RE = re.compile(r'^\s*track\s+(?P<n>.+?)\s+(?:once|one[- ]?off|just\s+once)\s*$', re.I)
 _CREATE_TODO_RE = re.compile(r'^\s*(?:create|add|new)\s+(?:a\s+)?todo[:\s]+(.+)$', re.I)
 _ACTION_UP = ("did", "done", "finished", "complete", "completed", "ticked", "tick",
               "smashed", "knocked out", "wrapped up", "went to")
 _TOKEN_PLUS = ("+", " plus")
 _TOKEN_MINUS = ("-", " minus", "skipped")
+
+# --- S104: due date + notes from a spoken/typed todo -------------------------------------------
+_WEEKDAYS = {"monday": 0, "mon": 0, "tuesday": 1, "tue": 1, "tues": 1, "wednesday": 2, "wed": 2,
+             "thursday": 3, "thu": 3, "thur": 3, "thurs": 3, "friday": 4, "fri": 4, "saturday": 5, "sat": 5,
+             "sunday": 6, "sun": 6}
+_DUE_TAIL_RE = re.compile(r'[\s,]*\b(?:due(?:\s+(?:on|by))?|by)\s+(?P<d>[A-Za-z0-9/\-]+(?:\s+[A-Za-z0-9/\-]+)?)\s*[.!]?\s*$', re.I)
+_NOTES_RE = re.compile(r'[\s,;]*\bnotes?\s*:\s*(?P<n>.+)$', re.I | re.S)
+
+
+def parse_due_phrase(phrase, today=None):
+    """'tomorrow' | 'friday' | '12/11' | '12/11/2026' | '2026-11-12' | 'today' -> date, else None.
+    Day-first (Australian). A bare weekday is its NEXT occurrence (today's name means a week out)."""
+    t = (phrase or "").strip().lower().rstrip(".!")
+    today = today or today_local()
+    t = re.sub(r'^next\s+', "", t)
+    if t == "today":
+        return today
+    if t == "tomorrow":
+        return today + timedelta(days=1)
+    if t in _WEEKDAYS:
+        return today + timedelta(days=(_WEEKDAYS[t] - today.weekday()) % 7 or 7)
+    m = re.fullmatch(r'(\d{4})-(\d{1,2})-(\d{1,2})', t)
+    try:
+        if m:
+            return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        m = re.fullmatch(r'(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?', t)
+        if m:
+            dd, mm, yy = int(m.group(1)), int(m.group(2)), m.group(3)
+            if yy:
+                y = int(yy) + (2000 if len(yy) == 2 else 0)
+                return date(y, mm, dd)
+            cand = date(today.year, mm, dd)
+            return cand if cand >= today else date(today.year + 1, mm, dd)
+    except ValueError:
+        return None
+    return None
+
+
+def parse_todo_extras(raw, today=None):
+    """Split a todo phrase into (text, due_date, notes). 'notes: ...' runs to the end; a trailing
+    'due <when>' / 'by <when>' is taken ONLY if <when> parses as a date (so 'pay by card' is safe).
+    A trailing priority word can sit before or after the due clause."""
+    text, notes, due = (raw or "").strip(), None, None
+    m = _NOTES_RE.search(text)
+    if m:
+        notes = m.group("n").strip() or None
+        text = text[:m.start()].strip()
+    prio_tail = re.compile(r'[\s,]*(?:high|medium|med|low)(?:\s+priority)?\s*[.!]?\s*$', re.I)
+    suffix = ""                      # a trailing priority word, re-attached for the caller to read
+    for _ in range(4):
+        dm = _DUE_TAIL_RE.search(text) if due is None else None
+        if dm:
+            cand = parse_due_phrase(dm.group("d"), today)
+            if cand:
+                due, text = cand, text[:dm.start()].strip()
+                continue
+            # 'by friday high' captured two words: try the first as the date, keep the second
+            parts = dm.group("d").split(None, 1)
+            cand = parse_due_phrase(parts[0], today) if len(parts) == 2 else None
+            if cand:
+                due, text = cand, text[:dm.start()].strip() + " " + parts[1]
+                continue
+        pm = prio_tail.search(text)
+        if pm and not suffix:
+            suffix, text = text[pm.start():], text[:pm.start()]
+            continue
+        break
+    text = text + suffix
+    return text.strip(), due, notes
+
 
 # --- Native CREATE detection (S66 widening) -------------------------------------------------
 # Goal: catch ordinary conversational creation ("add a habit for stretching", "add my exercise
@@ -1298,12 +1388,14 @@ def detect_native_create(text):
             creations.append({"kind": "habit", "name": name, "field_type": _extract_field_type(raw.lower())})
 
     def add_todo(raw):
+        raw, due, notes = parse_todo_extras(raw)
         text2 = _clean_name(raw)
         pr = "high" if "high" in raw.lower() else ("low" if "low priority" in raw.lower() or " low" in raw.lower() else "med")
         text2 = re.sub(r'[\s,]*(high|medium|med|low)(\s+priority)?\s*$', "", text2, flags=re.I).strip(" .,!?") or text2
         if text2 and text2.lower() not in seen and len(text2) >= 2:
             seen.add(text2.lower())
-            creations.append({"kind": "todo", "text": text2, "priority": pr})
+            creations.append({"kind": "todo", "text": text2, "priority": pr,
+                              "due_date": due, "notes": notes})
 
     # finditer so multiple items in one message ("X habit and a todo for Y") are all captured;
     # the _BOUND lookahead keeps each name from swallowing the next clause.
@@ -1354,21 +1446,27 @@ def _clean_edit_name(s):
     return s.strip(" .,!?:-")
 
 def _edit_match(target, items, key):
-    """Loose match for an explicit edit ('skip the gym' -> the 'Gym' item): item core is a substring
-    either way, or shares a >=3-char word. Looser than _match_items on purpose — she named it."""
+    """Loose match for an explicit edit ('skip the gym' -> the 'Gym' item). Tiered, strongest first,
+    so naming an item fully can single it out (S104; the old union made 'delete Pay rent' match
+    'Pay invoice' too because they share 'pay', so a disambiguating reply could never succeed):
+      1. exact name  2. one name contains the other  3. shares a >=3-char word (she named it loosely)."""
     tl = (target or "").strip().lower()
     if not tl:
         return []
     tt = {w for w in re.findall(r'[a-z0-9]+', tl) if len(w) >= 3}
-    out = []
+    exact, contain, words = [], [], []
     for it in items:
         core = (it[key] or "").strip().lower()
         if not core:
             continue
         ct = {w for w in re.findall(r'[a-z0-9]+', core) if len(w) >= 3}
-        if core in tl or tl in core or (tt & ct):
-            out.append(it)
-    return out
+        if core == tl:
+            exact.append(it)
+        elif core in tl or tl in core:
+            contain.append(it)
+        elif tt & ct:
+            words.append(it)
+    return exact or contain or words
 
 
 async def route_message(text, user_id=None):
@@ -1378,6 +1476,12 @@ async def route_message(text, user_id=None):
     low = text.lower()
 
     # --- create ---
+    # S104: one-off tracker ("start a tracker for X", "track X once") -> habits row flagged is_tracker
+    m = _CREATE_TRACKER_RE.match(text) or _TRACK_ONCE_RE.match(text)
+    if m:
+        name = m.group("n").strip(" .,!?:-")
+        tid = await create_tracker(name, user_id=user_id) if name else None
+        return {"action": "create_tracker", "ok": tid is not None, "name": name, "id": tid}
     m = _CREATE_HABIT_RE.match(text)
     if m:
         name = m.group(1).strip(" .,!?")
@@ -1394,11 +1498,14 @@ async def route_message(text, user_id=None):
     m = _CREATE_TODO_RE.match(text)
     if m:
         body = m.group(1).strip(" .,!?")
-        pr = "high" if "high" in low else ("low" if "low" in low else "med")
+        body, due, notes = parse_todo_extras(body)
+        bl = body.lower()
+        pr = "high" if "high" in bl else ("low" if "low" in bl else "med")
         # strip a trailing priority keyword from the text ("...Call plumber high" -> "Call plumber")
         body = re.sub(r'[\s,]*(high|medium|med|low)(\s+priority)?\s*$', "", body, flags=re.I).strip(" .,!?") or body
-        tid = await create_todo(body, priority=pr, user_id=user_id)
-        return {"action": "create_todo", "ok": tid is not None, "text": body, "id": tid}
+        tid = await create_todo(body, priority=pr, due_date=due, notes=notes, user_id=user_id)
+        return {"action": "create_todo", "ok": tid is not None, "text": body, "id": tid,
+                "due_date": due.isoformat() if due else None, "notes": notes}
 
     # --- list edit: skip/drop/remove (+ optional swap-in) — S79 Task 4, native list only ---
     rem_m = _EDIT_REMOVE_RE.search(text)
@@ -1407,7 +1514,7 @@ async def route_message(text, user_id=None):
         conn = await pg_conn()
         try:
             await ensure_schema(conn)
-            habits = await list_habits(uid, conn=conn)
+            habits = await list_habits(uid, conn=conn, include_trackers=True)
             todos = await list_todos(uid, include_done=False, conn=conn)
         finally:
             await conn.close()
@@ -1415,13 +1522,17 @@ async def route_message(text, user_id=None):
         tmatch = _edit_match(target, todos, "text")
         hmatch = _edit_match(target, habits, "name")
         if len(tmatch) + len(hmatch) > 1:
-            return {"action": "ambiguous",
-                    "candidates": [t["text"] for t in tmatch] + [h["name"] for h in hmatch]}
+            return {"action": "ambiguous", "intent": "delete",
+                    "candidates": [t["text"] for t in tmatch] + [h["name"] + (" (tracker)" if h.get("is_tracker") else "")
+                                                                 for h in hmatch]}
         removed = None
         if tmatch:                                  # prefer the to-do list; habits are recurring
-            await archive_todo(tmatch[0]["id"]); removed = ["todo", tmatch[0]["text"]]
+            r = await archive_todo(tmatch[0]["id"])
+            removed = ["todo", tmatch[0]["text"]] if r.get("ok") else None
         elif hmatch:
-            await archive_habit(hmatch[0]["id"]); removed = ["habit", hmatch[0]["name"]]
+            r = await archive_habit(hmatch[0]["id"])
+            kind = "tracker" if hmatch[0].get("is_tracker") else "habit"
+            removed = [kind, hmatch[0]["name"]] if r.get("ok") else None
         added = None
         add_m = _EDIT_ADD_RE.search(text)
         if add_m:
@@ -1446,7 +1557,7 @@ async def route_message(text, user_id=None):
     conn = await pg_conn()
     try:
         await ensure_schema(conn)
-        habits = await list_habits(uid, conn=conn)
+        habits = await list_habits(uid, conn=conn, include_trackers=True)
         todos = [t for t in await list_todos(uid, include_done=False, conn=conn)]
     finally:
         await conn.close()
