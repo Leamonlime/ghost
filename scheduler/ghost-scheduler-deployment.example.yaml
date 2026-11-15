@@ -115,10 +115,6 @@ spec:
               key: ghost-tz
         - name: VAULT_PATH
           value: "/vault"
-        # Habitica<->vault sync: LIVE as of 30/07/2026 (Session 26), after dry-run review.
-        # "0" = live two-way writes. Vault mount is read-write below (live writes need it).
-        - name: GHOST_SYNC_DRYRUN
-          value: "0"
         # S92: app push via ntfy (internal service URL; topic + token from the secret).
         - name: NTFY_URL
           value: "http://ntfy.ghost.svc.cluster.local"
@@ -137,7 +133,7 @@ spec:
         volumeMounts:
         - name: vault
           mountPath: /vault
-          readOnly: false
+          readOnly: true
       volumes:
       - name: vault
         hostPath:

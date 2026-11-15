@@ -2,7 +2,6 @@ import asyncio
 import os
 import json
 import logging
-import random
 import re
 import time
 from datetime import datetime, timedelta
@@ -1392,26 +1391,6 @@ async def check_budget_caps():
         logger.info(f"Budget cap heads-up sent ({len(hits)} categor{'y' if len(hits) == 1 else 'ies'})")
 
 
-async def run_habitica_sync():
-    """Session 23: Habitica<->vault sync on its own jittered 15-30 min cadence
-    (separate from this 300s loop). Ships DRY-RUN (writes nothing) until the flip
-    to live after Lea reviews a day's log. The sync module owns all read/write
-    logic; this is just the scheduling gate."""
-    r = await get_redis()
-    try:
-        now = datetime.now(LOCAL_TZ).timestamp()
-        nxt = await r.get("habitica_sync_next_due")
-        if nxt and now < float(nxt):
-            return
-        await r.set("habitica_sync_next_due", now + random.uniform(900, 1800), ex=86400)
-    finally:
-        await r.aclose()
-    try:
-        import habitica_sync
-        await habitica_sync.run_once(get_redis)
-    except Exception as e:
-        logger.error(f"habitica_sync error: {e}")
-
 # ---------------------------------------------------------------------------
 # Session 76 — "bad guys": three named recurring obstacles surfaced as READ-ONLY threshold
 # checks against data that already exists (momentum_events, native todos, app_usage). No new
@@ -1531,7 +1510,6 @@ async def main():
             await check_missed_meals()
             await check_food_tracked()
             await expire_commitments()
-            await run_habitica_sync()
             await check_bad_guys()
             await health_check()
         except Exception as e:
