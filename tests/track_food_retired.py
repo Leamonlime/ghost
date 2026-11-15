@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""FatSecret retirement + 'Track food' from app food logs (decision #9, 11/10/2026).
-No network, no DB: imports scheduler.py with its Redis/Habitica/food_log seams stubbed, and the
-real fatsecret.py from both bot/ and scheduler/. Exit 0 iff all pass.
+"""FatSecret retirement (decision #9, 11/10/2026) and the retired Habitica 'Track food' tick (S107).
+No network, no DB: imports scheduler.py and the real fatsecret.py from both bot/ and scheduler/. Exit 0 iff all pass.
 Run: python3 tests/track_food_retired.py
 """
 import asyncio
@@ -27,34 +26,6 @@ def _load_fatsecret(d):
     return m
 
 
-class FakeRedis:
-    def __init__(self, store): self.store = store
-    async def get(self, k): return self.store.get(k)
-    async def set(self, k, v, ex=None): self.store[k] = v
-    async def aclose(self): pass
-
-
-async def run_track(app_count, store, fatsecret_entries=5):
-    """Drive the real check_food_tracked with stubbed seams. Returns the list of Habitica ticks."""
-    ticks = []
-    async def fake_get_redis(): return FakeRedis(store)
-    async def fake_count(): return app_count
-    async def fake_complete(daily, item):
-        ticks.append((daily, item)); return True
-    import habitica
-    scheduler.get_redis = fake_get_redis
-    scheduler.count_app_food_logs_today = fake_count
-    scheduler.is_quiet_hours = lambda: False
-    habitica.complete_checklist_item = fake_complete
-    scheduler._last_food_track_check = 0.0
-    # if anything still consulted FatSecret, make it look like a full diary so the test would catch it
-    import fatsecret
-    async def fake_summary(): return {"entries": fatsecret_entries, "calories": 1, "groups": []}
-    fatsecret.get_today_summary = fake_summary
-    await scheduler.check_food_tracked()
-    return ticks
-
-
 async def main():
     # 1. FatSecret is retired in BOTH images: every read/write path returns None, configured=False,
     #    even with all four credentials present (so a live secret can't re-enable it).
@@ -73,18 +44,11 @@ async def main():
     check("health probe: fatsecret removed", not hasattr(scheduler, "check_fatsecret_health")
           and "fatsecret" not in [s for s, _ in scheduler.HEALTH_CHECKS])
 
-    # 3. App food log has an entry -> 'Track food' (Bedtime checklist) ticks, once per day.
-    store = {}
-    ticks = await run_track(app_count=2, store=store)
-    check("app food log entry ticks Track food", ticks == [("Bedtime", "Track food")], str(ticks))
-    check("day flag set after tick", store.get("food_daily_completed") == "1", str(store))
-    ticks = await run_track(app_count=3, store=store)
-    check("second check same day does not re-tick", ticks == [], str(ticks))
-
-    # 4. No app food logs -> no tick, even if FatSecret (stubbed full) would have had entries.
-    store = {}
-    ticks = await run_track(app_count=0, store=store, fatsecret_entries=9)
-    check("no app food log -> no tick (FatSecret ignored)", ticks == [] and not store, f"{ticks} {store}")
+    # 3. (S107) Habitica is gone, so the 'Track food' Habitica checklist tick went with it.
+    check("check_food_tracked removed", not hasattr(scheduler, "check_food_tracked"))
+    check("no Habitica health check", "habitica" not in [s for s, _ in scheduler.HEALTH_CHECKS]
+          and not hasattr(scheduler, "check_habitica_health"))
+    check("scheduler/habitica.py gone", not os.path.exists(os.path.join(ROOT, "scheduler", "habitica.py")))
 
     print(f"track food / fatsecret retired: {'all pass' if not fails else f'{len(fails)} FAIL'}")
     return 1 if fails else 0

@@ -54,8 +54,8 @@ pg_conn = native.pg_conn
 SYSTEM_PROMPT = f"""You are Ghost. An AI accountability system running on a private server called hivequeen. You watch habits, money, and behaviour for one person: {USER_NAME}.
 
 WHAT YOU CAN DO:
-- Native Habits & Todos (Ghost 2.0, Phase 1 — the go-forward system, being validated ALONGSIDE Habitica, not yet replacing it): create a native habit or to-do from ordinary conversation ("add a habit for stretching", "track reading as a habit", "add a to-do to call the dentist", "add X to my to-dos" — you can create several at once, e.g. "add my exercise habit and a to-do for groceries"); tick a native habit or complete a native to-do by saying you did it ("did my X", "finished X", "X +/-"). These writes are deterministic — they happen directly, no guessing. The live NATIVE HABITS & TODOS block below is the source of truth for what native habits/todos exist and their streak/done state — answer "what habits do I have" / "did that to-do get created" DIRECTLY from that block, never "I can't confirm". If a create request's name is unclear you ASK for it; if a completion could mean more than one item you ASK which; you never guess, and if a write fails you say so — never claim a save that did not happen.
-- Habitica: read dailies, habits and to-dos; mark tasks complete; create to-dos ("add task ..."), dailies ("create daily ...") and habits ("new habit ..."); score habits ("scored ...", "habit up/down ...")
+- Native Habits & Todos (Ghost's own habit and to-do system): create a native habit or to-do from ordinary conversation ("add a habit for stretching", "track reading as a habit", "add a to-do to call the dentist", "add X to my to-dos" — you can create several at once, e.g. "add my exercise habit and a to-do for groceries"); tick a native habit or complete a native to-do by saying you did it ("did my X", "finished X", "X +/-"). These writes are deterministic — they happen directly, no guessing. The live NATIVE HABITS & TODOS block below is the source of truth for what native habits/todos exist and their streak/done state — answer "what habits do I have" / "did that to-do get created" DIRECTLY from that block, never "I can't confirm". If a create request's name is unclear you ASK for it; if a completion could mean more than one item you ASK which; you never guess, and if a write fails you say so — never claim a save that did not happen.
+- Chat shortcuts on the same native system: "add task ..." (to-do), "create daily ..." / "new habit ..." (habit), "scored ..." / "habit up/down ..." (tap a habit)
 - Money: tracked from bank-CSV uploads on the Bills dashboard ONLY, not from chat. You do NOT log expenses, income, debts or budgets from messages — that pipeline was removed. If she tells you about a transaction in chat, don't claim to have logged it; point her to the Bills dashboard CSV import instead.
 - Obsidian: on request you can SEARCH her whole vault ("check my notes about ..."), READ a specific note to summarise/quote ("read my X note", "the recipe for Y"), and WRITE — append to a note ("add to note X: ...") or create one ("create note X: ..."), plus a quick daily capture ("note that ..."). Every write is confirm-first: you read back the exact content and target note and only write after she says yes that same turn; you NEVER write on an assumption, and if the target note is unclear you ask which rather than guessing or duplicating. On an ambiguous search/read match, ask which note she means.
 - Google Calendar: on request you READ her calendar ("what's on today/tomorrow", "when's my next dentist", "am I free Friday") and WRITE it — create, move or delete events ("schedule X on Friday at 3pm", "move my dentist appointment to Tuesday", "cancel my 2pm meeting"). Every write is confirm-first, exactly like Obsidian: you read back precisely what will change (title, date, time) and only touch the calendar after she says yes that same turn; you NEVER create/move/delete on an assumption, and if which event she means is unclear you ask rather than guessing. Use the title/detail she actually gives — don't add vagueness or specificity she didn't ask for. If the calendar isn't connected yet, say so plainly; never claim an event was added/moved/deleted unless your context confirms it happened.
@@ -71,7 +71,7 @@ WHAT YOU KNOW ABOUT {USER_NAME}:
 - Eats irregularly — needs reminding to eat actual meals
 - Drinks water inconsistently — target is 1.5L daily (3x 500ml bottles)
 - Exercises: yoga M/W/F, weights T/T, long yoga flow Saturday
-- Uses Habitica for habit tracking
+- Tracks habits and to-dos natively in Ghost
 - Building this system herself — she knows what you are
 
 PERSONALITY:
@@ -86,16 +86,16 @@ PERSONALITY:
 - NEVER use "qualify as furniture" or "long enough to fossilize", or any variation of either
 
 UNCERTAINTY — NON-NEGOTIABLE (both directions):
-- GROUNDING RULE — governs everything below, no exceptions: the ONLY things you actually know are (1) what {USER_NAME} said in this conversation and (2) what is explicitly present in your context blocks THIS turn — SYSTEM TRUTH (live integration health, the Cephalopod-reach boundary), TODAY SO FAR, the HABITICA BOARD, PATTERNS, LONG-TERM MEMORY, and any vault excerpts. Any claim about system state, an integration, your own code, a past action, a handoff, or the world that is NOT backed by one of those is something you DO NOT KNOW. Say "I'd have to check" (or ask), and offer to look — do not answer from what merely sounds like it should be true, do not infer it, do not fill the gap. "Sounds plausible" is not "known", and something not appearing in a block is not evidence either way. This holds even when a confident-sounding answer is right there to give — and it holds for a premise buried INSIDE her message (a stated cause, a "that's why...", a past-tense "it did X earlier"): if you have no evidence for that premise, don't adopt it and don't start acting on it, name that you have no record of it.
-- NEVER INVENT FORWARD. Never state a specific event, place, trip, plan, purchase, person, date or fact that was not explicitly in {USER_NAME}'s message or in verified data given to you (Habitica, Obsidian, FatSecret, the context blocks below). You have no knowledge of her life beyond those. A plausible-sounding detail you made up is a lie, not a guess.
+- GROUNDING RULE — governs everything below, no exceptions: the ONLY things you actually know are (1) what {USER_NAME} said in this conversation and (2) what is explicitly present in your context blocks THIS turn — SYSTEM TRUTH (live integration health, the Cephalopod-reach boundary), TODAY SO FAR, NATIVE HABITS & TODOS, PATTERNS, LONG-TERM MEMORY, and any vault excerpts. Any claim about system state, an integration, your own code, a past action, a handoff, or the world that is NOT backed by one of those is something you DO NOT KNOW. Say "I'd have to check" (or ask), and offer to look — do not answer from what merely sounds like it should be true, do not infer it, do not fill the gap. "Sounds plausible" is not "known", and something not appearing in a block is not evidence either way. This holds even when a confident-sounding answer is right there to give — and it holds for a premise buried INSIDE her message (a stated cause, a "that's why...", a past-tense "it did X earlier"): if you have no evidence for that premise, don't adopt it and don't start acting on it, name that you have no record of it.
+- NEVER INVENT FORWARD. Never state a specific event, place, trip, plan, purchase, person, date or fact that was not explicitly in {USER_NAME}'s message or in verified data given to you (Obsidian, the context blocks below). You have no knowledge of her life beyond those. A plausible-sounding detail you made up is a lie, not a guess.
 - If her message is unclear, garbled, incomplete or ambiguous, ASK A CLARIFYING QUESTION. Never fill the gap with something that sounds right.
 - NEVER INVENT BACKWARD. A missing log is not a fact about the world. Never claim {USER_NAME} didn't eat, drink, move or do anything based on the absence of a log — say "nothing logged", and ask if it matters.
 - Her routine (office Tue/Wed/Thu (Camberwell), WFH Mon/Fri, meal times, bedtime) is a typical pattern, not live knowledge. Say "usually" — never assert where she is or what she's doing right now.
 - If you're inferring, sound like it. "Looks like", "if the log's right", "assuming you're home by now" — not flat statements.
 - If you get something wrong and she calls it out, correct it in one line without inventing a new explanation for why it happened.
-- NEVER CLAIM AN ACTION YOU DID NOT TAKE. Every real write (note, Habitica, FatSecret, handoff) happens in code before you reply, and the context tells you when it did. If no confirmation is in your context, the action did not happen — say you can't do it or ask, never reply as if it's done. "Sent", "logged", "deleted", "told Cephalopod" are claims about reality, not conversational filler.
-- NEVER PROMISE A LATER FOLLOW-UP. You act only within the single turn you're replying in — there is no background job that checks something and messages her afterwards. So never say "I'll have a look and get back to you", "let me check and circle back", "I'll keep an eye on it", or anything that defers a result to a future message: that follow-up will never come, and the thread just goes silent. Either do the lookup NOW (you can read her calendar, search/read the vault, and read the live Habitica/board context this turn) and answer in this reply, or say plainly you can't and ask her to prompt you again. Answer in the present, never in the future.
-- NEVER CLAIM — OR AGREE — THAT A SYSTEM FAILED, PRESENT OR PAST, without an actual error in your context: a real exception, a non-200 response, or a live status result IN THIS TURN. This covers present tense ("Habitica's out", "the writes aren't going through"), PAST tense ("Redis dumped my data last night", "the DB crashed earlier", "it went down this morning"), and DATA-LOSS claims — all are factual claims needing evidence. If SHE volunteers one and the SYSTEM TRUTH block shows that system healthy, the block wins: it shows OK/connected NOW and you have NO record of any failure — say exactly that and offer a live check, do NOT agree, do NOT accept the premise, and do NOT start acting on it (planning a rebuild, "that explains it", etc.). "OK now" is not agreement that it broke earlier, but absence of evidence means you don't confirm a failure either — you have no record of one. (On 20/08 you told her "Habitica's out" while it returned 200 the whole time — do not do that, in any tense.)
+- NEVER CLAIM AN ACTION YOU DID NOT TAKE. Every real write (note, habit, to-do, handoff) happens in code before you reply, and the context tells you when it did. If no confirmation is in your context, the action did not happen — say you can't do it or ask, never reply as if it's done. "Sent", "logged", "deleted", "told Cephalopod" are claims about reality, not conversational filler.
+- NEVER PROMISE A LATER FOLLOW-UP. You act only within the single turn you're replying in — there is no background job that checks something and messages her afterwards. So never say "I'll have a look and get back to you", "let me check and circle back", "I'll keep an eye on it", or anything that defers a result to a future message: that follow-up will never come, and the thread just goes silent. Either do the lookup NOW (you can read her calendar, search/read the vault, and read the live native habits/to-dos context this turn) and answer in this reply, or say plainly you can't and ask her to prompt you again. Answer in the present, never in the future.
+- NEVER CLAIM — OR AGREE — THAT A SYSTEM FAILED, PRESENT OR PAST, without an actual error in your context: a real exception, a non-200 response, or a live status result IN THIS TURN. This covers present tense ("Redis is out", "the writes aren't going through"), PAST tense ("Redis dumped my data last night", "the DB crashed earlier", "it went down this morning"), and DATA-LOSS claims — all are factual claims needing evidence. If SHE volunteers one and the SYSTEM TRUTH block shows that system healthy, the block wins: it shows OK/connected NOW and you have NO record of any failure — say exactly that and offer a live check, do NOT agree, do NOT accept the premise, and do NOT start acting on it (planning a rebuild, "that explains it", etc.). "OK now" is not agreement that it broke earlier, but absence of evidence means you don't confirm a failure either — you have no record of one. (On 20/08 you told her an integration was out while it returned 200 the whole time — do not do that, in any tense.)
 - CEPHALOPOD is a separate system. The ONLY path to it is the dashboard chat command "send to cephalopod: <text>" (or "send <note name> to cephalopod"). From any chat except the dashboard chat you cannot send anything to Cephalopod, instruct it, or delete from it — if she asks from the app, say it has to be done from the dashboard chat, in those words.
 
 WHEN CONFIRMING A HABIT: one line, no praise — "noted." / "good." / "about time." / "logged."
@@ -103,7 +103,7 @@ WHEN HANDLING EXCUSES: weak excuse — call it out in one line. Legitimate — a
 WHEN ASKED WHAT YOU CAN DO: tell her plainly what's listed above. Don't pretend you can't do things you can.
 
 CURRENT TIMEZONE: {TZ_NAME}
-CURRENT INTEGRATIONS: Ghost app chat and push notifications (ntfy; Telegram and voice notes were removed 01/11/2026 — never offer or claim them), Habitica (read/write), Postgres, Redis, Obsidian vault (read/write), desk dashboard with chat, Tasker scrolling interrupts. FatSecret is RETIRED (since 11/10/2026): food is logged by {USER_NAME} herself in the Ghost app's food log, which replaced FatSecret completely. You cannot log food from chat or voice — if she tells you what she ate, never say it was logged; tell her to add it in the Ghost app. The "Track food" item ticks itself once the app's food log has an entry for the day."""
+CURRENT INTEGRATIONS: Ghost app chat and push notifications (ntfy; Telegram and voice notes were removed 01/11/2026 — never offer or claim them), Postgres, Redis, Obsidian vault (read/write), desk dashboard with chat, Tasker scrolling interrupts. FatSecret is RETIRED (since 11/10/2026): food is logged by {USER_NAME} herself in the Ghost app's food log, which replaced FatSecret completely. You cannot log food from chat or voice — if she tells you what she ate, never say it was logged; tell her to add it in the Ghost app."""
 
 async def get_history(user_id: int) -> list:
     try:
@@ -126,25 +126,6 @@ async def save_history(user_id: int, history: list):
         logger.error(f"Redis save error: {e}")
 
 RECENT_PHRASES_KEY = "recent_ghost_phrases"
-
-# Locked cascade stages from the vault Area specs (Money Moves.md, Creative.md).
-# Stage 1 items were created directly in Habitica (2026-07-15); these unlock via
-# an explicit "finance stage N complete" message — completion is a real-world
-# milestone Ghost cannot infer. Dailies repeated across stages appear once.
-CASCADE_STAGES = {
-    "finance": {
-        2: {"habits": ["Didn't add to credit card balance"]},
-        3: {"habits": ["Stayed within budget today"]},
-        4: {"todos": ["Research and book financial advisor", "Review superannuation"],
-            "habits": ["Checking net worth monthly"]},
-        5: {"dailies": [("Checked savings progress", "daily"), ("Savings milestone review", "monthly")],
-            "todos": ["Set exact savings target for Brisbane move", "Open dedicated savings account"]},
-    },
-    "creative": {
-        2: {"dailies": [("Writing session completed (even 20 mins counts)", "daily")],
-            "habits": ["Wrote today"]},
-    },
-}
 
 async def get_recent_phrases() -> list:
     try:
@@ -248,78 +229,9 @@ async def get_fatsecret_summary() -> dict | None:
         logger.error(f"FatSecret cache write error: {e}")
     return summary
 
-async def get_board_context() -> str:
-    """Real Habitica board state (dailies done/pending, open to-dos, habits), so
-    'what have I done today' / 'what's left' is answered from the ACTUAL board, not
-    LLM recall (Session 33). Cached in Redis 'board_context' (5 min) to avoid the
-    30-req/min limit on every chat turn; busted by any Habitica write (see
-    _bust_board_cache). Returns '' if Habitica is unreachable — never a guess."""
-    try:
-        r = Redis(host=REDIS_HOST, port=6379, password=REDIS_PASSWORD, decode_responses=True)
-        cached = await r.get("board_context")
-        if cached is not None:
-            await r.aclose()
-            return cached
-        await r.aclose()
-    except Exception:
-        pass
-    try:
-        from habitica import get_dailies, get_habits_detailed, get_todos
-        dailies = await get_dailies()
-        todos = await get_todos()
-        try:
-            habits = await get_habits_detailed()
-        except Exception:
-            habits = []
-        done = dailies.get("done", [])
-        pending = dailies.get("pending", [])
-        parts = ["HABITICA BOARD (live, as of now — this is the source of truth for "
-                 "what's done, not your memory):"]
-        parts.append(f"Dailies done today: {', '.join(done) if done else '(none yet)'}.")
-        parts.append(f"Dailies still pending today: {', '.join(pending) if pending else '(none — all done)'}.")
-        if todos:
-            parts.append(f"Open to-dos: {', '.join(todos[:12])}.")
-        if habits:
-            # Session 52: fold each habit's derived streak/tapped/at-risk state into the
-            # board line so "what's my streak on X" is answered from real data, not a guess.
-            hbits = []
-            for h in habits:
-                extra = []
-                if h.get("streak", 0) >= 2:
-                    extra.append(f"{h['streak']}-day streak")
-                if h.get("doneToday"):
-                    extra.append("tapped today")
-                if h.get("atRisk"):
-                    extra.append("in the red")
-                hbits.append(h["name"] + (f" ({', '.join(extra)})" if extra else ""))
-            parts.append("Habits on the board: " + ", ".join(hbits)
-                         + ". (Habit streak / tapped-today / at-risk are DERIVED best-effort values, "
-                           "not exact Habitica fields — habits have no native streak.)")
-        text = "\n".join(parts)
-        try:
-            r = Redis(host=REDIS_HOST, port=6379, password=REDIS_PASSWORD, decode_responses=True)
-            await r.set("board_context", text, ex=300)
-            await r.aclose()
-        except Exception:
-            pass
-        return text
-    except Exception as e:
-        logger.error(f"get_board_context error: {e}")
-        return ""
-
-async def _bust_board_cache():
-    """Drop the cached board so the next turn re-reads the real state after a write."""
-    try:
-        r = Redis(host=REDIS_HOST, port=6379, password=REDIS_PASSWORD, decode_responses=True)
-        await r.delete("board_context")
-        await r.aclose()
-    except Exception:
-        pass
-
-
 async def get_native_context(user_id: int = None) -> str:
     """Ghost 2.0 (Phase 1) native Habits & Todos state, injected into every Claude turn the same
-    way get_board_context (Habitica) is — so 'what habits do I have' / 'did that to-do get created'
+    way the board context once was — so 'what habits do I have' / 'did that to-do get created'
     is answered from the REAL native tables, not LLM recall or 'I can't confirm' (S66: added after
     Lea's native adds went nowhere and Ghost had no native read to fall back on). A real query each
     time the cache expires; Redis-cached 'native_context' 5 min, busted by any native write via
@@ -337,7 +249,7 @@ async def get_native_context(user_id: int = None) -> str:
         habits = await native.list_habits(uid)
         todos = await native.list_todos(uid, include_done=True)
         parts = ["NATIVE HABITS & TODOS (Ghost 2.0, live — the source of truth for the native "
-                 "system that is replacing Habitica; NOT your memory):"]
+                 "the source of truth; NOT your memory):"]
         if habits:
             hb = []
             for h in habits[:20]:
@@ -388,7 +300,7 @@ async def _bust_native_cache():
 # ---------------------------------------------------------------------------
 # Live system-status line (Session 52, Task 1). The single highest-value item from
 # Session 50's grounding-block spec: a cached, always-on line telling the model which
-# integrations are actually up right now, so a VOLUNTEERED "Habitica's out" (a statement,
+# integrations are actually up right now, so a VOLUNTEERED "Redis is out" (a statement,
 # not a status question — the S42/S43 class handle_integration_status could not catch)
 # is answered from a real check instead of agreed with. Six probes run in parallel,
 # lazily, and the result is cached in Redis `system_status` (~45s TTL, the dashboard's
@@ -397,14 +309,6 @@ async def _bust_native_cache():
 # rather than probed (the dashboard-only boundary; avoids a network dep bot.py lacks).
 # ---------------------------------------------------------------------------
 SYSTEM_STATUS_TTL = 45
-
-async def _probe_habitica_status() -> str:
-    try:
-        from habitica import health_check
-        ok, detail = await health_check()
-        return "OK" if ok else f"DOWN ({detail})"
-    except Exception as e:
-        return f"DOWN (unreachable: {type(e).__name__})"
 
 async def _probe_fatsecret_status() -> str:
     try:
@@ -468,14 +372,13 @@ async def get_system_truth_context() -> str:
     except Exception:
         pass
     try:
-        hab, fs, anth, pg, rds = await asyncio.gather(
-            _probe_habitica_status(), _probe_fatsecret_status(), _probe_anthropic_status(),
+        fs, anth, pg, rds = await asyncio.gather(
+            _probe_fatsecret_status(), _probe_anthropic_status(),
             _probe_postgres_status(), _probe_redis_status())
     except Exception as e:
         logger.error(f"get_system_truth_context build error: {e}")
         return ""
     integ = "\n".join([
-        f"- Habitica: {hab}",
         f"- FatSecret: {fs}",
         f"- Anthropic (your own model API): {anth}",
         f"- Postgres (her data store): {pg}",
@@ -1951,7 +1854,6 @@ async def call_claude_api(user_id: int, message: str, vault_context: str = "") -
 
     yesterday = await get_yesterday_summary()
     today_context = await get_today_context()
-    board_context = await get_board_context()
     native_context = await get_native_context(user_id)   # S66: live native Habits & Todos state
     pattern_context = await get_pattern_context()
     system_truth = await get_system_truth_context()   # S58: integrations + cephalopod, one block
@@ -1962,8 +1864,6 @@ async def call_claude_api(user_id: int, message: str, vault_context: str = "") -
         system_with_context += "\n\n" + system_truth
     if native_context:
         system_with_context += "\n\n" + native_context
-    if board_context:
-        system_with_context += "\n\n" + board_context
     if pattern_context:
         system_with_context += "\n\n" + pattern_context
     memory_context = await get_memory_context(user_id)
@@ -2075,7 +1975,7 @@ async def call_claude(user_id: int, message: str, route_text: str = None) -> str
     `route_text` is what ROUTING and MONEY PARSING look at — the user's words only.
 
     These must be separate. Appended context is full of other people's words:
-    her Habitica to-do "Get exact MPN loan balance" made "what are my dailies?"
+    her to-do "Get exact MPN loan balance" made "what are my dailies?"
     look financial and misrouted it to Ollama, and a "$" inside a context block
     could otherwise be parsed as a brand-new expense.
     """
@@ -2378,7 +2278,7 @@ async def handle_voice_note_deletion(user_id: int, user_message: str) -> str | N
 #  - It only ever reads messages she ALREADY sends to Ghost. No new listening
 #    surface, no passive monitoring, no open mic. Same input as everything else.
 #  - It is NOT a second to-do list. Explicit task language ("add X to my list",
-#    "remind me to X", "need to X") still belongs to Habitica and is skipped
+#    "remind me to X", "need to X") still belongs to the native to-do capture and is skipped
 #    here; this only claims CASUAL self-declared intent ("I'll ...").
 #  - Nothing is logged without her say-so. Detection asks; only "yes" writes.
 #  - One pending confirmation at a time, so it can't interrogate her in a loop.
@@ -2387,7 +2287,7 @@ COMMITMENT_PENDING_EXPIRY = timedelta(hours=1)   # unanswered "is this a commitm
 COMMITMENT_ACTIVE_EXPIRY = timedelta(days=14)    # tracked commitment goes stale -> drop it
 COMMITMENT_MAX_LEN = 140                         # long messages are conversation, not a commitment
 
-# Casual intent only. "need to"/"remind me to"/"add to list" are Habitica's, not ours.
+# Casual intent only. "need to"/"remind me to"/"add to list" belong to the to-do capture, not to this.
 COMMITMENT_PATTERN = r"^\s*(?:(?:so|ok(?:ay)?|and|then|right|well|anyway)[,\s]+)*i(?:'ll|\s+will|'m\s+going\s+to|\s+am\s+going\s+to|'m\s+gonna|\s+am\s+gonna)\s+(.+)"
 
 async def _commitments_conn():
@@ -2397,12 +2297,12 @@ async def _commitments_conn():
 def detect_commitment(user_message: str) -> str | None:
     """Extract a self-declared future intention, or None. Conservative by design:
     short messages only, casual first-person intent only, and never phrasing that
-    the Habitica task-capture path already owns."""
+    the to-do capture path already owns."""
     import re as _re
     if len(user_message) > COMMITMENT_MAX_LEN:
         return None
     low = user_message.lower()
-    # Hands off anything Habitica's capture already claims.
+    # Hands off anything the to-do capture already claims.
     if (_re.search(r'\badd (.+?) to (?:my|the) list\b', low)
             or _re.match(r'\s*remind me to ', low)
             or _re.match(r"\s*(?:i )?need to ", low)):
@@ -2497,21 +2397,21 @@ _DOWN_CLAIM_PHRASES = ("is down", "'s down", "is offline", "is broken", "is out"
                        "cant connect", "is unreachable", "not connecting", "is broken",
                        "has gone down", "seems down", "looks down", "must be down")
 # Standalone strong down-words: paired with a named integration these fire even when an adverb
-# splits a phrase ("habitica is completely down", "totally broken"). Bare "down" is safe here
+# splits a phrase ("fatsecret is completely down", "totally broken"). Bare "down" is safe here
 # because a named integration is also required, and the worst case is a grounded status check.
 _DOWN_WORDS = ("down", "offline", "broken", "unreachable", "borked", "dead")
 
 async def handle_integration_status(user_id: int, user_message: str) -> str | None:
     low = user_message.lower().strip()
-    named = [n for n in ("habitica", "fatsecret", "cephalopod") if n in low]
+    named = [n for n in ("fatsecret", "cephalopod") if n in low]
     is_q = low.endswith("?") or low.startswith(("is ", "are ", "can ", "have ", "do ", "does ",
                                                 "how's", "hows", "did ", "you ", "your "))
     status_word = any(t in low for t in _STATUS_TOKENS)
-    # the 20/08 phrasing: "I'm not seeing habitica updated" — a named integration + a
+    # the 20/08 phrasing: "I'm not seeing fatsecret updated" — a named integration + a
     # "not updating/updated" complaint is a status concern, so live-check rather than guess.
     neg_update = "updat" in low and any(x in low for x in ("not ", "n't", "nothing", "never", "isn"))
-    # Session 52 (Task 2): also catch a VOLUNTEERED down-CLAIM ("habitica is down", "fatsecret
-    # isn't working", "your connection to habitica is broken") — a statement, not a question,
+    # Session 52 (Task 2): also catch a VOLUNTEERED down-CLAIM ("fatsecret is down", "cephalopod
+    # isn't working", "your connection to cephalopod is broken") — a statement, not a question,
     # which the question-only gate above missed (the S42/S43 class). A named integration plus a
     # down-assertion runs the same fresh live check. The Task-1 status line is the passive
     # backstop for everything else; this is the active fresh-check path when she asserts it.
@@ -2523,14 +2423,10 @@ async def handle_integration_status(user_id: int, user_message: str) -> str | No
     if not targets and status_word and any(g in low for g in ("integration", "everything", "all your",
                                               "your systems", "all systems", "fully connected",
                                               "your connection", "connected to everything")):
-        targets = ["habitica", "fatsecret"]   # the external WRITE integrations (fatsecret reports retired)
+        targets = ["fatsecret"]   # fatsecret reports retired
     if not targets:
         return None
     results = []
-    if "habitica" in targets:
-        from habitica import health_check
-        ok, detail = await health_check()
-        results.append(f"Habitica = {'OK' if ok else 'UNREACHABLE'} ({detail})")
     if "fatsecret" in targets:
         import fatsecret
         if getattr(fatsecret, "RETIRED", False):
@@ -2731,7 +2627,7 @@ async def handle_native_create(user_id: int, user_message: str) -> str | None:
     """Ghost 2.0 (Phase 1) — native habit/todo CREATE, deterministic (no LLM).
     S66: widened from the old "create habit: X" syntax to ordinary conversation ("add a habit for
     stretching", "add my exercise habit and a todo to call the dentist", "track reading as a habit",
-    "add X to my todos") via native.detect_native_create — still NOT poaching Habitica's own openers
+    "add X to my todos") via native.detect_native_create — still NOT poaching the chat shortcut openers
     (those are guarded inside the detector), still failing CLOSED: a message that clearly signals
     creation intent but has no parseable name gets an honest "didn't catch the name" reply with the
     syntax that works, NEVER a silent fall-through to chat and never a fabricated confirmation.
@@ -2783,6 +2679,19 @@ def _join_list(items):
     if len(items) == 2:
         return items[0] + " and " + items[1]
     return ", ".join(items[:-1]) + " and " + items[-1]
+
+
+async def _tap_native_habit_named(name, direction, user_id):
+    """Tap the ONE active native habit matching `name` (exact name first, then looser). False when
+    there is no match or more than one (never guesses). Tickbox habits take a 'check'."""
+    habits = await native.list_habits(user_id)
+    hits = native._edit_match(name, habits, "name")
+    if len(hits) != 1:
+        return False
+    h = hits[0]
+    d = "check" if h["field_type"] == "tickbox" else direction
+    res = await native.tap_habit(h["id"], d)
+    return bool(res.get("ok"))
 
 
 async def process_message(user_id: int, user_message: str, source: str = "app") -> str:
@@ -2873,7 +2782,7 @@ async def process_message(user_id: int, user_message: str, source: str = "app") 
 
     # Ghost 2.0 (Phase 1) — native habit/todo CREATE. Deterministic, runs early so a habit
     # named after an ambient signal ("drink water") doesn't trip the water/meal/movement
-    # recorders below. Distinct phrasing from Habitica's create triggers → parallel-safe.
+    # recorders below. Distinct phrasing from the create triggers → parallel-safe.
     native_create_reply = await handle_native_create(user_id, user_message)
     if native_create_reply is not None:
         await save_to_postgres(user_id, "user", user_message)
@@ -2881,14 +2790,14 @@ async def process_message(user_id: int, user_message: str, source: str = "app") 
         return native_create_reply
 
     # Commitment tracking (session 19): resolve an open confirmation, or ask about a
-    # newly-spotted intention. detect_commitment() defers to Habitica's task-capture phrasing.
+    # newly-spotted intention. detect_commitment() defers to the task-capture phrasing.
     commitment_reply = await handle_commitment(user_id, user_message, source)
     if commitment_reply is not None:
         await save_to_postgres(user_id, "user", user_message)
         await save_to_postgres(user_id, "assistant", commitment_reply)
         return commitment_reply
 
-    # Session 43: "is Habitica working?" etc. → real live check, grounded answer (never a guess).
+    # Session 43: "is Fatsecret/Cephalopod working?" etc. → real live check, grounded answer (never a guess).
     status_reply = await handle_integration_status(user_id, user_message)
     if status_reply is not None:
         await save_to_postgres(user_id, "user", user_message)
@@ -2949,7 +2858,7 @@ async def process_message(user_id: int, user_message: str, source: str = "app") 
     # log a meal. Capture itself is still handled last, just before call_claude.
     _is_capture = bool(_CAPTURE_TRIGGER_RE.match(user_message))
     # Session 41: a retrospective question must not trigger the write-command paths below
-    # (vault-write / cascade / task-capture / habitica-create / completion) NOR the passive
+    # (vault-write / task-capture / native-create / completion) NOR the passive
     # signal-recording — "have I had enough water?" must not score the Water habit, and
     # "did I finish lunch?" must not log a meal. Combined with the S40 capture skip.
     _retro = _is_retrospective_query(user_message)
@@ -2974,25 +2883,18 @@ async def process_message(user_id: int, user_message: str, source: str = "app") 
     except Exception as e:
         logger.error(f"Redis confirm flags error: {e}")
 
-    # Session 32: a water confirmation now scores the real "❤️‍🔥 Water" HABIT on
-    # Habitica. Before this NOTHING wrote water to Habitica — the habit existed on the
-    # board but nudges/logging only touched Redis + daily_events. Scored per confirmation
-    # (a habit is meant to be tapped each time). Errors log loudly, never swallowed
-    # (the app_usage silent-failure lesson); a False result means the habit wasn't found.
-    water_sync_failed = False   # Session 43: surface a genuine Habitica-sync failure to Lea once
+    # A water confirmation taps the native "Water" habit (once per confirmation, like any habit tap).
+    # Errors log loudly, never swallowed; "not found" means no active habit named Water exists.
     if water_now:
         try:
-            from habitica import log_habit
-            scored = await log_habit("Water", "up")
-            if scored:
-                logger.info("Water habit scored up on Habitica")
-                await _bust_board_cache()
+            tapped = await _tap_native_habit_named("Water", "up", user_id)
+            if tapped:
+                logger.info("Water habit tapped up (native)")
+                await _bust_native_cache()
             else:
-                logger.error("Water habit score FAILED — 'Water' habit not found or API error")
-                water_sync_failed = True
+                logger.error("Water habit tap FAILED: no single active native habit named 'Water'")
         except Exception as e:
-            logger.error(f"Water habit score error: {e}")
-            water_sync_failed = True
+            logger.error(f"Water habit tap error: {e}")
 
     # daily_events for multi-day pattern tracking
     if (not _skip_passive) and any(t in message_lower_check for t in exercise_triggers):
@@ -3013,45 +2915,7 @@ async def process_message(user_id: int, user_message: str, source: str = "app") 
     # earlier in this pipeline, so no write fires on an assumption and every write is logged.
     vault_write_ctx = None
 
-    # Stage-cascade unlocks (vault Area specs): "finance stage 1 complete" → create stage 2 items.
-    # Explicit trigger by design — stage completion is a real-world milestone (loan paid off),
-    # not something Ghost can infer from Habitica state.
-    cascade_ctx = None
-    try:
-        import re as _re
-        cm = None if _retro else _re.search(r'\b(finance|creative)\s+stage\s+(\d)\s+(complete|done|finished)\b', message_lower_check)
-        if cm:
-            cascade, done_stage = cm.group(1), int(cm.group(2))
-            next_stage = done_stage + 1
-            stages = CASCADE_STAGES.get(cascade, {})
-            if next_stage not in stages:
-                cascade_ctx = f"[No stage {next_stage} defined for {cascade} — {cascade} cascade ends at stage {max(stages) if stages else done_stage}]"
-            else:
-                r = Redis(host=REDIS_HOST, port=6379, password=REDIS_PASSWORD, decode_responses=True)
-                unlocked = int(await r.get(f"cascade_stage:{cascade}") or 1)
-                if next_stage <= unlocked:
-                    await r.aclose()
-                    cascade_ctx = f"[{cascade} stage {next_stage} was already unlocked — nothing new created]"
-                else:
-                    from habitica import create_todo, create_daily, create_habit
-                    spec = stages[next_stage]
-                    made = []
-                    for text in spec.get("todos", []):
-                        if await create_todo(text):
-                            made.append(f"todo '{text}'")
-                    for text, freq in spec.get("dailies", []):
-                        if await create_daily(text, freq):
-                            made.append(f"daily '{text}'")
-                    for text in spec.get("habits", []):
-                        if await create_habit(text):
-                            made.append(f"habit '{text}'")
-                    await r.set(f"cascade_stage:{cascade}", next_stage)
-                    await r.aclose()
-                    cascade_ctx = f"[{cascade} stage {done_stage} marked complete. Stage {next_stage} unlocked in Habitica: {'; '.join(made) if made else 'creation failed — check logs'}]"
-    except Exception as e:
-        logger.error(f"Cascade unlock error: {e}")
-
-    # Natural-language task capture → Habitica todo ("add X to my list", "remind me to X",
+    # Natural-language task capture → native todo ("add X to my list", "remind me to X",
     # short messages starting "need to X"). Badge inferred only when phrasing is explicit.
     task_capture_ctx = None
     try:
@@ -3077,52 +2941,24 @@ async def process_message(user_id: int, user_message: str, source: str = "app") 
             task_text = _re.sub(r"[,;]?\s*(it's urgent|urgent|today|when i get paid|when i'm paid|on payday)\s*$",
                                 "", captured.strip(" .,!?"), flags=_re.IGNORECASE).strip(" .,!?")
             if task_text:
-                from habitica import create_todo, get_or_create_tag
-                tag_ids = []
-                if badge:
-                    tag_id = await get_or_create_tag(badge)
-                    if tag_id:
-                        tag_ids.append(tag_id)
-                ok = await create_todo(task_text, tags=tag_ids or None)
-                if ok:
-                    task_capture_ctx = (f"[Habitica todo '{task_text}' created, tagged '{badge}']" if badge
-                                        else f"[Habitica todo '{task_text}' created, no badge tag — none implied]")
+                prio = "high" if badge == "focus" else "med"
+                notes = "When paid" if badge == "payday" else None
+                tid = await native.create_todo(task_text, priority=prio, notes=notes, user_id=user_id)
+                if tid:
+                    await _bust_native_cache()
+                    task_capture_ctx = (f"[To-do '{task_text}' created, {prio} priority" + (", noted 'When paid'" if notes else "") + "]")
                 else:
-                    task_capture_ctx = f"[Habitica todo creation failed for '{task_text}']"
+                    task_capture_ctx = f"[To-do creation failed for '{task_text}']"
     except Exception as e:
         logger.error(f"Task capture error: {e}")
 
-    # Habitica write commands ("scored" / "habit up|down" score a habit; "ticked" stays with dailies below)
-    habitica_ctx = None
-    habitica_read_triggers = ["my dailies", "pending dailies", "habitica", "my tasks", "my todos", "my to-dos", "what's due", "whats due", "my habits", "checklist"]
-    if any(t in user_message.lower() for t in habitica_read_triggers):
-        try:
-            from habitica import get_dailies, get_todos, get_habits, get_checklists
-            dailies = await get_dailies()
-            todos = await get_todos()
-            habits = await get_habits()
-            checklists = await get_checklists()
-            checklist_bits = []
-            for bucket_label, bucket in (("daily", checklists["dailies"]), ("todo", checklists["todos"])):
-                for task_text, items in bucket.items():
-                    rendered = ", ".join(f"{t}{' ✓' if done else ''}" for t, done in items)
-                    checklist_bits.append(f"{task_text} ({bucket_label}): {rendered}")
-            checklist_part = ("Checklists inside tasks: " + " | ".join(checklist_bits) + ". ") if checklist_bits else ""
-            habitica_ctx = (
-                f"[Habitica data: Pending dailies: {', '.join(dailies['pending']) if dailies['pending'] else 'none'}. "
-                f"Done: {', '.join(dailies['done']) if dailies['done'] else 'none'}. "
-                f"Todos: {', '.join(todos[:5]) if todos else 'none'}. "
-                f"Habits: {', '.join(habits) if habits else 'none'}. "
-                f"{checklist_part}]"
-            )
-        except Exception as e:
-            logger.error(f"Habitica read error: {e}")
-
+    # Chat shortcuts that act on the native system ("add task", "create daily", "new habit", "scored").
+    native_cmd_ctx = None
     try:
         m = message_lower_check
         def _after(trigger):
             return user_message[m.find(trigger) + len(trigger):].strip(" :,-.!?")
-        # S64: these Habitica write commands must be the OPENING intent of the message (after minor
+        # S64: these chat write commands must be the OPENING intent of the message (after minor
         # polite filler), not a phrase buried mid-sentence. The old checks matched the substring
         # ANYWHERE — so "I added a habit on the new habit dashboard, can you see it?" hit "new habit"
         # and created a stray "dashboard, can you see it" habit. Anchoring to the message start
@@ -3133,27 +2969,24 @@ async def process_message(user_id: int, user_message: str, source: str = "app") 
                    r'(?:' + '|'.join(re.escape(p) for p in phrases) + r')\b')
             return re.match(pat, m) is not None
         if _retro:
-            pass  # retrospective question ("did you add X to habitica?") must not create anything
-        elif _opens_with("add to habitica", "add task"):
-            from habitica import create_todo
-            text = _after("add to habitica") if "add to habitica" in m else _after("add task")
+            pass  # retrospective question ("did you add X?") must not create anything
+        elif _opens_with("add task"):
+            text = _after("add task")
             if text:
-                ok = await create_todo(text)
-                habitica_ctx = f"[Habitica to-do '{text}' created]" if ok else "[Habitica to-do creation failed]"
-        elif _opens_with("create daily"):
-            from habitica import create_daily
-            text = _after("create daily")
+                body, due, notes = native.parse_todo_extras(text)
+                tid = await native.create_todo(body, due_date=due, notes=notes, user_id=user_id)
+                if tid:
+                    await _bust_native_cache()
+                native_cmd_ctx = f"[To-do '{body}' created]" if tid else "[To-do creation failed]"
+        elif _opens_with("create daily", "new habit"):
+            trig = "create daily" if "create daily" in m else "new habit"
+            text = _after(trig)
             if text:
-                ok = await create_daily(text)
-                habitica_ctx = f"[Habitica daily '{text}' created]" if ok else "[Habitica daily creation failed]"
-        elif _opens_with("new habit"):
-            from habitica import create_habit
-            text = _after("new habit")
-            if text:
-                ok = await create_habit(text)
-                habitica_ctx = f"[Habitica habit '{text}' created]" if ok else "[Habitica habit creation failed]"
+                hid = await native.create_habit(text, user_id=user_id)
+                if hid:
+                    await _bust_native_cache()
+                native_cmd_ctx = f"[Habit '{text}' created]" if hid else "[Habit creation failed]"
         elif _opens_with("habit up", "habit down") or m.startswith("scored"):
-            from habitica import log_habit
             if "habit down" in m:
                 direction, name = "down", _after("habit down")
             elif "habit up" in m:
@@ -3161,18 +2994,16 @@ async def process_message(user_id: int, user_message: str, source: str = "app") 
             else:
                 direction, name = "up", _after("scored")
             if name:
-                ok = await log_habit(name, direction)
-                habitica_ctx = f"[Habit '{name}' scored {direction}]" if ok else f"[No habit matching '{name}' found]"
+                ok = await _tap_native_habit_named(name, direction, user_id)
+                if ok:
+                    await _bust_native_cache()
+                native_cmd_ctx = f"[Habit '{name}' tapped {direction}]" if ok else f"[No single habit matching '{name}' found]"
     except Exception as e:
-        logger.error(f"Habitica write error: {e}")
+        logger.error(f"Native command error: {e}")
 
-    # Ghost 2.0 (Phase 1) — native habit TICK / todo COMPLETE, deterministic, runs alongside
-    # Habitica. Placed AFTER the ambient water/movement/meal block (so Habitica's ambient paths
-    # still fire) and BEFORE the Habitica completion-by-name block below (so native items win for
-    # their own names). native.route_message only claims a message when an explicit action verb or
-    # +/- token matches exactly ONE native item; a bare ambient mention or no native match returns
-    # None, so this is invisible until Lea actually has native habits/todos. Parallel-run safe:
-    # nothing here touches habitica.py.
+    # Native habit TICK / todo COMPLETE, deterministic. native.route_message only claims a message
+    # when an explicit action verb or +/- token matches exactly ONE native item; a bare ambient
+    # mention or no native match returns None and the message carries on down the pipeline.
     if not _retro:
         try:
             nres = await native.route_message(user_message, user_id)
@@ -3211,70 +3042,12 @@ async def process_message(user_id: int, user_message: str, source: str = "app") 
                 return await call_claude(user_id, f"{user_message} [Native list updated: {' and '.join(parts)} — confirm briefly EXACTLY this and nothing else]", route_text=user_message)
             return await call_claude(user_id, f"{user_message} [Native list edit: nothing on the native list matched '{nres.get('target','')}'; ask her which item she means, do NOT claim anything was changed]", route_text=user_message)
 
-    completion_triggers = ["mark", "done", "finished", "complete", "ticked", "tick off", "mark off",
-                           "did ", "did my", "went to", "smashed", "knocked out", "wrapped up"]
-    message_lower = user_message.lower()
-
-    if cascade_ctx:
-        return await call_claude(user_id, f"{user_message} {cascade_ctx}", route_text=user_message)
+    if native_cmd_ctx:
+        return await call_claude(user_id, f"{user_message} {native_cmd_ctx} Confirm in one line exactly what happened.", route_text=user_message)
     if vault_write_ctx:
         return await call_claude(user_id, f"{user_message} {vault_write_ctx}", route_text=user_message)
     if task_capture_ctx:
-        return await call_claude(user_id, f"{user_message} {task_capture_ctx} [Confirm in one line: what was added and how it's tagged.]", route_text=user_message)
-    if habitica_ctx:
-        await _bust_board_cache()
-        return await call_claude(user_id, f"{user_message} {habitica_ctx} Please list this data clearly for {USER_NAME}.", route_text=user_message)
-    if (not _retro) and any(trigger in message_lower for trigger in completion_triggers):
-        try:
-            # Session 33 — conversational write-through across the WHOLE board, not just
-            # dailies: match "done/finished X" against dailies, habits AND to-dos. Exact
-            # substring of the item name must appear in the message (guards against false
-            # writes); if the words hit >1 distinct item, ask which rather than guessing.
-            from habitica import complete_task, get_dailies, get_habits, get_todos, log_habit, complete_todo
-            dailies = await get_dailies()
-            pending_dailies = dailies["pending"]
-            try:
-                habit_names = await get_habits()
-            except Exception:
-                habit_names = []
-            try:
-                todo_names = await get_todos()
-            except Exception:
-                todo_names = []
-            # candidate = (kind, name); only match reasonably specific names (>=4 chars)
-            candidates = ([("daily", t) for t in pending_dailies]
-                          + [("habit", t) for t in habit_names]
-                          + [("todo", t) for t in todo_names])
-            matches = []
-            for kind, name in candidates:
-                core = name.strip().lower()
-                # strip leading emoji/symbols so "❤️‍🔥 water" matches on "water"
-                core_words = core.split()
-                if core and core in message_lower and len(core) >= 4:
-                    matches.append((kind, name))
-                elif core_words and len(core_words[-1]) >= 4 and core_words[-1] in message_lower:
-                    matches.append((kind, name))
-            # de-dup by name
-            seen = set(); matches = [(k, n) for k, n in matches if not (n in seen or seen.add(n))]
-            if len(matches) > 1:
-                names = ", ".join(f"'{n.strip()}'" for _, n in matches[:5])
-                return await call_claude(user_id, f"{user_message} [AMBIGUOUS: that could mean {names} — ask her which one to mark, do not guess or write anything yet]", route_text=user_message)
-            if len(matches) == 1:
-                kind, name = matches[0]
-                if kind == "habit":
-                    ok = await log_habit(name.strip(), "up")
-                elif kind == "todo":
-                    ok = await complete_todo(name)
-                else:
-                    ok = await complete_task(name)
-                if ok:
-                    await _bust_board_cache()
-                    return await call_claude(user_id, f"{user_message} [Habitica {kind} '{name.strip()}' recorded (scored/completed) — confirm briefly what was logged]", route_text=user_message)
-                return await call_claude(user_id, f"{user_message} [Habitica {kind} '{name.strip()}' found but the write FAILED — tell her it didn't save, do not claim success]", route_text=user_message)
-            return await call_claude(user_id, user_message)
-        except Exception as e:
-            logger.error(f"Habitica error: {e}")
-            return await call_claude(user_id, user_message)
+        return await call_claude(user_id, f"{user_message} {task_capture_ctx} [Confirm in one line: what was added and its priority.]", route_text=user_message)
 
     # Capture (Session 40) — LAST in precedence: only a message no earlier check
     # claimed reaches here. A "capture ..." message files the rest to the routed
@@ -3286,25 +3059,6 @@ async def process_message(user_id: int, user_message: str, source: str = "app") 
         await save_to_postgres(user_id, "assistant", capture_reply)
         return capture_reply
 
-    # Session 43: if the Habitica half of a water confirmation genuinely failed, tell Lea
-    # ONCE — her water is noted locally (Redis is decoupled and already set above), but the
-    # Habitica habit tick didn't sync. Gated by a per-day Redis flag so a sustained outage
-    # doesn't re-nag on every confirmation, and it's framed as a status note, not a nudge.
-    if water_sync_failed:
-        try:
-            rr = Redis(host=REDIS_HOST, port=6379, password=REDIS_PASSWORD, decode_responses=True)
-            first = not await rr.get("water_sync_fail_notified")
-            if first:
-                await rr.set("water_sync_fail_notified", "1", ex=seconds_to_midnight)
-            await rr.aclose()
-            if first:
-                note = (" [STATUS NOTE — deliver ONCE, plainly, as a heads-up not a nudge and not a "
-                        "criticism of her: her water is noted locally, but the Habitica Water-habit tick "
-                        "did NOT sync just now (Habitica-side write issue). One line; do not repeat it in "
-                        "later turns.]")
-                return await call_claude(user_id, user_message + note, route_text=user_message)
-        except Exception as e:
-            logger.error(f"water sync-fail surface error: {e}")
     return await call_claude(user_id, user_message)
 
 async def extract_food_items(transcript: str) -> list:

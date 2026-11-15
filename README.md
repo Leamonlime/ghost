@@ -19,7 +19,7 @@ through Kubernetes Secrets; no real values live in the repo.
   conversation. (Telegram was the original interface and has been retired.)
 - **Native habits and todos.** Habits (tick, counter, value and checklist types,
   streaks, momentum) and todos live in Ghost's own Postgres tables. They replaced
-  the Habitica integration.
+  Habitica, which has been removed.
 - **Money.** Spending is logged conversationally ("spent $12 on lunch") or
   imported from bank CSVs, categorised, and reconciled against recurring bills.
   Financial messages are routed to a local Ollama model only, enforced at the
@@ -105,8 +105,8 @@ USDA FoodData Central key (nutrition fallback) and an ntfy server (phone push).
      --from-literal=ghost-brand-domain=... \
      --from-literal=ghost-brand-vault-dir=...
    ```
-   The legacy Habitica and FatSecret keys (`habitica-*`, `fatsecret-*`) are only
-   needed if you still use those integrations.
+   The legacy FatSecret keys (`fatsecret-*`) are only needed if you still use that
+   integration (it is retired in the code).
 5. **Run Ollama** for the finance route (`llama3.2`), reachable from the `ghost`
    namespace. A sanitised Ollama and Helm setup lives in
    [hivequeen-k3s](https://github.com/Leamonlime/hivequeen-k3s).

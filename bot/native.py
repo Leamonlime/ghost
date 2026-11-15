@@ -1,13 +1,11 @@
 """Ghost 2.0 — native Habits & Todos (Phase 1).
 
-Replaces Habitica's Habit/Daily/Todo split with two native types stored in Ghost's own
-Postgres (the existing ghost_db — no new datastore). Runs IN PARALLEL with the Habitica
-integration this phase (nothing here touches habitica.py); Lea validates it in real use
-before Habitica is retired in a later, deliberate pass.
+Two native types, Habits and Todos, stored in Ghost's own Postgres (the existing ghost_db).
+They replaced Habitica, which has been fully retired.
 
 Design (per [[Ghost — 2.0 Native Habit & Nutrition Rebuild]]):
   - Todos: tickbox or checklist, a REAL due date; overdue is computed off that actual date
-    (the deliberate bug-fix vs. Habitica's generic default-window "overdue").
+    (a real due date, not a generic default window).
   - Habits: field type per item (positive / negative / both / tickbox / checklist) and,
     INDEPENDENTLY, frequency per item (fixed weekdays, a monthly date, or a flexible
     "N times per week" count). Streak default = a net-positive day maintains it; per-habit
@@ -153,13 +151,6 @@ CREATE TABLE IF NOT EXISTS momentum_events (
     completed_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS momentum_events_completed_at_idx ON momentum_events (completed_at);
--- Session 75: one-time Habitica import provenance. A native row created from a Habitica task
--- carries that task's id here, so re-running the import is idempotent (skip if already present).
--- NULL for anything created natively; the partial unique index only constrains imported rows.
-ALTER TABLE habits ADD COLUMN IF NOT EXISTS habitica_source_id TEXT;
-ALTER TABLE todos  ADD COLUMN IF NOT EXISTS habitica_source_id TEXT;
-CREATE UNIQUE INDEX IF NOT EXISTS habits_habitica_src_idx ON habits(habitica_source_id) WHERE habitica_source_id IS NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS todos_habitica_src_idx  ON todos(habitica_source_id)  WHERE habitica_source_id IS NOT NULL;
 -- Session 104: one-off tracked items made from chat ("N=1 trackers") are ordinary habits rows flagged
 -- is_tracker; list_habits() hides them unless asked, so no page / ring / briefing changes.
 ALTER TABLE habits ADD COLUMN IF NOT EXISTS is_tracker BOOLEAN NOT NULL DEFAULT FALSE;
@@ -250,13 +241,12 @@ async def create_habit(name, field_type="tickbox", frequency_kind="weekdays",
                        frequency_days=None, frequency_count=None, bucket=None,
                        streak_rule="net_positive", streak_min_taps=None,
                        checklist=None, user_id=None,
-                       streak_count=0, habitica_source_id=None,
+                       streak_count=0,
                        frequency_count_max=None, target_value=None, target_max=None, unit=None,
                        log_date_label=None, is_tracker=False):
     """Create a native habit. Returns the new row id, or None on invalid input.
-    streak_count seeds the visible streak (Session 75 Habitica import carries the existing streak
-    over so momentum isn't lost); when >0, last_streak_date is set to today so it reads as a live
-    streak that a tap tomorrow continues. habitica_source_id records import provenance."""
+    streak_count seeds the visible streak; when >0, last_streak_date is set to today so it reads as a
+    live streak that a tap tomorrow continues."""
     name = (name or "").strip()
     if not name:
         return None
@@ -295,12 +285,12 @@ async def create_habit(name, field_type="tickbox", frequency_kind="weekdays",
         hid = await conn.fetchval(
             """INSERT INTO habits (user_id, name, field_type, frequency_kind, frequency_days,
                    frequency_count, bucket, streak_rule, streak_min_taps,
-                   streak_count, streak_best, last_streak_date, habitica_source_id,
+                   streak_count, streak_best, last_streak_date,
                    frequency_count_max, target_value, target_max, unit, log_date_label, is_tracker)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING id""",
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id""",
             uid, name, field_type, frequency_kind, frequency_days, frequency_count,
             bucket, streak_rule, streak_min_taps,
-            streak_count, last_streak_date, habitica_source_id,
+            streak_count, last_streak_date,
             frequency_count_max, target_value, target_max, unit, (log_date_label or "").strip() or None,
             bool(is_tracker))
         if field_type == "checklist" and checklist:
@@ -316,9 +306,8 @@ async def create_habit(name, field_type="tickbox", frequency_kind="weekdays",
 
 
 async def create_todo(text, kind="tickbox", priority="med", due_date=None,
-                      bucket=None, checklist=None, user_id=None, habitica_source_id=None, notes=None):
-    """Create a native todo. due_date may be a date or an ISO 'YYYY-MM-DD' string. Returns id.
-    habitica_source_id records Session-75 import provenance (idempotency key)."""
+                      bucket=None, checklist=None, user_id=None, notes=None):
+    """Create a native todo. due_date may be a date or an ISO 'YYYY-MM-DD' string. Returns id."""
     text = (text or "").strip()
     if not text:
         return None
@@ -339,9 +328,9 @@ async def create_todo(text, kind="tickbox", priority="med", due_date=None,
     try:
         await ensure_schema(conn)
         tid = await conn.fetchval(
-            """INSERT INTO todos (user_id, text, kind, priority, due_date, bucket, habitica_source_id, notes)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id""",
-            uid, text, kind, priority, due_date, bucket, habitica_source_id,
+            """INSERT INTO todos (user_id, text, kind, priority, due_date, bucket, notes)
+               VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id""",
+            uid, text, kind, priority, due_date, bucket,
             (notes or "").strip() or None)
         if kind == "checklist" and checklist:
             for i, item in enumerate(checklist):
@@ -355,144 +344,6 @@ async def create_todo(text, kind="tickbox", priority="med", due_date=None,
         await conn.close()
 
 
-# ---------------------------------------------------------------------------
-# Session 75 — one-time Habitica import. READ-ONLY against Habitica: the caller fetches
-# GET /tasks/user itself and passes the raw task list in here; this maps each task and writes
-# native records through create_habit/create_todo (NO direct-SQL bypass), idempotent on
-# habitica_source_id (skip anything already imported). Nothing in here calls Habitica.
-# ---------------------------------------------------------------------------
-# Habitica daily.repeat keys -> native weekday index (0=Mon .. 6=Sun).
-_HABITICA_REPEAT_TO_WD = {"m": 0, "t": 1, "w": 2, "th": 3, "f": 4, "s": 5, "su": 6}
-
-
-def _map_habit_field_type(task):
-    """Habitica habit up/down flags -> native field type."""
-    up, down = bool(task.get("up")), bool(task.get("down"))
-    if up and down:
-        return "both"
-    if up:
-        return "positive"
-    if down:
-        return "negative"
-    return "tickbox"
-
-
-def _checklist_texts(task):
-    return [c.get("text", "").strip() for c in (task.get("checklist") or []) if c.get("text", "").strip()]
-
-
-def _map_daily_frequency(task):
-    """A Habitica daily's schedule -> native (frequency_kind, frequency_days, frequency_count, note).
-    note is set when the mapping is approximate (native can't express the exact Habitica rule)."""
-    freq = task.get("frequency", "weekly")
-    if freq == "weekly":
-        rep = task.get("repeat") or {}
-        days = sorted({_HABITICA_REPEAT_TO_WD[k] for k, on in rep.items()
-                       if on and k in _HABITICA_REPEAT_TO_WD})
-        return "weekdays", (days or [0, 1, 2, 3, 4, 5, 6]), None, None
-    if freq == "daily":
-        every = int(task.get("everyX") or 1)
-        if every <= 1:
-            return "weekdays", [0, 1, 2, 3, 4, 5, 6], None, None
-        cnt = max(1, round(7 / every))     # "every N days" has no native rule -> N-times/week
-        return "count", None, cnt, f"Habitica 'every {every} days' approximated as {cnt}x/week"
-    if freq == "monthly":
-        dom = task.get("daysOfMonth") or []
-        if dom:
-            return "monthly", list(dom), None, None
-        day = 1
-        try:
-            day = date.fromisoformat((task.get("startDate") or "")[:10]).day
-        except Exception:
-            pass
-        return "monthly", [day], None, "Habitica week-of-month rule approximated to a day-of-month"
-    return "weekdays", [0, 1, 2, 3, 4, 5, 6], None, f"unknown Habitica frequency '{freq}' -> every day"
-
-
-def _map_priority(p):
-    try:
-        p = float(p)
-    except (TypeError, ValueError):
-        return "med"
-    if p >= 2:
-        return "high"
-    if p >= 1.5:
-        return "med"
-    return "low"
-
-
-async def import_habitica_tasks(tasks, user_id=None):
-    """Import a Habitica /tasks/user list into native. Idempotent on habitica_source_id. Maps:
-    habit->habit (up/down->field type, streak carried over), daily->habit (weekday/monthly/count
-    frequency, streak carried over), todo->todo (due date carried over), any checklist->checklist
-    field type. Skips rewards (no native equivalent). Returns a report dict. Never calls Habitica."""
-    uid = user_id if user_id is not None else DEFAULT_USER_ID
-    report = {"habits": 0, "dailies": 0, "todos": 0, "skipped_existing": 0,
-              "skipped_unsupported": [], "notes": [], "items": []}
-    conn = await pg_conn()
-    try:
-        await ensure_schema(conn)
-        for task in tasks:
-            ttype = task.get("type")
-            sid = task.get("id") or task.get("_id")
-            text = (task.get("text") or "").strip()
-            if not sid or not text:
-                report["skipped_unsupported"].append({"id": sid, "reason": "missing id or text", "type": ttype})
-                continue
-            if ttype == "reward":
-                report["skipped_unsupported"].append({"text": text, "reason": "reward (no native equivalent)"})
-                continue
-            table = "todos" if ttype == "todo" else "habits"
-            if await conn.fetchval(f"SELECT id FROM {table} WHERE habitica_source_id=$1", sid):
-                report["skipped_existing"] += 1
-                continue
-            checklist = _checklist_texts(task)
-            if ttype == "habit":
-                ft = "checklist" if checklist else _map_habit_field_type(task)
-                streak = int(task.get("streak") or task.get("counterUp") or 0)
-                nid = await create_habit(text, field_type=ft, frequency_kind="weekdays",
-                                         streak_count=streak, checklist=checklist or None,
-                                         user_id=uid, habitica_source_id=sid)
-                report["habits"] += 1
-                report["items"].append({"kind": "habit", "id": nid, "name": text,
-                                        "field_type": ft, "streak": streak})
-            elif ttype == "daily":
-                fk, fdays, fcount, note = _map_daily_frequency(task)
-                ft = "checklist" if checklist else "tickbox"
-                streak = int(task.get("streak") or 0)
-                nid = await create_habit(text, field_type=ft, frequency_kind=fk,
-                                         frequency_days=fdays, frequency_count=fcount,
-                                         streak_count=streak, checklist=checklist or None,
-                                         user_id=uid, habitica_source_id=sid)
-                report["dailies"] += 1
-                if note:
-                    report["notes"].append(f"{text}: {note}")
-                report["items"].append({"kind": "daily", "id": nid, "name": text,
-                                        "field_type": ft, "freq": fk, "streak": streak})
-            elif ttype == "todo":
-                kind = "checklist" if checklist else "tickbox"
-                due = (task.get("date") or "") or None
-                nid = await create_todo(text, kind=kind,
-                                        priority=_map_priority(task.get("priority")),
-                                        due_date=due, checklist=checklist or None,
-                                        user_id=uid, habitica_source_id=sid)
-                report["todos"] += 1
-                report["items"].append({"kind": "todo", "id": nid, "name": text,
-                                        "due_date": (due or "")[:10] or None})
-            else:
-                report["skipped_unsupported"].append({"text": text, "reason": f"unknown type '{ttype}'"})
-    finally:
-        await conn.close()
-    return report
-
-
-# ---------------------------------------------------------------------------
-# Streak logic — tap-time crediting.
-# A day "qualifies" per the habit's field type + streak rule (recomputed from that day's
-# taps on every tap). When today first qualifies: streak becomes streak+1 if yesterday was
-# credited, else 1. A same-day down tap that removes qualification steps the streak back by
-# one. Calendar-accurate crediting of a clean no-tap day (relevant to negative/count habits)
-# needs the daily rollover job that arrives with Phase 3's leveling — documented, not faked.
 # ---------------------------------------------------------------------------
 async def _today_taps(conn, habit_id, d):
     rows = await conn.fetch(
@@ -1221,8 +1072,8 @@ async def list_todos(user_id=None, include_done=True, conn=None):
 # ---------------------------------------------------------------------------
 # Natural-language routing (deterministic, no LLM) — the shared matcher the Telegram
 # pipeline uses. Returns a result dict when native claimed the message, else None so the
-# caller falls through to the existing (untouched) Habitica paths. Parallel-run safe:
-#   * create: explicit "create habit X" / "add|new todo X" (phrasings Habitica does NOT use).
+# caller carries on down the pipeline.
+#   * create: explicit "create habit X" / "add|new todo X".
 #   * tick/complete: an explicit completion verb or +/- token that matches ONE native item.
 # Ambient signals with no action verb ("drank water") are never claimed here.
 # ---------------------------------------------------------------------------
@@ -1310,9 +1161,9 @@ def parse_todo_extras(raw, today=None):
 # --- Native CREATE detection (S66 widening) -------------------------------------------------
 # Goal: catch ordinary conversational creation ("add a habit for stretching", "add my exercise
 # habit and a todo to call the dentist", "track reading as a habit", "add X to my todos") WITHOUT
-# stealing Habitica's own openers (a message OPENING with "new habit"/"create daily"/"add task"/
-# "add to habitica"/"remind me to"/"add X to my list" still routes to Habitica, untouched — those
-# are handled later in process_message and native runs first only for the phrasings below).
+# stealing the chat shortcut openers (a message OPENING with "new habit"/"create daily"/"add task"/
+# "remind me to"/"add X to my list" is handled later in process_message; native runs first only for
+# the phrasings below).
 # Fail-closed: creation intent (a create verb + the noun habit/todo) with no parseable name returns
 # a needs_name marker so the caller asks, never guesses, never falls silently through to chat.
 _CREATE_VERB = r'(?:add|create|make|set\s*up|start|track|log|want\s+to\s+track)'
@@ -1353,20 +1204,20 @@ def detect_native_create(text):
     """Deterministic create detector. Returns:
       {"creations": [ {kind:'habit',name,field_type} | {kind:'todo',text,priority} ], "needs_name": bool}
     when a native creation is intended, else None. Handles single items and 'X and Y' conjunctions.
-    Never claims a message that merely OPENS with a Habitica trigger word (those are matched later)."""
+    Never claims a message that merely OPENS with a chat shortcut word (those are matched later)."""
     if not text or text.rstrip().endswith("?"):
         return None
     low = text.lower()
-    # Don't poach Habitica's own opening commands (S64 gate mirrors these).
-    if re.match(r'^\s*(?:new\s+habit|create\s+daily|add\s+task|add\s+to\s+habitica|habit\s+(?:up|down)|scored|remind\s+me\s+to)\b', low):
+    # Don't poach the shortcut opening commands (S64 gate mirrors these).
+    if re.match(r'^\s*(?:new\s+habit|create\s+daily|add\s+task|habit\s+(?:up|down)|scored|remind\s+me\s+to)\b', low):
         return None
-    # "add X to my list" (no 'todo' word) is Habitica task-capture — leave it.
+    # "add X to my list" (no 'todo' word) is the to-do task capture — leave it.
     if re.search(r'\bto\s+(?:my|the)\s+list\b', low) and "todo" not in low and "to-do" not in low:
         return None
 
     # Intent = a create verb somewhere AND the noun. Broad on purpose (Lea's real "add my exercise
-    # habit and a todo for X" has the verb and noun non-adjacent); the Habitica guards above already
-    # carved off the phrasings that belong to Habitica, and extraction below still fails closed.
+    # habit and a todo for X" has the verb and noun non-adjacent); the guards above already
+    # carved off the phrasings that belong to the shortcuts, and extraction below still fails closed.
     has_create_verb = bool(re.search(r'\b' + _CREATE_VERB + r'\b', low))
     has_colon = bool(re.match(r'^\s*(?:habit|to-?do)\s*:', low))
     has_asa_habit = bool(re.search(r'\bas\s+(?:a\s+|an\s+)?(?:daily\s+)?habit\b', low))
