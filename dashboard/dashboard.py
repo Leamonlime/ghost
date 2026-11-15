@@ -19,7 +19,6 @@ import zoneinfo
 
 sys.path.insert(0, os.environ.get("BOT_CODE_PATH", "/botcode"))
 import bot  # noqa: E402 — Ghost's own module, mounted read-only
-import habitica  # noqa: E402
 import native  # noqa: E402 — Ghost 2.0 native Habits & Todos (Phase 1), shared with the bot pipeline
 import decisions  # noqa: E402 — decision loop store (bot/decisions.py, mounted with bot code)
 
@@ -297,10 +296,13 @@ async def api_data(request: Request):
             out["dailies"] = dict(DEMO_DAILIES)
             out["todos"] = list(DEMO_TODOS)
         else:
-            out["dailies"] = await habitica.get_dailies()
-            out["todos"] = (await habitica.get_todos())[:5]
+            # native habits due today (done / pending by name) and the top open native todos
+            nh, nt = await _native_home(_native_uid(request))
+            out["dailies"] = {"done": [h["name"] for h in nh if h["doneToday"]],
+                              "pending": [h["name"] for h in nh if not h["doneToday"]]}
+            out["todos"] = [t["text"] for t in nt][:5]
     except Exception as e:
-        out["errors"].append(f"habitica: {e}")
+        out["errors"].append(f"habits/todos: {e}")
         out["dailies"] = {"done": [], "pending": []}
         out["todos"] = []
     try:
@@ -539,7 +541,7 @@ async def api_timeline(request: Request):
 # ---------------------------------------------------------------------------
 # Command-center dashboard data (Session 35). ONE read-only endpoint serving the v8
 # mockup's data contract from Ghost's real state. Cached in Redis ~25s so the 30-60s
-# poll never hammers Habitica's 30-req/min limit (habits + todos + user = 3 calls).
+# poll does not re-query Postgres on every hit.
 # Fields that aren't natively real are DERIVED and flagged in `_meta.derived`, so the
 # frontend/reader can tell approximations from ground truth.
 # ---------------------------------------------------------------------------
@@ -573,25 +575,6 @@ async def _escalation_topic() -> dict | None:
         logger.error(f"escalation topic read error: {e}")
     return best[1] if best else None
 
-async def _habitica_health() -> dict:
-    """Session 42: LIVE Habitica ping so the Integrations badge reflects a genuine
-    just-checked API response — not the up-to-2h-old health_checks row. (On 20/08 the
-    badge showed 'habitica: ok' from the stale 15:31 self-diagnosis while Lea was mid-
-    incident; a status badge claiming 'ok' is a claim like any other and must be live.)"""
-    uid = os.environ.get("HABITICA_USER_ID"); tok = os.environ.get("HABITICA_API_TOKEN")
-    if not (uid and tok):
-        return {"service": "habitica", "status": "unknown", "detail": "no creds"}
-    try:
-        async with httpx.AsyncClient() as client:
-            r = await client.get("https://habitica.com/api/v3/user?userFields=_id",
-                                 headers={"x-api-user": uid, "x-api-key": tok,
-                                          "x-client": f"{uid}-ghost-hivequeen"}, timeout=6)
-        ok = r.status_code == 200
-        return {"service": "habitica", "status": "ok" if ok else "fail",
-                "detail": "live" if ok else f"http {r.status_code}"}
-    except Exception as e:
-        return {"service": "habitica", "status": "fail", "detail": f"live: {str(e)[:50]}"}
-
 async def _cephalopod_health() -> dict:
     try:
         async with httpx.AsyncClient() as client:
@@ -607,8 +590,6 @@ async def _cephalopod_health() -> dict:
 
 # Demo-mode placeholders for the command center (Session 54). Structurally identical to the
 # real payload, scaled to look lived-in (not empty), never derived from real data.
-DEMO_VITALS = {"hp": 42.0, "hpMax": 50, "mp": 28.0, "mpMax": 40, "xp": 130.0,
-               "xpMax": 250, "level": 14, "class": "warrior", "gold": 185.0}
 DEMO_NUTRITION = {"caloriesLogged": 1850, "caloriesTarget": 2600,
                   "macros": {"protein": 95, "carbs": 210, "fat": 62, "fiber": 22},
                   "mealsLoggedToday": 3}
@@ -625,8 +606,6 @@ def _mask_command_center(data: dict) -> dict:
     for i, t in enumerate(d.get("todos") or []):
         if isinstance(t, dict):
             t["text"] = f"Sample task {i + 1}"
-    if d.get("vitals"):
-        d["vitals"] = dict(DEMO_VITALS)
     # S70: budget key removed from the command-center (conversational money pipeline retired).
     if d.get("nutrition") is not None:
         d["nutrition"] = copy.deepcopy(DEMO_NUTRITION)
@@ -699,7 +678,7 @@ async def _native_home(uid):
 @app.get("/api/command-center")
 async def api_command_center(request: Request):
     """Read-only. Serves the v8 dashboard data contract from real Postgres/Redis/
-    Habitica/FatSecret state. Cached 25s (the real payload; demo masking is applied on
+    the food log. Cached 25s (the real payload; demo masking is applied on
     egress to a deep copy, so both modes share one cache and demo never ships real data)."""
     demo = is_demo(request)
     now = datetime.now(LOCAL_TZ)
@@ -714,19 +693,14 @@ async def api_command_center(request: Request):
         pass
     out = {"time": now.strftime("%A %d %B %Y, %I:%M %p").replace(" 0", " "), "errors": [],
            "_meta": {"derived": {
-               "habits/todos": "native rebuilt habits + todos (same data as ghost-habits.html); habits = due today only; vitals still from Habitica",
+               "habits/todos": "native rebuilt habits + todos (same data as ghost-habits.html); habits = due today only",
                "nutrition": "from the Ghost app food_log (calories + protein only; carbs/fat/fiber null)", "nutrition.caloriesTarget": "from GHOST_CALORIE_TARGET env (0 = not set)",
            }}}
     # Habits + todos: the NATIVE rebuilt data (same source as /ghost-habits.html), not Habitica.
-    # Vitals (hp/xp/gold/level) still come from Habitica below.
     try:
         out["habits"], out["todos"] = await _native_home(_native_uid(request))
     except Exception as e:
         out["errors"].append(f"habits/todos: {e}"); out["habits"] = []; out["todos"] = []
-    try:
-        out["vitals"] = await habitica.get_user_stats()
-    except Exception as e:
-        out["errors"].append(f"vitals: {e}"); out["vitals"] = {}
     # S70: conversational money pipeline removed — spending is CSV-only (Bills dashboard / spending
     # card). No budget-vs-limit block from expenses/budget_categories here anymore.
     # Nutrition: the Ghost app's food_log (FatSecret retired 01/11/2026). The app tracks calories and
@@ -750,12 +724,11 @@ async def api_command_center(request: Request):
         conn = await pg_conn()
         rows = await conn.fetch("""
             SELECT DISTINCT ON (service) service, status, detail, checked_at
-            FROM health_checks WHERE service IN ('ntfy','postgres','redis','habitica','anthropic','gcal')
+            FROM health_checks WHERE service IN ('ntfy','postgres','redis','anthropic','gcal')
             ORDER BY service, checked_at DESC
         """)
         await conn.close()
-        # Session 42: habitica is now a LIVE ping (see below), removed from the table set.
-        # For the rest, flag staleness — the self-diagnosis runs every 2h, so a row older
+        # Flag staleness — the self-diagnosis runs every 2h, so a row older
         # than ~2.5h means the checker itself hasn't run; don't present a stale 'ok' as current.
         checks = []
         for r in rows:
@@ -766,7 +739,6 @@ async def api_command_center(request: Request):
                     detail = f"stale — last {r['status']} {int(age_min)}m ago"
                     status = "stale"
             checks.append({"service": r["service"], "status": status, "detail": detail})
-        checks.append(await _habitica_health())   # live, authoritative — not the 2h table row
         checks.append(await _cephalopod_health())
         out["selfCheck"] = checks
     except Exception as e:
@@ -860,7 +832,7 @@ async def api_decisions_answer(request: Request):
 # ---------------------------------------------------------------------------
 # "Am I actually moving, over time" — one number, not an analytics dashboard.
 # momentum_events captures one row per completion (written by native habit/todo completions
-# and the Habitica sync; the dashboard only reads it — its Quest-toggle writer went with the
+# the dashboard only reads it — its Quest-toggle writer went with the
 # Quest Log page, 19/10/2026). /api/momentum returns trailing-window
 # closed (completions) vs open (still-incomplete items due in the window), overall
 # and per bucket, plus a per-day sparkline. Bucket crosswalk approved by Lea (S57);
@@ -890,12 +862,12 @@ async def _ensure_momentum_schema(conn):
 @app.get("/api/momentum")
 async def api_momentum(request: Request, window: int = 60):
     """Trailing-window momentum: closed (completions logged in momentum_events) vs open
-    (incomplete Habitica to-dos whose due date falls in the window), overall + per bucket,
+    (incomplete native to-dos whose due date falls in the window), overall + per bucket,
     plus a per-day completions sparkline. Raw counts returned alongside the ratio so the
     number stays interpretable when open is small. Read-only; Redis-cached ~60s.
 
-    Scope (v1, honest): 'closed' is the real movement signal (every sync/quest completion).
-    'open' uses Habitica to-dos with a structured due date — dailies (no single due date),
+    Scope (v1, honest): 'closed' is the real movement signal (every native completion).
+    'open' uses native to-dos with a structured due date — dailies (no single due date),
     undated to-dos, and free-text Quest dates are NOT in 'open'. Documented, not a bug."""
     demo = is_demo(request)
     try:
@@ -923,7 +895,7 @@ async def api_momentum(request: Request, window: int = 60):
     out = {"window": window, "overall": {"closed": 0, "open": 0, "ratio": None},
            "buckets": {b: {"closed": 0, "open": 0, "ratio": None} for b in MOMENTUM_BUCKETS},
            "sparkline": [], "generated_at": now.isoformat(),
-           "_note": "closed = logged completions (sync+quest); open = incomplete Habitica to-dos due in window"}
+           "_note": "closed = logged completions; open = incomplete native to-dos due in window"}
     # closed (from momentum_events)
     try:
         conn = await pg_conn()
@@ -943,7 +915,7 @@ async def api_momentum(request: Request, window: int = 60):
             await conn.close()
     except Exception as e:
         out.setdefault("errors", []).append(f"closed: {e}")
-    # open (S78: NATIVE outstanding-due work, replacing the old Habitica-todo open side which was
+    # open (S78: NATIVE outstanding-due work, replacing the old Habitica-sourced open side which was
     # empty here — the S76 moth-caveat: the ratio read a false 1.0 not because activity was high but
     # because nothing populated open). Now: native habits due today but not done, plus native todos
     # (quest-flagged included) that carry a due date on/before today and aren't done. `closed`
@@ -995,7 +967,7 @@ async def api_momentum(request: Request, window: int = 60):
 # habit/todo system. They call the SAME native.py functions the Telegram pipeline
 # uses (bot.process_message -> native.route_message / native.tap_habit / ...), so the
 # two surfaces are one code path, not parallel logic. Deterministic writes, no LLM.
-# Reads are live (no cache) so a tap reflects immediately. Runs alongside Habitica.
+# Reads are live (no cache) so a tap reflects immediately.
 # ===========================================================================
 def _native_uid(request: Request) -> int:
     return OWNER_ID or native.DEFAULT_USER_ID
