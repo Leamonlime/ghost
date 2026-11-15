@@ -4,6 +4,7 @@ Auto-generated from the project build log; titles only. Newest session first.
 
 | Session | Date | Summary |
 | ------: | :--- | :------ |
+| 107 | 15/11/2026 | Habitica retired |
 | 106 | 06/11/2026 | Chat trackers, delete-by-name, todo due date and notes, decision sent marker |
 | 105 | 06/11/2026 | Google Calendar credentials restored |
 | 104 | 05/11/2026 | Briefing todo sort and bot office days |
