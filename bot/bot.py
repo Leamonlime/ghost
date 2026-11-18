@@ -39,10 +39,6 @@ BRAND_VAULT_DIR = os.environ.get("GHOST_BRAND_VAULT_DIR", "Blog")
 TZ_NAME = os.environ.get("GHOST_TZ", "UTC")
 LOCAL_TZ = zoneinfo.ZoneInfo(TZ_NAME)
 VAULT_PATH = os.environ.get("VAULT_PATH", "/vault")
-# Ollama generate endpoint (money path). Was hardcoded here AND in scheduler.py (S27 diagnosed the
-# 10.42.0.1 node-gateway IP as load-bearing); moved to env S56 so a CNI/node change is one config
-# edit, not a silent break in two files. Same var name as scheduler.py = single source of truth.
-OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://10.42.0.1:11434/api/generate")
 
 # Shared Postgres connection helper (Session-55 dedupe item, folded in with the 2.0 build):
 # new query paths use this one helper instead of re-inlining asyncpg.connect(...). native.py
@@ -362,7 +358,7 @@ async def get_system_truth_context() -> str:
     rule ties every system/world claim to it ("not in the block => I'd have to check").
 
     MONEY BOUNDARY: deliberately carries NO expense/debt/budget data. Money stays on the
-    Ollama/deterministic side (30/08/2026 decision) — never in this Claude-side block."""
+    deterministic side (dashboard Bills/Import) — never in this Claude-side block."""
     try:
         r = Redis(host=REDIS_HOST, port=6379, password=REDIS_PASSWORD, decode_responses=True)
         cached = await r.get("system_truth")
@@ -457,9 +453,8 @@ async def get_today_context() -> str:
         await conn.close()
         lines.append(f"Messages from {USER_NAME} today: {msg_row['n']}.")
         # MONEY BOUNDARY (S58): the "Spending last 7 days: $X" expense aggregate that used to sit
-        # here was removed — expense/debt/budget data stays Ollama/deterministic-side (30/08/2026
-        # decision), never in the Claude grounding stack. Money questions route to the deterministic
-        # money-lookup / Ollama path, not this block.
+        # here was removed — expense/debt/budget data stays deterministic-side, never in the Claude
+        # grounding stack. Money chat is refused by money_refusal() (Build 1, 18/11/2026).
     except Exception as e:
         logger.error(f"Today context postgres error: {e}")
     return (
@@ -1808,43 +1803,6 @@ async def get_vault_context() -> str:
         logger.error(f"Vault context cache write error: {e}")
     return context
 
-async def call_ollama(message: str) -> str:
-    ollama_prompt = f"""You are Ghost, {USER_NAME}'s dry, blunt money tracker. One or two lines. No exclamation marks, no emoji, no praise.
-Use ONLY facts in [brackets] or her message. You remember no trips, shops or purchases. Never invent a place, trip or number. If the answer isn't in [brackets], say you have no record of it. Never do your own maths, just relay the verdict. Don't repeat the bracket text word for word.
-
-User: {message}
-Ghost:"""
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                OLLAMA_URL,
-                json={
-                    # Session 27 (30/07/2026): CPU-only + the 1b model. Diagnosed that
-                    # offloading 9/29 layers to the GeForce 940MX over the NVK/Vulkan
-                    # path (no CUDA driver) was the bottleneck — ~14-16x SLOWER than
-                    # CPU-only on this host, with the CPU sitting ~80% idle waiting on
-                    # the GPU. num_gpu:0 forces CPU-only; 1b (already installed) is the
-                    # fastest here (~11s, ~12 tok/s vs the old ~56-84s / 0.49 tok/s).
-                    "model": "llama3.2:1b",
-                    "prompt": ollama_prompt,
-                    "stream": False,
-                    "keep_alive": "1h",
-                    "options": {
-                        "temperature": 0.7,
-                        "num_gpu": 0,
-                        # 40 is plenty for "one or two lines".
-                        "num_predict": 40
-                    }
-                },
-                timeout=180.0
-            )
-            data = response.json()
-            logger.info(f"Ollama response: {data}")
-            return data.get("response", "").strip()
-    except Exception as e:
-        logger.error(f"Ollama error: {e}")
-        return ""
-
 async def call_claude_api(user_id: int, message: str, vault_context: str = "") -> str:
     history = await get_history(user_id)
     history.append({"role": "user", "content": message})
@@ -1957,7 +1915,8 @@ async def log_message(source: str, msg_type: str, content: str):
 
 async def log_routing(source: str, financial: bool, model: str, response_time_ms: int):
     """One row per routed message, written at the routing decision point (not
-    reconstructed from logs). source: telegram|dashboard. model: ollama|claude."""
+    reconstructed from logs). source: app|dashboard. model: claude|refused (ollama rows are
+    historical; Ollama was removed in Build 1, 18/11/2026). Carries no message content."""
     try:
         conn = await asyncpg.connect(
             host=POSTGRES_HOST, port=5432, user="postgres",
@@ -1976,7 +1935,7 @@ async def call_claude(user_id: int, message: str, route_text: str = None) -> str
 
     These must be separate. Appended context is full of other people's words:
     her to-do "Get exact MPN loan balance" made "what are my dailies?"
-    look financial and misrouted it to Ollama, and a "$" inside a context block
+    look financial and misrouted it, and a "$" inside a context block
     could otherwise be parsed as a brand-new expense.
     """
     _t0 = time.monotonic()
@@ -1988,12 +1947,8 @@ async def call_claude(user_id: int, message: str, route_text: str = None) -> str
 
     router_text = message if route_text is None else route_text
     message_lower = router_text.lower()
-    # S70: the conversational money-logging pipeline (Session 52) is REMOVED. Financial tracking is
-    # CSV-only now (upload on the Bills dashboard → pandas → local Ollama narration, which never
-    # touches this Claude path). A money mention typed in chat is no longer special-cased; it just
-    # reaches Claude like any other message. Rationale: the old "reroute to Ollama" only protected
-    # the processing step — Ghost's chat brain IS Claude, so a financial mention was already read by
-    # Claude the moment it was typed, before any reroute. The CSV pipeline has no such boundary leak.
+    # Money never reaches this function: process_message refuses natural-language money messages
+    # first (money_refusal, Build 1 18/11/2026). Financial data lives in the dashboard (Bills, Import).
 
     vault_triggers = ["obsidian", "my notes", "my vault", "what did i write", "check my notes",
                       "character", "who is", "tell me about", "novel", "check my vault",
@@ -2456,8 +2411,8 @@ async def handle_integration_status(user_id: int, user_message: str) -> str | No
 #
 # DATA BOUNDARY: memories are injected into the CLAUDE context, so financial content is
 # deliberately NOT captured here — a "remember I spent $X" message carries a finance
-# trigger and returns None from the handler, so it falls through to the Ollama-only
-# money path instead. Obvious secrets (passwords/PINs/card numbers) are refused too.
+# trigger and returns None from the handler (and money_refusal has already turned most such
+# messages away). Obvious secrets (passwords/PINs/card numbers) are refused too.
 # ===========================================================================
 
 _MEMORY_SCHEMA_READY = False
@@ -2581,7 +2536,7 @@ _MEM_LIST_RE = re.compile(
 async def handle_memory(user_id: int, user_message: str, source: str = "app") -> str | None:
     """Explicit long-term memory: store / forget / list. Returns a reply, or None to let
     the message route normally. Financial + sensitive content returns None (never stored),
-    so the money-stays-on-Ollama boundary is preserved."""
+    so money never becomes a Claude-visible memory."""
     text = user_message.strip()
     low = text.lower()
 
@@ -2609,7 +2564,7 @@ async def handle_memory(user_id: int, user_message: str, source: str = "app") ->
         if content.lower().startswith(("to ", "to,")):
             return None  # "remember to X" is a task/reminder, not a durable fact
         if any(t in low for t in _MEMORY_FINANCE_TRIGGERS):
-            return None  # money stays on the Ollama-only path; never a Claude-visible memory
+            return None  # money is never a Claude-visible memory
         if _memory_looks_sensitive(content):
             return ("I won't keep passwords, PINs or card numbers in memory — that shouldn't sit in a "
                     "chat log. Give me the non-sensitive version if there is one.")
@@ -2694,6 +2649,45 @@ async def _tap_native_habit_named(name, direction, user_id):
     return bool(res.get("ok"))
 
 
+
+# ===========================================================================
+# MONEY GATE (Build 1, 18/11/2026). Ollama is gone, so nothing can answer money questions in
+# natural language without sending them to Claude — which the data boundary forbids. A message
+# that looks like money talk gets a short refusal pointing at the dashboard, BEFORE anything saves
+# it (messages feeds Claude context; message_log is a log). Deterministic money lookups (budget cap
+# commands) still run: parse_cap_command is checked first. No model and no network in here.
+# ===========================================================================
+MONEY_REFUSAL = ("Not doing money in chat. The dashboard has it: Bills for the numbers, "
+                 "Import for a bank CSV.")
+_MONEY_AMOUNT_RE = re.compile(r"\$\s?\d|\b\d[\d,]*(?:\.\d{1,2})?\s?(?:dollars|bucks|aud)\b", re.I)
+_MONEY_WORDS_RE = re.compile(
+    r"\b(?:money|budget(?:s|ing)?|spending|spent\s+(?:on\b|too\s+much|so\s+much|heaps|a\s+lot|\d+)"
+    r"|how\s+much\s+(?:did|have|do|will)\s+i\s+(?:spend|spent|pay|paid|earn|owe)"
+    r"|expenses?|finances?|financial|bank(?:ing)?|(?:my|account|bank)\s+balance|savings?|debts?|loans?"
+    r"|mortgage|overdraft|salary|income|pay\s?day|pay\s?check|payslip|transactions?|refunds?"
+    r"|credit\s+card|net\s+worth|super(?:annuation)?\s+balance)\b", re.I)
+_MONEY_TASK_PREFIX_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:add\b|remind\s+me\s+to\b|new\s+(?:todo|task)\b|(?:todo|task)\s*:)", re.I)
+
+
+def is_money_message(text: str) -> bool:
+    """True for natural-language money talk. A dollar amount always counts. An explicit task
+    capture ("add check the budget to my list") is let through unless it carries an amount — the
+    todo text is not transaction data and the task path never calls a model."""
+    t = text or ""
+    if _MONEY_AMOUNT_RE.search(t):
+        return True
+    if _MONEY_TASK_PREFIX_RE.match(t):
+        return False
+    return bool(_MONEY_WORDS_RE.search(t))
+
+
+def money_refusal(text: str) -> str | None:
+    """The refusal text, or None when the message may continue. Cap commands pass (deterministic)."""
+    if parse_cap_command(text) is not None:
+        return None
+    return MONEY_REFUSAL if is_money_message(text) else None
+
 async def process_message(user_id: int, user_message: str, source: str = "app") -> str:
     """Full Ghost pipeline — confirmation flags, daily events, write commands, routing.
     Shared by the Telegram handler and the dashboard chat."""
@@ -2708,6 +2702,16 @@ async def process_message(user_id: int, user_message: str, source: str = "app") 
         await _ract.aclose()
     except Exception as e:
         logger.error(f"last_user_activity set error: {e}")
+    # Budget caps: answered without a model and deliberately NOT saved to the messages table, which
+    # feeds Claude context (get_yesterday_summary) — cap amounts stay out of anything Claude reads.
+    cap_reply = await handle_budget_cap_command(user_message)
+    if cap_reply is not None:
+        return cap_reply
+    # Build 1: natural-language money is refused before ANY handler can save it or reach Claude.
+    refusal = money_refusal(user_message)
+    if refusal is not None:
+        await log_routing(_msg_source.get(), True, "refused", 0)
+        return refusal
     deletion_reply = await handle_voice_note_deletion(user_id, user_message)
     if deletion_reply is not None:
         await save_to_postgres(user_id, "user", user_message)
@@ -2732,12 +2736,6 @@ async def process_message(user_id: int, user_message: str, source: str = "app") 
         await save_to_postgres(user_id, "user", user_message)
         await save_to_postgres(user_id, "assistant", cephalopod_reply)
         return cephalopod_reply
-
-    # Budget caps: answered without a model and deliberately NOT saved to the messages table, which
-    # feeds Claude context (get_yesterday_summary) — cap amounts stay out of anything Claude reads.
-    cap_reply = await handle_budget_cap_command(user_message)
-    if cap_reply is not None:
-        return cap_reply
 
     scroll_reply = await handle_scroll_suppression(user_message)
     if scroll_reply is not None:
@@ -2806,7 +2804,7 @@ async def process_message(user_id: int, user_message: str, source: str = "app") 
 
     # Long-term memory (Session 48): explicit "remember X" / "forget X" / "what do you
     # remember". Runs before content/finance routing; financial + sensitive content is NOT
-    # stored (handle_memory returns None for those, so money still routes to Ollama).
+    # stored (handle_memory returns None for those; money was already refused up top).
     memory_reply = await handle_memory(user_id, user_message, source)
     if memory_reply is not None:
         await save_to_postgres(user_id, "user", user_message)
@@ -2816,8 +2814,7 @@ async def process_message(user_id: int, user_message: str, source: str = "app") 
     # Content-intent beats incidental keywords (session 16, task 2): an explicit
     # "blog post" / "for cephalopod" up front means the whole message is content —
     # route it to the blog pipeline before finance/food/anything else can grab it.
-    # Messages WITHOUT a content-intent phrase are untouched: finance still
-    # hard-routes to Ollama exactly as before.
+    # Messages WITHOUT a content-intent phrase are untouched. (Money was refused up top.)
     if has_content_intent(user_message, strict=True):
         logger.info("Content-intent detected — routing to blog pipeline ahead of keyword triggers")
         return await process_blog_note(user_id, user_message)
@@ -3278,7 +3275,7 @@ async def process_blog_note(user_id: int, transcript: str) -> str:
 # Content-intent signals (session 16, task 2). When one of these appears up front,
 # the message IS content — it routes to the blog pipeline no matter what financial or
 # food keywords appear later in the ramble ("spent way too much money on candles" as
-# part of a story must not become an Ollama expense). "This is for cephalopod" spoken
+# part of a story must not become an expense). "This is for cephalopod" spoken
 # aloud routes to the SAME blog pipeline — it does NOT touch ghost_handoffs; the
 # dashboard-only handoff restriction from session 13 is deliberate and stands.
 BLOG_VOICE_TRIGGERS = ("blog note", "blog post", "blog idea", "new blog",

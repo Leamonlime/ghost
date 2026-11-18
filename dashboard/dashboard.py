@@ -372,6 +372,10 @@ async def api_chat(request: Request):
         # real message_log rows, and return a reply grounded in real data. Canned reply.
         if is_demo(request):
             return {"reply": "(demo mode) I'd normally answer from your real data here.", "demo": True}
+        # Build 1: money talk is refused before it is logged anywhere (message_log is a log).
+        refusal = bot.money_refusal(message)
+        if refusal is not None:
+            return {"reply": refusal}
         await bot.log_message("dashboard_in", "chat", message)
         reply = await bot.process_message(OWNER_ID, message, source="dashboard")
         await bot.log_message("dashboard_out", "chat", reply)
@@ -4793,6 +4797,10 @@ async def app_chat(request: Request):
     if not message:
         return JSONResponse({"ok": False, "error": "message required"}, status_code=400)
     client_id = data.get("client_id")
+    # Build 1: money talk is refused before it is logged or cached anywhere.
+    refusal = bot.money_refusal(message)
+    if refusal is not None:
+        return {"ok": True, "reply": refusal}
     conn = await pg_conn()
     try:
         await _ensure_app_schema(conn)

@@ -27,10 +27,6 @@ POSTGRES_HOST = os.environ.get("POSTGRES_HOST", "ghost-postgres-postgresql.ghost
 POSTGRES_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "")
 USER_NAME = os.environ.get("GHOST_USER_NAME", "the user")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-# Ollama generate endpoint (money path). Was hardcoded here AND in bot.py (S27 diagnosed the
-# 10.42.0.1 node-gateway IP as load-bearing); moved to env S56 so a CNI/node change is one config
-# edit, not a silent break in two files. Same var name as bot.py = single source of truth (the env).
-OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://10.42.0.1:11434/api/generate")
 
 RECENT_PHRASES_KEY = "recent_ghost_phrases"
 
@@ -395,33 +391,6 @@ async def call_claude(prompt: str, max_tokens: int = 80) -> str:
         reply = data["content"][0]["text"]
     await save_phrase(reply)
     return reply
-
-async def call_ollama(prompt: str) -> str:
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                OLLAMA_URL,
-                json={
-                    # Session 27 (30/07/2026): CPU-only + 1b model — see bot.py
-                    # call_ollama. The 940MX/NVK-Vulkan offload was ~14-16x slower
-                    # than CPU-only on this host; num_gpu:0 forces CPU-only.
-                    "model": "llama3.2:1b",
-                    "prompt": prompt,
-                    "stream": False,
-                    "keep_alive": "1h",
-                    "options": {
-                        "temperature": 0.7,
-                        "num_gpu": 0,
-                        "num_predict": 80
-                    }
-                },
-                timeout=180.0
-            )
-            data = response.json()
-            return data.get("response", "").strip()
-    except Exception as e:
-        logger.error(f"Ollama error: {e}")
-        return ""
 
 # ---------------------------------------------------------------------------
 # Daily anchors (Session 79 — messaging cadence v2). The old per-category nudge sprawl

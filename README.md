@@ -20,10 +20,11 @@ through Kubernetes Secrets; no real values live in the repo.
 - **Native habits and todos.** Habits (tick, counter, value and checklist types,
   streaks, momentum) and todos live in Ghost's own Postgres tables. They replaced
   Habitica, which has been removed.
-- **Money.** Spending is logged conversationally ("spent $12 on lunch") or
-  imported from bank CSVs, categorised, and reconciled against recurring bills.
-  Financial messages are routed to a local Ollama model only, enforced at the
-  routing layer, so that data never leaves the home server.
+- **Money.** Bank CSVs are imported on the dashboard (`/import`), categorised by
+  deterministic rules (exact, contains, regex), deduplicated, and reconciled against
+  recurring bills. No model of any kind touches transaction data: money talk in chat
+  gets a refusal pointing at the dashboard, enforced before anything is logged, and a
+  test (`tests/finance_no_llm_guard.py`) fails if finance code imports an LLM or HTTP client.
 - **Food.** Nutrition is logged in the phone app against Open Food Facts with a
   USDA FoodData Central fallback, with a personal "my foods" cache.
 - **Nudges.** Schedule-aware reminders for water, meals, movement and
@@ -58,7 +59,7 @@ through Kubernetes Secrets; no real values live in the repo.
 Android app / dashboard
         |
    ghost-bot  ---- Claude API (general reasoning)
-   ghost-dashboard (FastAPI)  ---- Ollama (finance only, local)
+   ghost-dashboard (FastAPI)  ---- Postgres only for money (no model)
    ghost-scheduler (nudges, summaries, push via ntfy)
         |
    Postgres (durable state)   Redis (session memory, pending actions)
@@ -107,10 +108,7 @@ USDA FoodData Central key (nutrition fallback) and an ntfy server (phone push).
    ```
    The legacy FatSecret keys (`fatsecret-*`) are only needed if you still use that
    integration (it is retired in the code).
-5. **Run Ollama** for the finance route (`llama3.2`), reachable from the `ghost`
-   namespace. A sanitised Ollama and Helm setup lives in
-   [hivequeen-k3s](https://github.com/Leamonlime/hivequeen-k3s).
-6. **Adjust the manifests.** The deployment manifests ship as `*.example.yaml`
+5. **Adjust the manifests.** The deployment manifests ship as `*.example.yaml`
    (bot, scheduler, dashboard); the host-specific real copies are not published.
    Copy each to its real name, then set the `hostPath` volumes (code mounts and
    the notes vault) to your own paths:
@@ -119,7 +117,7 @@ USDA FoodData Central key (nutrition fallback) and an ntfy server (phone push).
      cp "$s.example.yaml" "$s.yaml"   # then edit the hostPath values
    done
    ```
-7. **Build the bot and scheduler images** and import them into k3s. The
+6. **Build the bot and scheduler images** and import them into k3s. The
    manifests use `imagePullPolicy: Never`.
    ```bash
    for s in bot scheduler; do
@@ -127,14 +125,14 @@ USDA FoodData Central key (nutrition fallback) and an ntfy server (phone push).
      docker save ghost-$s:latest | sudo k3s ctr images import -
    done
    ```
-8. **Apply the manifests.** The dashboard runs on `python:3.12-slim` with the
+7. **Apply the manifests.** The dashboard runs on `python:3.12-slim` with the
    code mounted from the host, so it needs no image build.
    ```bash
    kubectl apply -f bot/ghost-bot-deployment.yaml
    kubectl apply -f scheduler/ghost-scheduler-deployment.yaml
    kubectl apply -f dashboard/ghost-dashboard.yaml
    ```
-9. **Check it is healthy.**
+8. **Check it is healthy.**
    ```bash
    kubectl get pods -n ghost
    ```

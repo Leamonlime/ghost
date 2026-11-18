@@ -20,7 +20,7 @@ Env (all three required, from ghost-app-secrets, optional:true so pods start wit
                                                  secondary test calendar for verification.
 
 Calendar data carries NONE of the financial/mood routing restrictions — ordinary
-Claude routing is fine (unlike money, which stays on the local-Ollama path).
+Claude routing is fine (unlike money, which never reaches any model).
 """
 import asyncio
 import logging
