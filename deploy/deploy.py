@@ -104,8 +104,11 @@ def _rebuild_dashboard():
             pass
     if rc != 0:
         return False, "configmap render failed:\n" + err
-    rc, out, err = _run(["kubectl", "apply", "-f", "-"], stdin_bytes=cm_yaml.encode())
-    log.append(f"$ kubectl apply configmap\n{err.strip() or out.strip()}")
+    # Server-side apply: the client-side last-applied annotation is capped at 256 KB, which the
+    # configmap outgrew once finance_import.py + ghost-import.html joined dashboard.py (Build 1).
+    rc, out, err = _run(["kubectl", "apply", "--server-side", "--force-conflicts",
+                         "--field-manager=ghost-deploy", "-f", "-"], stdin_bytes=cm_yaml.encode())
+    log.append(f"$ kubectl apply --server-side configmap\n{err.strip() or out.strip()}")
     if rc != 0:
         return False, "\n".join(log)
     rc, out, err = _run(["kubectl", "rollout", "restart", "deployment/ghost-dashboard", "-n", "ghost"])
