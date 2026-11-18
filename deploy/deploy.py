@@ -91,6 +91,9 @@ def _rebuild_dashboard():
     log = []
     bi_path = _write_build_info()
     argv = ["kubectl", "create", "configmap", "ghost-dashboard-code", f"--from-file={dpy}"]
+    # Build 1: the rules-based CSV import module and its page ship in the same configmap (/app).
+    for extra in ("finance_import.py", "ghost-import.html"):
+        argv.append(f"--from-file={os.path.join(SERVICE_DIRS['dashboard'], extra)}")
     if bi_path:
         argv.append(f"--from-file=build_info.json={bi_path}")
     rc, cm_yaml, err = _run(argv + ["-n", "ghost", "--dry-run=client", "-o", "yaml"])

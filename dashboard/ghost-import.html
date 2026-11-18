@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ghost — Import</title>
+<link rel="stylesheet" href="/assets/ghost-common.css?v=59">
+<!-- Build 1 (18/11/2026): rules-based bank CSV import. The file is sent to this dashboard only,
+     parsed in memory and discarded. No model, no outbound call. Results are counts only. -->
+<style>
+  :root { --accent: var(--bills-title, #b8d1ea); }
+  body { margin:0; min-height:100vh; background: var(--gc-base, #050308); color: var(--gc-ink, #e6dde2);
+         font-family: var(--gc-serif, Georgia, serif); }
+  main { max-width: 860px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { color: var(--accent); font-weight: normal; letter-spacing: .04em; margin: 0 0 4px; }
+  h2 { color: var(--accent); font-weight: normal; font-size: 1.1rem; margin: 0 0 12px; }
+  .meta { color: var(--gc-ink-faint, #7d7480); font-size: .85rem; }
+  a { color: var(--gc-ink-dim, #b9adb4); }
+  .panel { background: var(--gc-panel-bg, rgba(0,0,0,.32)); border: 1px solid var(--gc-panel-border, rgba(255,255,255,.1));
+           border-radius: var(--gc-radius, 5px); padding: 16px; margin-top: 18px; }
+  button, select, input[type=text] { font: inherit; color: var(--gc-ink); background: transparent;
+           border: 1px solid var(--gc-panel-border, rgba(255,255,255,.1)); border-radius: 4px; padding: 6px 10px; }
+  button { cursor: pointer; } button.primary { background: var(--gc-ink); color: #050308; }
+  button:disabled { opacity: .5; cursor: default; }
+  .counts { display: flex; gap: 24px; flex-wrap: wrap; margin-top: 12px; }
+  .counts div { min-width: 110px; } .counts b { display:block; font-size: 1.6rem; font-weight: normal; color: var(--accent); }
+  .group { border-top: 1px solid var(--gc-hairline, rgba(255,255,255,.08)); padding: 12px 0; }
+  .group .key { font-family: ui-monospace, monospace; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+  .txns { font-size: .85rem; color: var(--gc-ink-dim); margin-top: 6px; }
+  .txns div { display: flex; gap: 12px; } .txns span:last-child { margin-left: auto; }
+  .err { color: #e6a3a3; }
+  @media (max-width: 520px) { .counts { gap: 12px; } input[type=text] { width: 100%; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Import</h1>
+  <div class="meta">Bank CSV in, rules applied, nothing sent anywhere. <a href="/ghost-bills.html">Bills</a> · <a href="/">Home</a></div>
+
+  <section class="panel">
+    <h2>Upload a statement</h2>
+    <div class="row">
+      <input type="file" id="file" accept=".csv,text/csv">
+      <button class="primary" id="go">Import</button>
+    </div>
+    <div class="meta" style="margin-top:8px">CSV only, 2 MB max. Re-importing the same file changes nothing.</div>
+    <div id="result"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Uncategorised <span class="meta" id="qtotal"></span></h2>
+    <div id="queue" class="meta">Loading…</div>
+  </section>
+
+  <section class="panel">
+    <h2>Rules</h2>
+    <div class="meta">Checked in order: exact, then contains, then regex. First match wins.</div>
+    <div id="rules" class="meta">Loading…</div>
+  </section>
+</main>
+<script>
+let CATS = [];
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const money = n => (n < 0 ? "-" : "") + "$" + Math.abs(n).toFixed(2);
+
+async function loadCats() {
+  const r = await (await fetch("/api/bills/categories")).json();
+  CATS = (r.details || []).filter(c => c.key !== "uncategorised");
+}
+
+document.getElementById("go").onclick = async () => {
+  const f = document.getElementById("file").files[0], out = document.getElementById("result");
+  if (!f) { out.innerHTML = '<p class="err">Pick a CSV first.</p>'; return; }
+  if (f.size > 2 * 1024 * 1024) { out.innerHTML = '<p class="err">Over 2 MB.</p>'; return; }
+  const btn = document.getElementById("go"); btn.disabled = true; out.innerHTML = '<p class="meta">Importing…</p>';
+  try {
+    const fd = new FormData(); fd.append("file", f);
+    const r = await (await fetch("/api/import/csv", { method: "POST", body: fd })).json();
+    if (!r.ok) { out.innerHTML = '<p class="err">' + esc(r.error || "Import failed") + '</p>'; return; }
+    out.innerHTML = '<div class="counts">'
+      + '<div><b>' + r.imported + '</b>imported</div>'
+      + '<div><b>' + r.duplicates + '</b>duplicates</div>'
+      + '<div><b>' + r.uncategorised + '</b>uncategorised</div>'
+      + (r.skipped ? '<div><b>' + r.skipped + '</b>unreadable rows</div>' : '')
+      + '</div>';
+    document.getElementById("file").value = "";
+    loadQueue(); loadRules();
+  } catch (e) { out.innerHTML = '<p class="err">Import failed.</p>'; }
+  finally { btn.disabled = false; }
+};
+
+async function loadQueue() {
+  const q = document.getElementById("queue");
+  const r = await (await fetch("/api/import/uncategorised")).json();
+  if (!r.ok) { q.innerHTML = '<p class="err">Couldn\'t load the queue.</p>'; return; }
+  document.getElementById("qtotal").textContent = r.total ? "(" + r.total + ")" : "";
+  if (!r.groups.length) { q.innerHTML = "Nothing waiting."; return; }
+  const opts = CATS.map(c => '<option value="' + esc(c.key) + '">' + esc(c.label) + '</option>').join("");
+  q.innerHTML = r.groups.map((g, i) => '<div class="group" data-i="' + i + '">'
+    + '<div><span class="key">' + esc(g.key || "(blank)") + '</span> <span class="meta">× ' + g.count + '</span></div>'
+    + '<div class="txns">' + g.transactions.slice(0, 5).map(t => '<div><span>' + esc(t.date) + '</span><span>' + esc(t.description) + '</span><span>' + money(t.amount) + '</span></div>').join("") + '</div>'
+    + '<div class="row">'
+    + '<select class="cat"><option value="">Category…</option>' + opts + '</select>'
+    + '<select class="mt"><option value="exact">exact</option><option value="contains">contains</option><option value="regex">regex</option></select>'
+    + '<input type="text" class="pat" value="' + esc(g.key) + '" aria-label="pattern">'
+    + '<label class="meta"><input type="checkbox" class="past" checked> apply to all past matches</label>'
+    + '<button class="assign">Assign</button></div></div>').join("");
+  q.querySelectorAll(".assign").forEach(b => b.onclick = async () => {
+    const el = b.closest(".group"), g = r.groups[+el.dataset.i];
+    const cat = el.querySelector(".cat").value;
+    if (!cat) return;
+    b.disabled = true;
+    const res = await (await fetch("/api/import/assign", { method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ category: cat, match_type: el.querySelector(".mt").value, pattern: el.querySelector(".pat").value,
+        apply_past: el.querySelector(".past").checked, txn_ids: g.transactions.map(t => t.id) }) })).json();
+    if (!res.ok) { b.disabled = false; alert(res.error || "Failed"); return; }
+    loadQueue(); loadRules();
+  });
+}
+
+async function loadRules() {
+  const el = document.getElementById("rules");
+  const r = await (await fetch("/api/import/rules")).json();
+  if (!r.ok) { el.innerHTML = '<p class="err">Couldn\'t load rules.</p>'; return; }
+  if (!r.rules.length) { el.innerHTML = "No rules yet."; return; }
+  const label = Object.fromEntries(CATS.map(c => [c.key, c.label]));
+  el.innerHTML = r.rules.map(x => '<div class="group row" style="margin:0">'
+    + '<span class="meta">' + esc(x.match_type) + '</span><span class="key">' + esc(x.pattern) + '</span>'
+    + '<span>→ ' + esc(label[x.category] || x.category) + '</span><span class="meta">' + x.uses + ' rows</span>'
+    + '<button data-id="' + x.id + '" class="del" style="margin-left:auto">Delete</button></div>').join("");
+  el.querySelectorAll(".del").forEach(b => b.onclick = async () => {
+    if (!confirm("Delete this rule? Its rows go back to the queue.")) return;
+    await fetch("/api/import/rules/delete", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ id: +b.dataset.id }) });
+    loadQueue(); loadRules();
+  });
+}
+
+loadCats().then(() => { loadQueue(); loadRules(); });
+</script>
+</body>
+</html>
