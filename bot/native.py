@@ -25,7 +25,7 @@ import os
 import re
 import logging
 import zoneinfo
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, time as dtime
 
 import asyncpg
 
@@ -1067,6 +1067,93 @@ async def list_todos(user_id=None, include_done=True, conn=None):
             await conn.close()
 
 
+# ---------------------------------------------------------------------------
+# Ghost Home: the single next task (pure, deterministic, no DB, no LLM). The Android app reuses
+# the same cases from tests/fixtures/next_task_golden.json. Times are compared in `tz` (LOCAL_TZ,
+# Australia/Melbourne in the pods). Todos carry no due_time column today, so the timed branch is
+# empty in production; the function still honours a due_time key if one is supplied.
+# ---------------------------------------------------------------------------
+_PRIO_RANK = {"high": 0, "med": 1, "medium": 1, "normal": 1, "low": 2}
+
+
+def _as_date(v):
+    if v is None or v == "":
+        return None
+    if isinstance(v, datetime):
+        return v.date()
+    if isinstance(v, date):
+        return v
+    try:
+        return date.fromisoformat(str(v)[:10])
+    except ValueError:
+        return None
+
+
+def _as_time(v):
+    if v is None or v == "":
+        return None
+    if hasattr(v, "hour") and not isinstance(v, datetime):
+        return v.replace(second=0, microsecond=0, tzinfo=None)
+    try:
+        hh, mm = str(v).split(":")[:2]
+        return dtime(int(hh), int(mm))
+    except (ValueError, TypeError):
+        return None
+
+
+def _as_ts(v):
+    """created_at as a comparable aware datetime (None sorts last)."""
+    if v is None or v == "":
+        return None
+    if isinstance(v, datetime):
+        return v if v.tzinfo else v.replace(tzinfo=zoneinfo.ZoneInfo("UTC"))
+    try:
+        dt = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=zoneinfo.ZoneInfo("UTC"))
+    except ValueError:
+        return None
+
+
+def next_task(todos, now, tz=None):
+    """Pick the one todo Ghost Home shows. Rule (local time):
+      a. open todos only (done/archived skipped);
+      b. overdue (due before today, or due today with a time already passed): oldest due first;
+      c. due today with a time: earliest first;
+      d. due today without a time: priority high > med/normal > low, then oldest created;
+      e. undated and high priority: oldest created;
+      f. otherwise None.
+    Ties fall to the lowest id. Returns {id, title, due_date, due_time, priority, reason} or None."""
+    tz = tz or LOCAL_TZ
+    if isinstance(now, str):
+        now = datetime.fromisoformat(now.replace("Z", "+00:00"))
+    now = now.astimezone(tz) if now.tzinfo else now.replace(tzinfo=tz)
+    today, now_t = now.date(), now.time().replace(second=0, microsecond=0)
+    _far = datetime.max.replace(tzinfo=zoneinfo.ZoneInfo("UTC"))
+    overdue, timed, today_plain, high = [], [], [], []
+    for t in todos or []:
+        if t.get("done") or t.get("archived") or t.get("id") is None:
+            continue
+        dd, dt_ = _as_date(t.get("due_date")), _as_time(t.get("due_time"))
+        prio = str(t.get("priority") or "med").lower()
+        created = _as_ts(t.get("created_at")) or _far
+        tid = int(t["id"])
+        if dd is not None and (dd < today or (dd == today and dt_ is not None and dt_ < now_t)):
+            overdue.append(((dd, dt_ or dtime.min, tid), t, "overdue"))
+        elif dd == today and dt_ is not None:
+            timed.append(((dt_, tid), t, "today_timed"))
+        elif dd == today:
+            today_plain.append(((_PRIO_RANK.get(prio, 1), created, tid), t, "today"))
+        elif dd is None and prio == "high":
+            high.append(((created, tid), t, "high_priority"))
+    for bucket in (overdue, timed, today_plain, high):
+        if bucket:
+            _, t, reason = min(bucket, key=lambda x: x[0])
+            dd, dt_ = _as_date(t.get("due_date")), _as_time(t.get("due_time"))
+            return {"id": t["id"], "title": t.get("title") or t.get("text") or "",
+                    "due_date": dd.isoformat() if dd else None,
+                    "due_time": dt_.strftime("%H:%M") if dt_ else None,
+                    "priority": t.get("priority") or "med", "reason": reason}
+    return None
 
 
 # ---------------------------------------------------------------------------

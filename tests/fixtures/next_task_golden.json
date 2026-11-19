@@ -1,0 +1,147 @@
+[
+  {"name": "overdue: oldest due first",
+   "now": "2026-11-19T10:00:00+11:00",
+   "todos": [
+     {"id": 1, "title": "a", "priority": "high", "due_date": "2026-11-18", "created_at": "2026-11-01T09:00:00+11:00", "done": false},
+     {"id": 2, "title": "b", "priority": "low", "due_date": "2026-11-15", "created_at": "2026-11-10T09:00:00+11:00", "done": false},
+     {"id": 3, "title": "c", "priority": "high", "due_date": "2026-11-19", "created_at": "2026-11-01T09:00:00+11:00", "done": false}
+   ],
+   "expected_id": 2, "expected_reason": "overdue"},
+
+  {"name": "overdue: same due date, lowest id wins",
+   "now": "2026-11-19T10:00:00+11:00",
+   "todos": [
+     {"id": 7, "title": "a", "priority": "high", "due_date": "2026-11-15", "created_at": "2026-11-01T09:00:00+11:00", "done": false},
+     {"id": 4, "title": "b", "priority": "low", "due_date": "2026-11-15", "created_at": "2026-11-12T09:00:00+11:00", "done": false}
+   ],
+   "expected_id": 4, "expected_reason": "overdue"},
+
+  {"name": "overdue beats a timed todo later today",
+   "now": "2026-11-19T08:00:00+11:00",
+   "todos": [
+     {"id": 1, "title": "a", "priority": "high", "due_date": "2026-11-19", "due_time": "09:00", "created_at": "2026-11-01T09:00:00+11:00", "done": false},
+     {"id": 2, "title": "b", "priority": "low", "due_date": "2026-11-18", "created_at": "2026-11-17T09:00:00+11:00", "done": false}
+   ],
+   "expected_id": 2, "expected_reason": "overdue"},
+
+  {"name": "overdue: due today 23:30 checked at 23:45",
+   "now": "2026-11-19T23:45:00+11:00",
+   "todos": [
+     {"id": 5, "title": "a", "priority": "low", "due_date": "2026-11-19", "due_time": "23:30", "created_at": "2026-11-10T09:00:00+11:00", "done": false},
+     {"id": 1, "title": "b", "priority": "high", "due_date": "2026-11-19", "created_at": "2026-11-01T09:00:00+11:00", "done": false}
+   ],
+   "expected_id": 5, "expected_reason": "overdue"},
+
+  {"name": "overdue: passed time today sorts after an earlier due date",
+   "now": "2026-11-19T12:00:00+11:00",
+   "todos": [
+     {"id": 1, "title": "a", "priority": "med", "due_date": "2026-11-19", "due_time": "09:00", "created_at": "2026-11-01T09:00:00+11:00", "done": false},
+     {"id": 2, "title": "b", "priority": "med", "due_date": "2026-11-18", "due_time": "18:00", "created_at": "2026-11-01T09:00:00+11:00", "done": false}
+   ],
+   "expected_id": 2, "expected_reason": "overdue"},
+
+  {"name": "today timed: earliest first",
+   "now": "2026-11-19T09:00:00+11:00",
+   "todos": [
+     {"id": 10, "title": "a", "priority": "high", "due_date": "2026-11-19", "due_time": "15:00", "created_at": "2026-11-01T09:00:00+11:00", "done": false},
+     {"id": 11, "title": "b", "priority": "low", "due_date": "2026-11-19", "due_time": "11:00", "created_at": "2026-11-10T09:00:00+11:00", "done": false},
+     {"id": 12, "title": "c", "priority": "high", "due_date": "2026-11-19", "created_at": "2026-11-01T09:00:00+11:00", "done": false}
+   ],
+   "expected_id": 11, "expected_reason": "today_timed"},
+
+  {"name": "today timed: same time, lowest id wins",
+   "now": "2026-11-19T09:00:00+11:00",
+   "todos": [
+     {"id": 21, "title": "a", "priority": "high", "due_date": "2026-11-19", "due_time": "14:00", "created_at": "2026-11-01T09:00:00+11:00", "done": false},
+     {"id": 20, "title": "b", "priority": "low", "due_date": "2026-11-19", "due_time": "14:00", "created_at": "2026-11-10T09:00:00+11:00", "done": false}
+   ],
+   "expected_id": 20, "expected_reason": "today_timed"},
+
+  {"name": "today untimed: high beats med beats low",
+   "now": "2026-11-19T09:00:00+11:00",
+   "todos": [
+     {"id": 1, "title": "a", "priority": "low", "due_date": "2026-11-19", "created_at": "2026-11-01T09:00:00+11:00", "done": false},
+     {"id": 2, "title": "b", "priority": "high", "due_date": "2026-11-19", "created_at": "2026-11-15T09:00:00+11:00", "done": false},
+     {"id": 3, "title": "c", "priority": "med", "due_date": "2026-11-19", "created_at": "2026-11-01T09:00:00+11:00", "done": false}
+   ],
+   "expected_id": 2, "expected_reason": "today"},
+
+  {"name": "today untimed: normal is the same rank as med, then oldest created",
+   "now": "2026-11-19T09:00:00+11:00",
+   "todos": [
+     {"id": 1, "title": "a", "priority": "med", "due_date": "2026-11-19", "created_at": "2026-11-12T09:00:00+11:00", "done": false},
+     {"id": 2, "title": "b", "priority": "normal", "due_date": "2026-11-19", "created_at": "2026-11-05T09:00:00+11:00", "done": false},
+     {"id": 3, "title": "c", "priority": "low", "due_date": "2026-11-19", "created_at": "2026-10-01T09:00:00+11:00", "done": false}
+   ],
+   "expected_id": 2, "expected_reason": "today"},
+
+  {"name": "today untimed: same priority and created, lowest id wins",
+   "now": "2026-11-19T09:00:00+11:00",
+   "todos": [
+     {"id": 9, "title": "a", "priority": "med", "due_date": "2026-11-19", "created_at": "2026-11-05T09:00:00+11:00", "done": false},
+     {"id": 8, "title": "b", "priority": "med", "due_date": "2026-11-19", "created_at": "2026-11-05T09:00:00+11:00", "done": false}
+   ],
+   "expected_id": 8, "expected_reason": "today"},
+
+  {"name": "undated high: oldest created; undated med/low ignored",
+   "now": "2026-11-19T09:00:00+11:00",
+   "todos": [
+     {"id": 1, "title": "a", "priority": "med", "due_date": null, "created_at": "2026-01-01T09:00:00+11:00", "done": false},
+     {"id": 2, "title": "b", "priority": "high", "due_date": null, "created_at": "2026-11-10T09:00:00+11:00", "done": false},
+     {"id": 3, "title": "c", "priority": "high", "due_date": null, "created_at": "2026-11-02T09:00:00+11:00", "done": false}
+   ],
+   "expected_id": 3, "expected_reason": "high_priority"},
+
+  {"name": "undated high: same created, lowest id wins",
+   "now": "2026-11-19T09:00:00+11:00",
+   "todos": [
+     {"id": 6, "title": "a", "priority": "high", "due_date": null, "created_at": "2026-11-02T09:00:00+11:00", "done": false},
+     {"id": 5, "title": "b", "priority": "high", "due_date": null, "created_at": "2026-11-02T09:00:00+11:00", "done": false}
+   ],
+   "expected_id": 5, "expected_reason": "high_priority"},
+
+  {"name": "done todos are ignored",
+   "now": "2026-11-19T09:00:00+11:00",
+   "todos": [
+     {"id": 1, "title": "a", "priority": "high", "due_date": "2026-11-10", "created_at": "2026-11-01T09:00:00+11:00", "done": true},
+     {"id": 2, "title": "b", "priority": "high", "due_date": "2026-11-19", "due_time": "10:00", "created_at": "2026-11-01T09:00:00+11:00", "done": true},
+     {"id": 3, "title": "c", "priority": "high", "due_date": null, "created_at": "2026-11-05T09:00:00+11:00", "done": false}
+   ],
+   "expected_id": 3, "expected_reason": "high_priority"},
+
+  {"name": "nothing qualifies: future-dated high and undated low give null",
+   "now": "2026-11-19T09:00:00+11:00",
+   "todos": [
+     {"id": 1, "title": "a", "priority": "high", "due_date": "2026-11-25", "created_at": "2026-11-01T09:00:00+11:00", "done": false},
+     {"id": 2, "title": "b", "priority": "low", "due_date": null, "created_at": "2026-11-01T09:00:00+11:00", "done": false}
+   ],
+   "expected_id": null, "expected_reason": null},
+
+  {"name": "empty list gives null",
+   "now": "2026-11-19T09:00:00+11:00",
+   "todos": [],
+   "expected_id": null, "expected_reason": null},
+
+  {"name": "midnight rollover: due yesterday untimed is overdue at 00:05",
+   "now": "2026-11-20T00:05:00+11:00",
+   "todos": [
+     {"id": 1, "title": "a", "priority": "low", "due_date": "2026-11-19", "created_at": "2026-11-01T09:00:00+11:00", "done": false},
+     {"id": 2, "title": "b", "priority": "high", "due_date": "2026-11-20", "created_at": "2026-11-01T09:00:00+11:00", "done": false}
+   ],
+   "expected_id": 1, "expected_reason": "overdue"},
+
+  {"name": "midnight rollover: one minute before midnight it is still today",
+   "now": "2026-11-19T23:59:00+11:00",
+   "todos": [
+     {"id": 1, "title": "a", "priority": "low", "due_date": "2026-11-19", "created_at": "2026-11-01T09:00:00+11:00", "done": false},
+     {"id": 2, "title": "b", "priority": "high", "due_date": "2026-11-20", "created_at": "2026-11-01T09:00:00+11:00", "done": false}
+   ],
+   "expected_id": 1, "expected_reason": "today"},
+
+  {"name": "now given in UTC is judged in Melbourne time (13:30Z = 00:30 next day)",
+   "now": "2026-11-19T13:30:00Z",
+   "todos": [
+     {"id": 1, "title": "a", "priority": "low", "due_date": "2026-11-19", "created_at": "2026-11-01T09:00:00+11:00", "done": false}
+   ],
+   "expected_id": 1, "expected_reason": "overdue"}
+]
