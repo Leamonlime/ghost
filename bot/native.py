@@ -1114,6 +1114,44 @@ def _as_ts(v):
         return None
 
 
+def _next_task_ranked(todos, now, tz=None):
+    """Open todos with their next_task rank: [(sort_key, todo, reason)], best first. Rule buckets
+    b-e (see next_task) carry their reason; everything else is bucket 4 ("rest", reason None),
+    ordered by due date (undated last), then priority, then id. One rule for next_task and the
+    Ghost Home todo list, so the two can never disagree."""
+    tz = tz or LOCAL_TZ
+    if isinstance(now, str):
+        now = datetime.fromisoformat(now.replace("Z", "+00:00"))
+    now = now.astimezone(tz) if now.tzinfo else now.replace(tzinfo=tz)
+    today, now_t = now.date(), now.time().replace(second=0, microsecond=0)
+    _far = datetime.max.replace(tzinfo=zoneinfo.ZoneInfo("UTC"))
+    out = []
+    for t in todos or []:
+        if t.get("done") or t.get("archived") or t.get("id") is None:
+            continue
+        dd, dt_ = _as_date(t.get("due_date")), _as_time(t.get("due_time"))
+        prio = str(t.get("priority") or "med").lower()
+        created = _as_ts(t.get("created_at")) or _far
+        tid = int(t["id"])
+        if dd is not None and (dd < today or (dd == today and dt_ is not None and dt_ < now_t)):
+            out.append(((0, dd, dt_ or dtime.min, tid), t, "overdue"))
+        elif dd == today and dt_ is not None:
+            out.append(((1, dt_, tid), t, "today_timed"))
+        elif dd == today:
+            out.append(((2, _PRIO_RANK.get(prio, 1), created, tid), t, "today"))
+        elif dd is None and prio == "high":
+            out.append(((3, created, tid), t, "high_priority"))
+        else:
+            out.append(((4, dd or date.max, dt_ or dtime.max, _PRIO_RANK.get(prio, 1), tid), t, None))
+    out.sort(key=lambda x: x[0])
+    return out
+
+
+def order_todos(todos, now, tz=None):
+    """Open todos in Ghost Home order: the next_task rule first, then by due date."""
+    return [t for _, t, _ in _next_task_ranked(todos, now, tz)]
+
+
 def next_task(todos, now, tz=None):
     """Pick the one todo Ghost Home shows. Rule (local time):
       a. open todos only (done/archived skipped);
@@ -1123,36 +1161,14 @@ def next_task(todos, now, tz=None):
       e. undated and high priority: oldest created;
       f. otherwise None.
     Ties fall to the lowest id. Returns {id, title, due_date, due_time, priority, reason} or None."""
-    tz = tz or LOCAL_TZ
-    if isinstance(now, str):
-        now = datetime.fromisoformat(now.replace("Z", "+00:00"))
-    now = now.astimezone(tz) if now.tzinfo else now.replace(tzinfo=tz)
-    today, now_t = now.date(), now.time().replace(second=0, microsecond=0)
-    _far = datetime.max.replace(tzinfo=zoneinfo.ZoneInfo("UTC"))
-    overdue, timed, today_plain, high = [], [], [], []
-    for t in todos or []:
-        if t.get("done") or t.get("archived") or t.get("id") is None:
-            continue
+    for _, t, reason in _next_task_ranked(todos, now, tz):
+        if reason is None:
+            return None
         dd, dt_ = _as_date(t.get("due_date")), _as_time(t.get("due_time"))
-        prio = str(t.get("priority") or "med").lower()
-        created = _as_ts(t.get("created_at")) or _far
-        tid = int(t["id"])
-        if dd is not None and (dd < today or (dd == today and dt_ is not None and dt_ < now_t)):
-            overdue.append(((dd, dt_ or dtime.min, tid), t, "overdue"))
-        elif dd == today and dt_ is not None:
-            timed.append(((dt_, tid), t, "today_timed"))
-        elif dd == today:
-            today_plain.append(((_PRIO_RANK.get(prio, 1), created, tid), t, "today"))
-        elif dd is None and prio == "high":
-            high.append(((created, tid), t, "high_priority"))
-    for bucket in (overdue, timed, today_plain, high):
-        if bucket:
-            _, t, reason = min(bucket, key=lambda x: x[0])
-            dd, dt_ = _as_date(t.get("due_date")), _as_time(t.get("due_time"))
-            return {"id": t["id"], "title": t.get("title") or t.get("text") or "",
-                    "due_date": dd.isoformat() if dd else None,
-                    "due_time": dt_.strftime("%H:%M") if dt_ else None,
-                    "priority": t.get("priority") or "med", "reason": reason}
+        return {"id": t["id"], "title": t.get("title") or t.get("text") or "",
+                "due_date": dd.isoformat() if dd else None,
+                "due_time": dt_.strftime("%H:%M") if dt_ else None,
+                "priority": t.get("priority") or "med", "reason": reason}
     return None
 
 
