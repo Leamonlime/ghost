@@ -127,3 +127,16 @@ def test_demo_mode_masks_native_habit_and_todo_names(page, api):
     d = api.req.get(f"{BASE}/api/command-center?demo=1").json()
     blob = str(d["habits"]) + str(d["todos"])
     assert h not in blob and t not in blob
+
+
+def test_command_center_payload_has_no_habitica_leftovers(page, api):
+    """S107: nothing in the Command Center talks to Habitica any more: no vitals block, no
+    habitica self-check row, no Habitica tile on the page."""
+    d = api.req.get(f"{BASE}/api/command-center").json()
+    assert "vitals" not in d, "vitals came from Habitica and were removed"
+    assert all(c["service"] != "habitica" for c in d["selfCheck"]), d["selfCheck"]
+    assert not any("habitica" in e.lower() for e in d["errors"]), d["errors"]
+    old = api.req.get(f"{BASE}/api/data").json()
+    assert not any("habitica" in e.lower() for e in old["errors"]), old["errors"]
+    home(page)
+    expect(page.locator("#overviewList")).not_to_contain_text("Habitica")

@@ -61,7 +61,7 @@
   .profile .role { font-size: 8px; color: #a97b95; }
 
   /* S63: row2 is now content-driven (auto) — it holds the sparse Overview + Timeline,
-     which should read compact, not a fixed slab. The two content-rich Habitica lists live in the
+     which should read compact, not a fixed slab. The two content-rich lists live in the
      tall 1.5fr row1 instead. */
   .content { flex: 1 1 auto; min-height: 0; display: grid; grid-template-rows: 1.5fr auto 0.82fr auto; gap: 7px; }
   .row4 { display: grid; grid-template-columns: 1fr; gap: 7px; }
@@ -74,7 +74,7 @@
   .mom-spark { width: 100%; height: 32px; align-self: center; }
   .mom-buckets { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; font-size: 9px; color: #8a6a7c; }
   .mom-buckets .mb { padding: 1px 6px; border-radius: var(--gc-radius); background: transparent; border: 1px solid var(--gc-hairline); }
-  /* S63: row1 = the two content-rich Habitica lists (Habits + ToDos), equal widths, in the tall
+  /* S63: row1 = the two content-rich lists (Habits + ToDos), equal widths, in the tall
      row so neither is squeezed; each card's own .scroll-list handles overflow (the grid fraction
      bounds the height, so the row never grows unbounded). */
   .row1 { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; min-height: 0; }
@@ -254,7 +254,7 @@
       <!-- S42 layout: Habits enlarged in the top-left slot; Ghost Core Overview moved down
            to row2; Live Feed removed (redundant with Mission Timeline); Self-Code Proposals
            restored in the freed top-right slot. -->
-      <!-- S63: row1 now pairs the two content-rich Habitica lists (Habits + ToDos); Self-Code
+      <!-- S63: row1 now pairs the two content-rich lists (Habits + ToDos); Self-Code
            Proposals moved down to row2 (ToDos' old slot) since it's almost always sparse. The
            data-role hooks (habits/todos/overview/proposals) stayed on the inner list divs —
            only the parent cards' grid positions changed. -->
@@ -416,7 +416,6 @@ function renderOverview(d){
   const esc_ = d.escalation;
   const rows = [
     {ic:"◈", label:"Ghost Core", sub: errCount===0 ? "Watching" : errCount+" issue(s)", warn: errCount>0},
-    {ic:"✦", label:"Habitica", sub: (d.selfCheck||[]).find(s=>s.service==="habitica")?.status==="ok" ? "Synced" : "Issue"},
     {ic:"✉", label:"Chats", sub: (d.selfCheck||[]).filter(s=>["telegram","cephalopod"].includes(s.service) && s.status==="ok").length+"/2 connected"},
     {ic:"⛁", label:"Postgres / Redis", sub: (["postgres","redis"].every(s => (d.selfCheck||[]).find(x=>x.service===s)?.status==="ok")) ? "Healthy" : "Issue"},
     {ic:"⚑", label:"Escalation", sub: esc_ ? `Stage ${esc_.stage} — ${esc_.topic}` : "None active", warn: !!esc_},

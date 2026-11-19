@@ -99,7 +99,6 @@ async def test_import_and_transfers():
     """Keyword matcher gone: import stores non-manual rows uncategorised, re-import keeps a manual
     pick, and transfer skipping in bill detection follows the RESOLVED category (merchant rule)."""
     from datetime import date
-    dash._ollama_narrate = _no_narrate
     lines = ["Date,Description,Amount"]
     for mo in (5, 6, 7, 8):
         lines.append(f"01/{mo:02d}/2026,ZZTSAVER 1,-200.00")      # own-account transfer
@@ -137,8 +136,6 @@ async def test_import_and_transfers():
         check("refresh skips rule-categorised transfer", flag is None and res.get("fixed_flagged") == 0, f"{flag} {res}")
 
 
-async def _no_narrate(summary):
-    return ""
 
 
 async def test_resort():

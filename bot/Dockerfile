@@ -7,7 +7,6 @@ RUN pip install --no-cache-dir httpx redis asyncpg
 
 COPY bot.py .
 COPY native.py .
-COPY habitica.py .
 COPY fatsecret.py .
 COPY decisions.py .
 COPY gcal.py .

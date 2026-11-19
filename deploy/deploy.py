@@ -91,6 +91,9 @@ def _rebuild_dashboard():
     log = []
     bi_path = _write_build_info()
     argv = ["kubectl", "create", "configmap", "ghost-dashboard-code", f"--from-file={dpy}"]
+    # Build 1: the rules-based CSV import module and its page ship in the same configmap (/app).
+    for extra in ("finance_import.py", "ghost-import.html"):
+        argv.append(f"--from-file={os.path.join(SERVICE_DIRS['dashboard'], extra)}")
     if bi_path:
         argv.append(f"--from-file=build_info.json={bi_path}")
     rc, cm_yaml, err = _run(argv + ["-n", "ghost", "--dry-run=client", "-o", "yaml"])
@@ -101,8 +104,11 @@ def _rebuild_dashboard():
             pass
     if rc != 0:
         return False, "configmap render failed:\n" + err
-    rc, out, err = _run(["kubectl", "apply", "-f", "-"], stdin_bytes=cm_yaml.encode())
-    log.append(f"$ kubectl apply configmap\n{err.strip() or out.strip()}")
+    # Server-side apply: the client-side last-applied annotation is capped at 256 KB, which the
+    # configmap outgrew once finance_import.py + ghost-import.html joined dashboard.py (Build 1).
+    rc, out, err = _run(["kubectl", "apply", "--server-side", "--force-conflicts",
+                         "--field-manager=ghost-deploy", "-f", "-"], stdin_bytes=cm_yaml.encode())
+    log.append(f"$ kubectl apply --server-side configmap\n{err.strip() or out.strip()}")
     if rc != 0:
         return False, "\n".join(log)
     rc, out, err = _run(["kubectl", "rollout", "restart", "deployment/ghost-dashboard", "-n", "ghost"])
@@ -120,8 +126,8 @@ def _rebuild_dashboard():
 # tooling so they can't be skipped. Failure is loud and non-zero; auto-rollback is
 # deliberately out of scope.
 # --------------------------------------------------------------------------
-_IMAGE_FILES = {"bot": ["bot.py", "habitica.py", "fatsecret.py", "decisions.py"],
-                "scheduler": ["scheduler.py", "habitica.py", "habitica_sync.py", "fatsecret.py", "decisions.py"]}
+_IMAGE_FILES = {"bot": ["bot.py", "fatsecret.py", "decisions.py"],
+                "scheduler": ["scheduler.py", "fatsecret.py", "decisions.py"]}
 
 def _newest_pod(app_label: str) -> str:
     rc, out, err = _run(["kubectl", "get", "pods", "-n", "ghost", "-l", f"app={app_label}",

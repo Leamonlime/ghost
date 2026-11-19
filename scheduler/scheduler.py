@@ -2,7 +2,6 @@ import asyncio
 import os
 import json
 import logging
-import random
 import re
 import time
 from datetime import datetime, timedelta
@@ -28,10 +27,6 @@ POSTGRES_HOST = os.environ.get("POSTGRES_HOST", "ghost-postgres-postgresql.ghost
 POSTGRES_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "")
 USER_NAME = os.environ.get("GHOST_USER_NAME", "the user")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-# Ollama generate endpoint (money path). Was hardcoded here AND in bot.py (S27 diagnosed the
-# 10.42.0.1 node-gateway IP as load-bearing); moved to env S56 so a CNI/node change is one config
-# edit, not a silent break in two files. Same var name as bot.py = single source of truth (the env).
-OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://10.42.0.1:11434/api/generate")
 
 RECENT_PHRASES_KEY = "recent_ghost_phrases"
 
@@ -95,7 +90,7 @@ async def refresh_location_override():
 # ---------------------------------------------------------------------------
 # App categories + named Wi-Fi networks (session 17, task 3). Parsed from the
 # User-editable vault note — same manifest pattern as Cephalopod's vault scope:
-# edit the note, no redeploy. Informational only; never touches Habitica.
+# edit the note, no redeploy. Informational only.
 # ---------------------------------------------------------------------------
 VAULT_PATH = os.environ.get("VAULT_PATH", "/vault")
 APP_CATEGORIES_REL = os.environ.get("GHOST_APP_CATEGORIES_REL", "Projects/Tech/Ghost/Ghost — App Categories.md")  # single-sourced via env S56 (was the same literal pasted here + in dashboard.py)
@@ -397,33 +392,6 @@ async def call_claude(prompt: str, max_tokens: int = 80) -> str:
     await save_phrase(reply)
     return reply
 
-async def call_ollama(prompt: str) -> str:
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                OLLAMA_URL,
-                json={
-                    # Session 27 (30/07/2026): CPU-only + 1b model — see bot.py
-                    # call_ollama. The 940MX/NVK-Vulkan offload was ~14-16x slower
-                    # than CPU-only on this host; num_gpu:0 forces CPU-only.
-                    "model": "llama3.2:1b",
-                    "prompt": prompt,
-                    "stream": False,
-                    "keep_alive": "1h",
-                    "options": {
-                        "temperature": 0.7,
-                        "num_gpu": 0,
-                        "num_predict": 80
-                    }
-                },
-                timeout=180.0
-            )
-            data = response.json()
-            return data.get("response", "").strip()
-    except Exception as e:
-        logger.error(f"Ollama error: {e}")
-        return ""
-
 # ---------------------------------------------------------------------------
 # Daily anchors (Session 79 — messaging cadence v2). The old per-category nudge sprawl
 # (independent water/breakfast/lunch/dinner/movement timers, tier-1 focus-todo + dailies
@@ -654,12 +622,46 @@ async def _native_task_list(limit=8):
             rows = await conn.fetch(
                 "SELECT text FROM todos WHERE NOT done AND NOT archived "
                 "ORDER BY "
-                "CASE priority WHEN 'high' THEN 0 WHEN 'med' THEN 1 ELSE 2 END, id LIMIT $1", limit)
+                "CASE priority WHEN 'high' THEN 0 WHEN 'med' THEN 1 ELSE 2 END, due_date NULLS LAST, id LIMIT $1", limit)
         finally:
             await conn.close()
         return [r["text"] for r in rows]
     except Exception as e:
         logger.error(f"_native_task_list error: {e}")
+        return []
+
+async def _native_habit_status():
+    """Today's DAILY habits from the native system, read from the dashboard's Command Center payload
+    (same source as the Home page): {"done": [names], "pending": [names]}. Weekly/monthly-target
+    habits and negative habits (Smoking) are left out: 'pending' would misstate them. {} on any
+    error (a missing signal is never presented as 'nothing done')."""
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{DASHBOARD_INTERNAL_URL}/api/command-center", timeout=30.0)
+        habits = resp.json().get("habits") or []
+    except Exception as e:
+        logger.error(f"_native_habit_status error: {e}")
+        return {}
+    day = [h for h in habits if h.get("streakUnit") == "day" and h.get("positiveNegative") != "negative"]
+    return {"done": [h["name"] for h in day if h.get("doneToday")],
+            "pending": [h["name"] for h in day if not h.get("doneToday")]}
+
+
+async def _native_todos_done_today():
+    """Texts of native todos completed today (local date). [] on error."""
+    try:
+        conn = await asyncpg.connect(host=POSTGRES_HOST, port=5432, user="postgres",
+                                     password=POSTGRES_PASSWORD, database="ghost_db")
+        try:
+            rows = await conn.fetch(
+                "SELECT text FROM todos WHERE done AND NOT archived "
+                "AND (completed_at AT TIME ZONE $1)::date = $2 ORDER BY completed_at",
+                str(LOCAL_TZ), datetime.now(LOCAL_TZ).date())
+        finally:
+            await conn.close()
+        return [r["text"] for r in rows]
+    except Exception as e:
+        logger.error(f"_native_todos_done_today error: {e}")
         return []
 
 # Google Calendar wiring (Session 82). Read-only from the scheduler. Morning debrief always
@@ -735,13 +737,10 @@ async def morning_debrief():
     finally:
         await r.aclose()
     dailies_part = ""
-    try:
-        from habitica import get_dailies
-        d = await get_dailies()
-        dailies_part = (f"Habits/dailies still pending: {', '.join(d['pending']) if d['pending'] else 'none'}. "
+    d = await _native_habit_status()
+    if d:
+        dailies_part = (f"Habits still pending today: {', '.join(d['pending']) if d['pending'] else 'none'}. "
                         f"Already done: {', '.join(d['done']) if d['done'] else 'none'}. ")
-    except Exception as e:
-        logger.error(f"morning_debrief habitica fetch: {e}")
     tasks = await _native_task_list()
     tasks_part = ("Today's task list: " + "; ".join(tasks) + ". ") if tasks else "The task list is empty right now. "
     goals = get_goal_next_actions()
@@ -796,13 +795,7 @@ async def lunch_checkin():
             await conn.close()
     except Exception as e:
         logger.error(f"lunch_checkin momentum: {e}")
-    dailies_done = 0
-    try:
-        from habitica import get_dailies
-        d = await get_dailies()
-        dailies_done = len(d["done"])
-    except Exception as e:
-        logger.error(f"lunch_checkin habitica: {e}")
+    dailies_done = len((await _native_habit_status()).get("done", []))
     tasks = await _native_task_list(limit=5)
     cal_part = await _calendar_meal_part(CAL_LUNCH_WINDOW, "lunchtime")
     made_progress = (completions_today > 0) or (dailies_done > 0)
@@ -842,17 +835,14 @@ async def _build_daily_summary(now):
         exercise_done = await r.get("exercise_confirmed")
     finally:
         await r.aclose()
-    habitica_part = ""
-    try:
-        from habitica import get_dailies, get_completed_todos_today
-        dailies = await get_dailies()
-        done_todos = await get_completed_todos_today(LOCAL_TZ)
-        habitica_part = (
-            f"Dailies done: {', '.join(dailies['done']) if dailies['done'] else 'none logged'}. "
-            f"Dailies still open: {', '.join(dailies['pending']) if dailies['pending'] else 'none'}. "
+    habits_part = ""
+    dailies = await _native_habit_status()
+    if dailies:
+        done_todos = await _native_todos_done_today()
+        habits_part = (
+            f"Habits done: {', '.join(dailies['done']) if dailies['done'] else 'none logged'}. "
+            f"Habits still open: {', '.join(dailies['pending']) if dailies['pending'] else 'none'}. "
             f"To-dos knocked off today: {', '.join(done_todos) if done_todos else 'none'}. ")
-    except Exception as e:
-        logger.error(f"daily summary habitica fetch: {e}")
     usage_part = ""
     try:
         cats = load_app_categories()
@@ -897,7 +887,7 @@ async def _build_daily_summary(now):
                          + (". Goal next-actions: " + "; ".join(f"{a} — {na}" for a, na in goals) if goals else "")
                          + ". Name ONE clear priority for tomorrow from these, not a pile. ")
     prompt = (f"{time_context()} Generate the DAY'S SUMMARY (she has just confirmed/corrected the record). "
-              f"{commitments_part}{habitica_part}{usage_part}"
+              f"{commitments_part}{habits_part}{usage_part}"
               f"Water logged at some point today: {'yes' if last_water else 'no'}. "
               f"Exercise logged today: {'yes' if exercise_done else 'no'}. "
               f"{tomorrow_part}"
@@ -1029,54 +1019,8 @@ async def check_missed_meals():
     except Exception as e:
         logger.error(f"check_missed_meals error: {e}")
 
-FOOD_TRACK_INTERVAL = 1800
-_last_food_track_check = 0.0
-
 # the single user's numeric id (keys food_log); same secret value the dashboard uses as OWNER_ID
 GHOST_USER_ID = os.environ.get("GHOST_USER_ID") or os.environ.get("TELEGRAM_USER_ID") or "0"
-
-async def count_app_food_logs_today() -> int:
-    """Entries in the Ghost app's food_log for today (local date). Decision #9 (11/10/2026):
-    the app replaced FatSecret completely, so this is the ONLY food signal 'Track food' reads."""
-    conn = await asyncpg.connect(
-        host=POSTGRES_HOST, port=5432, user="postgres",
-        password=POSTGRES_PASSWORD, database="ghost_db", timeout=15)
-    try:
-        return int(await conn.fetchval(
-            "SELECT COUNT(*) FROM food_log WHERE user_id = $1 AND log_date = $2",
-            int(GHOST_USER_ID or "0"), datetime.now(LOCAL_TZ).date()) or 0)
-    finally:
-        await conn.close()
-
-async def check_food_tracked():
-    """Once the Ghost app's food log has an entry for today, check off the 'Track food'
-    checklist item nested under the 'Bedtime' daily (NOT a same-named top-level
-    daily, which does not exist). Checks at most every 30 min, once per day.
-    FatSecret is retired and no longer counts (decision #9)."""
-    global _last_food_track_check
-    import time
-    if is_quiet_hours() or time.time() - _last_food_track_check < FOOD_TRACK_INTERVAL:
-        return
-    _last_food_track_check = time.time()
-    try:
-        r = await get_redis()
-        already = await r.get("food_daily_completed")
-        await r.aclose()
-        if already:
-            return
-        if await count_app_food_logs_today() <= 0:
-            return
-        from habitica import complete_checklist_item
-        ok = await complete_checklist_item("Bedtime", "Track food")
-        r = await get_redis()
-        await r.set("food_daily_completed", "1", ex=seconds_to_midnight())
-        await r.aclose()
-        if ok:
-            logger.info("'Track food' checklist item (under 'Bedtime') auto-checked — app food log has entries today")
-        else:
-            logger.info("App food log has entries but 'Track food' item not checkable (already done / not found) — nothing scored")
-    except Exception as e:
-        logger.error(f"check_food_tracked error: {e}")
 
 # ---------------------------------------------------------------------------
 # Self-health check (every 2h outside quiet hours).
@@ -1091,7 +1035,6 @@ _pg_down_alerted = False
 
 SERVICE_HINTS = {
     "ntfy": "the push server or its token is failing, so alerts and nudges will not reach the phone",
-    "habitica": "the API token may be stale",
     "postgres": "database unreachable — check the pod or the password secret",
     "redis": "redis unreachable — check the pod or the password secret",
     "anthropic": "the Claude API is refusing calls — Ghost's brain is down",
@@ -1106,17 +1049,6 @@ async def check_ntfy_health():
     if r.status_code != 200:
         return f"/v1/health HTTP {r.status_code}"
     return None if r.json().get("healthy") else "ntfy reports unhealthy"
-
-async def check_habitica_health():
-    user_id = os.environ.get("HABITICA_USER_ID", "")
-    headers = {
-        "x-api-user": user_id,
-        "x-api-key": os.environ.get("HABITICA_API_TOKEN", ""),
-        "x-client": f"{user_id}-ghost-hivequeen",
-    }
-    async with httpx.AsyncClient() as client:
-        r = await client.get("https://habitica.com/api/v3/user", headers=headers, timeout=20)
-        return None if r.status_code == 200 else f"/user HTTP {r.status_code}"
 
 async def check_postgres_health():
     conn = await asyncpg.connect(
@@ -1190,7 +1122,6 @@ async def check_anthropic_health():
 
 HEALTH_CHECKS = [
     ("ntfy", check_ntfy_health),
-    ("habitica", check_habitica_health),
     ("postgres", check_postgres_health),
     ("redis", check_redis_health),
     ("anthropic", check_anthropic_health),
@@ -1392,26 +1323,6 @@ async def check_budget_caps():
         logger.info(f"Budget cap heads-up sent ({len(hits)} categor{'y' if len(hits) == 1 else 'ies'})")
 
 
-async def run_habitica_sync():
-    """Session 23: Habitica<->vault sync on its own jittered 15-30 min cadence
-    (separate from this 300s loop). Ships DRY-RUN (writes nothing) until the flip
-    to live after Lea reviews a day's log. The sync module owns all read/write
-    logic; this is just the scheduling gate."""
-    r = await get_redis()
-    try:
-        now = datetime.now(LOCAL_TZ).timestamp()
-        nxt = await r.get("habitica_sync_next_due")
-        if nxt and now < float(nxt):
-            return
-        await r.set("habitica_sync_next_due", now + random.uniform(900, 1800), ex=86400)
-    finally:
-        await r.aclose()
-    try:
-        import habitica_sync
-        await habitica_sync.run_once(get_redis)
-    except Exception as e:
-        logger.error(f"habitica_sync error: {e}")
-
 # ---------------------------------------------------------------------------
 # Session 76 — "bad guys": three named recurring obstacles surfaced as READ-ONLY threshold
 # checks against data that already exists (momentum_events, native todos, app_usage). No new
@@ -1529,9 +1440,7 @@ async def main():
             await monthly_csv_upload_nudge()
             await check_budget_caps()
             await check_missed_meals()
-            await check_food_tracked()
             await expire_commitments()
-            await run_habitica_sync()
             await check_bad_guys()
             await health_check()
         except Exception as e:

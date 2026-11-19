@@ -44,7 +44,7 @@ the repo's structure, not by omission:**
   (honest: green means "no broken hook found", never a false pass — a present page with a missing
   hook fails red).
 - The API-200 and JS-render checks **cannot** run in GitHub Actions — they need the live backend
-  (Postgres/Redis/Habitica + the dashboard app), which CI has no access to. Those stay in
+  (Postgres/Redis + the dashboard app), which CI has no access to. Those stay in
   `smoke_live.py`.
 - This repo is a frozen public snapshot (Session 25) that does not currently receive regular
   pushes, so "runs on every push" is only literally true once pushing resumes.

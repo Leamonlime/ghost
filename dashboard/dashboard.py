@@ -19,9 +19,10 @@ import zoneinfo
 
 sys.path.insert(0, os.environ.get("BOT_CODE_PATH", "/botcode"))
 import bot  # noqa: E402 — Ghost's own module, mounted read-only
-import habitica  # noqa: E402
 import native  # noqa: E402 — Ghost 2.0 native Habits & Todos (Phase 1), shared with the bot pipeline
 import decisions  # noqa: E402 — decision loop store (bot/decisions.py, mounted with bot code)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import finance_import  # noqa: E402 — rules-based CSV import (no network, no model, no row logging)
 
 import asyncpg  # noqa: E402
 import httpx  # noqa: E402
@@ -297,10 +298,13 @@ async def api_data(request: Request):
             out["dailies"] = dict(DEMO_DAILIES)
             out["todos"] = list(DEMO_TODOS)
         else:
-            out["dailies"] = await habitica.get_dailies()
-            out["todos"] = (await habitica.get_todos())[:5]
+            # native habits due today (done / pending by name) and the top open native todos
+            nh, nt = await _native_home(_native_uid(request))
+            out["dailies"] = {"done": [h["name"] for h in nh if h["doneToday"]],
+                              "pending": [h["name"] for h in nh if not h["doneToday"]]}
+            out["todos"] = [t["text"] for t in nt][:5]
     except Exception as e:
-        out["errors"].append(f"habitica: {e}")
+        out["errors"].append(f"habits/todos: {e}")
         out["dailies"] = {"done": [], "pending": []}
         out["todos"] = []
     try:
@@ -368,6 +372,14 @@ async def api_chat(request: Request):
         # real message_log rows, and return a reply grounded in real data. Canned reply.
         if is_demo(request):
             return {"reply": "(demo mode) I'd normally answer from your real data here.", "demo": True}
+        # Build 1: money talk is refused before it is logged anywhere (message_log is a log).
+        refusal = bot.money_refusal(message)
+        if refusal is not None:
+            return {"reply": refusal}
+        # Budget-cap commands are deterministic, but their replies carry cap amounts and % spent, so
+        # neither side is written to message_log (a log) — answered and returned unlogged.
+        if bot.parse_cap_command(message) is not None:
+            return {"reply": await bot.process_message(OWNER_ID, message, source="dashboard")}
         await bot.log_message("dashboard_in", "chat", message)
         reply = await bot.process_message(OWNER_ID, message, source="dashboard")
         await bot.log_message("dashboard_out", "chat", reply)
@@ -539,7 +551,7 @@ async def api_timeline(request: Request):
 # ---------------------------------------------------------------------------
 # Command-center dashboard data (Session 35). ONE read-only endpoint serving the v8
 # mockup's data contract from Ghost's real state. Cached in Redis ~25s so the 30-60s
-# poll never hammers Habitica's 30-req/min limit (habits + todos + user = 3 calls).
+# poll does not re-query Postgres on every hit.
 # Fields that aren't natively real are DERIVED and flagged in `_meta.derived`, so the
 # frontend/reader can tell approximations from ground truth.
 # ---------------------------------------------------------------------------
@@ -573,25 +585,6 @@ async def _escalation_topic() -> dict | None:
         logger.error(f"escalation topic read error: {e}")
     return best[1] if best else None
 
-async def _habitica_health() -> dict:
-    """Session 42: LIVE Habitica ping so the Integrations badge reflects a genuine
-    just-checked API response — not the up-to-2h-old health_checks row. (On 20/08 the
-    badge showed 'habitica: ok' from the stale 15:31 self-diagnosis while Lea was mid-
-    incident; a status badge claiming 'ok' is a claim like any other and must be live.)"""
-    uid = os.environ.get("HABITICA_USER_ID"); tok = os.environ.get("HABITICA_API_TOKEN")
-    if not (uid and tok):
-        return {"service": "habitica", "status": "unknown", "detail": "no creds"}
-    try:
-        async with httpx.AsyncClient() as client:
-            r = await client.get("https://habitica.com/api/v3/user?userFields=_id",
-                                 headers={"x-api-user": uid, "x-api-key": tok,
-                                          "x-client": f"{uid}-ghost-hivequeen"}, timeout=6)
-        ok = r.status_code == 200
-        return {"service": "habitica", "status": "ok" if ok else "fail",
-                "detail": "live" if ok else f"http {r.status_code}"}
-    except Exception as e:
-        return {"service": "habitica", "status": "fail", "detail": f"live: {str(e)[:50]}"}
-
 async def _cephalopod_health() -> dict:
     try:
         async with httpx.AsyncClient() as client:
@@ -607,8 +600,6 @@ async def _cephalopod_health() -> dict:
 
 # Demo-mode placeholders for the command center (Session 54). Structurally identical to the
 # real payload, scaled to look lived-in (not empty), never derived from real data.
-DEMO_VITALS = {"hp": 42.0, "hpMax": 50, "mp": 28.0, "mpMax": 40, "xp": 130.0,
-               "xpMax": 250, "level": 14, "class": "warrior", "gold": 185.0}
 DEMO_NUTRITION = {"caloriesLogged": 1850, "caloriesTarget": 2600,
                   "macros": {"protein": 95, "carbs": 210, "fat": 62, "fiber": 22},
                   "mealsLoggedToday": 3}
@@ -625,8 +616,6 @@ def _mask_command_center(data: dict) -> dict:
     for i, t in enumerate(d.get("todos") or []):
         if isinstance(t, dict):
             t["text"] = f"Sample task {i + 1}"
-    if d.get("vitals"):
-        d["vitals"] = dict(DEMO_VITALS)
     # S70: budget key removed from the command-center (conversational money pipeline retired).
     if d.get("nutrition") is not None:
         d["nutrition"] = copy.deepcopy(DEMO_NUTRITION)
@@ -699,7 +688,7 @@ async def _native_home(uid):
 @app.get("/api/command-center")
 async def api_command_center(request: Request):
     """Read-only. Serves the v8 dashboard data contract from real Postgres/Redis/
-    Habitica/FatSecret state. Cached 25s (the real payload; demo masking is applied on
+    the food log. Cached 25s (the real payload; demo masking is applied on
     egress to a deep copy, so both modes share one cache and demo never ships real data)."""
     demo = is_demo(request)
     now = datetime.now(LOCAL_TZ)
@@ -714,19 +703,14 @@ async def api_command_center(request: Request):
         pass
     out = {"time": now.strftime("%A %d %B %Y, %I:%M %p").replace(" 0", " "), "errors": [],
            "_meta": {"derived": {
-               "habits/todos": "native rebuilt habits + todos (same data as ghost-habits.html); habits = due today only; vitals still from Habitica",
+               "habits/todos": "native rebuilt habits + todos (same data as ghost-habits.html); habits = due today only",
                "nutrition": "from the Ghost app food_log (calories + protein only; carbs/fat/fiber null)", "nutrition.caloriesTarget": "from GHOST_CALORIE_TARGET env (0 = not set)",
            }}}
     # Habits + todos: the NATIVE rebuilt data (same source as /ghost-habits.html), not Habitica.
-    # Vitals (hp/xp/gold/level) still come from Habitica below.
     try:
         out["habits"], out["todos"] = await _native_home(_native_uid(request))
     except Exception as e:
         out["errors"].append(f"habits/todos: {e}"); out["habits"] = []; out["todos"] = []
-    try:
-        out["vitals"] = await habitica.get_user_stats()
-    except Exception as e:
-        out["errors"].append(f"vitals: {e}"); out["vitals"] = {}
     # S70: conversational money pipeline removed — spending is CSV-only (Bills dashboard / spending
     # card). No budget-vs-limit block from expenses/budget_categories here anymore.
     # Nutrition: the Ghost app's food_log (FatSecret retired 01/11/2026). The app tracks calories and
@@ -750,12 +734,11 @@ async def api_command_center(request: Request):
         conn = await pg_conn()
         rows = await conn.fetch("""
             SELECT DISTINCT ON (service) service, status, detail, checked_at
-            FROM health_checks WHERE service IN ('ntfy','postgres','redis','habitica','anthropic','gcal')
+            FROM health_checks WHERE service IN ('ntfy','postgres','redis','anthropic','gcal')
             ORDER BY service, checked_at DESC
         """)
         await conn.close()
-        # Session 42: habitica is now a LIVE ping (see below), removed from the table set.
-        # For the rest, flag staleness — the self-diagnosis runs every 2h, so a row older
+        # Flag staleness — the self-diagnosis runs every 2h, so a row older
         # than ~2.5h means the checker itself hasn't run; don't present a stale 'ok' as current.
         checks = []
         for r in rows:
@@ -766,7 +749,6 @@ async def api_command_center(request: Request):
                     detail = f"stale — last {r['status']} {int(age_min)}m ago"
                     status = "stale"
             checks.append({"service": r["service"], "status": status, "detail": detail})
-        checks.append(await _habitica_health())   # live, authoritative — not the 2h table row
         checks.append(await _cephalopod_health())
         out["selfCheck"] = checks
     except Exception as e:
@@ -860,7 +842,7 @@ async def api_decisions_answer(request: Request):
 # ---------------------------------------------------------------------------
 # "Am I actually moving, over time" — one number, not an analytics dashboard.
 # momentum_events captures one row per completion (written by native habit/todo completions
-# and the Habitica sync; the dashboard only reads it — its Quest-toggle writer went with the
+# the dashboard only reads it — its Quest-toggle writer went with the
 # Quest Log page, 19/10/2026). /api/momentum returns trailing-window
 # closed (completions) vs open (still-incomplete items due in the window), overall
 # and per bucket, plus a per-day sparkline. Bucket crosswalk approved by Lea (S57);
@@ -890,12 +872,12 @@ async def _ensure_momentum_schema(conn):
 @app.get("/api/momentum")
 async def api_momentum(request: Request, window: int = 60):
     """Trailing-window momentum: closed (completions logged in momentum_events) vs open
-    (incomplete Habitica to-dos whose due date falls in the window), overall + per bucket,
+    (incomplete native to-dos whose due date falls in the window), overall + per bucket,
     plus a per-day completions sparkline. Raw counts returned alongside the ratio so the
     number stays interpretable when open is small. Read-only; Redis-cached ~60s.
 
-    Scope (v1, honest): 'closed' is the real movement signal (every sync/quest completion).
-    'open' uses Habitica to-dos with a structured due date — dailies (no single due date),
+    Scope (v1, honest): 'closed' is the real movement signal (every native completion).
+    'open' uses native to-dos with a structured due date — dailies (no single due date),
     undated to-dos, and free-text Quest dates are NOT in 'open'. Documented, not a bug."""
     demo = is_demo(request)
     try:
@@ -923,7 +905,7 @@ async def api_momentum(request: Request, window: int = 60):
     out = {"window": window, "overall": {"closed": 0, "open": 0, "ratio": None},
            "buckets": {b: {"closed": 0, "open": 0, "ratio": None} for b in MOMENTUM_BUCKETS},
            "sparkline": [], "generated_at": now.isoformat(),
-           "_note": "closed = logged completions (sync+quest); open = incomplete Habitica to-dos due in window"}
+           "_note": "closed = logged completions; open = incomplete native to-dos due in window"}
     # closed (from momentum_events)
     try:
         conn = await pg_conn()
@@ -943,7 +925,7 @@ async def api_momentum(request: Request, window: int = 60):
             await conn.close()
     except Exception as e:
         out.setdefault("errors", []).append(f"closed: {e}")
-    # open (S78: NATIVE outstanding-due work, replacing the old Habitica-todo open side which was
+    # open (S78: NATIVE outstanding-due work, replacing the old Habitica-sourced open side which was
     # empty here — the S76 moth-caveat: the ratio read a false 1.0 not because activity was high but
     # because nothing populated open). Now: native habits due today but not done, plus native todos
     # (quest-flagged included) that carry a due date on/before today and aren't done. `closed`
@@ -995,7 +977,7 @@ async def api_momentum(request: Request, window: int = 60):
 # habit/todo system. They call the SAME native.py functions the Telegram pipeline
 # uses (bot.process_message -> native.route_message / native.tap_habit / ...), so the
 # two surfaces are one code path, not parallel logic. Deterministic writes, no LLM.
-# Reads are live (no cache) so a tap reflects immediately. Runs alongside Habitica.
+# Reads are live (no cache) so a tap reflects immediately.
 # ===========================================================================
 def _native_uid(request: Request) -> int:
     return OWNER_ID or native.DEFAULT_USER_ID
@@ -1263,9 +1245,8 @@ async def api_todo_create(request: Request):
 # DATA BOUNDARY (hard requirement, non-negotiable): all bill data lives ONLY in
 # Ghost's local Postgres on hivequeen. It is NEVER sent to Claude, Cowork, or any
 # cloud service. This screen is pure CRUD + arithmetic and calls NO LLM at all.
-# If a natural-language feature is ever added here, it must run against the LOCAL
-# Ollama instance only, never a cloud model. Nothing in this block makes an
-# outbound network call.
+# No natural-language/model feature is allowed here (Ollama was removed in Build 1,
+# 18/11/2026). Nothing in this block makes an outbound network call.
 # ===========================================================================
 
 BILL_FREQUENCIES = ("weekly", "fortnightly", "monthly", "quarterly", "annual")
@@ -2248,13 +2229,13 @@ async def api_bill_settings_set(request: Request):
 
 
 # ===========================================================================
-# SPENDING CSV IMPORT (Session 67) — bank CSV -> deterministic summary -> Ollama narration
+# SPENDING CSV IMPORT (Session 67; rules-based since Build 1, 18/11/2026) — bank CSV -> rules -> summary
 # ---------------------------------------------------------------------------
 # Builds out Reference/csv_spending_summary.py (unwired since 29/07). HARD CONSTRAINT: this
 # request path NEVER touches the Claude/Anthropic API — financial data is local-only per the
 # money boundary (Session 52). ALL math is deterministic Python (pandas); the ONLY model call
-# is _ollama_narrate(), which posts already-computed NUMBERS to the local Ollama at bot.OLLAMA_URL
-# (never Anthropic). Categorisation is manual picks + merchant rules (S85); see resolve_category.
+# was the Ollama narration, removed in Build 1 — no model of any kind touches money now.
+# Categorisation is manual picks + category_rules (finance_import) + S85 merchant rules.
 # ===========================================================================
 UNCATEGORISED = "uncategorised"
 # S68: categories that are money moving between Lea's OWN accounts (savings transfers etc.) —
@@ -2355,10 +2336,14 @@ async def category_exists(conn, key) -> bool:
 
 
 def resolve_category(description, manual, stored_category, merchant_rules) -> str:
-    """Effective category under the S85 model: a manual per-transaction pick wins; else a matching
-    merchant rule; else uncategorised. The keyword note no longer participates in this resolution."""
+    """Effective category: a manual per-transaction pick wins; else a category stamped by a
+    category_rules match (Build 1 import / Uncategorised queue, stored with rule_id); else a matching
+    S85 merchant rule; else uncategorised. Non-manual rows only carry a non-uncategorised stored
+    category when a rule put it there (S97 wiped the old keyword values)."""
     if manual:
         return stored_category or UNCATEGORISED
+    if stored_category and stored_category != UNCATEGORISED:
+        return stored_category
     mk = _merchant_key(description)
     if mk and mk in merchant_rules:
         return merchant_rules[mk]
@@ -2377,8 +2362,7 @@ async def _ensure_spending_schema(conn):
             amount       NUMERIC(12,2) NOT NULL,
             category     TEXT NOT NULL DEFAULT 'uncategorised',
             source_file  TEXT,
-            imported_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-            UNIQUE (txn_date, description, amount)
+            imported_at  TIMESTAMPTZ NOT NULL DEFAULT now()
         );
         CREATE TABLE IF NOT EXISTS spending_summary (
             id           INTEGER PRIMARY KEY DEFAULT 1,
@@ -2464,6 +2448,10 @@ async def _ensure_spending_schema(conn):
             "UPDATE transactions SET category=$1 WHERE NOT manual AND category <> $1", UNCATEGORISED)
         await conn.execute(
             "INSERT INTO spending_meta (k,v) VALUES ('keyword_categories_cleared','1') ON CONFLICT (k) DO NOTHING")
+    # Build 1 (18/11/2026): rules + hash-dedupe import columns/tables (finance_import.ensure_schema).
+    # Drops the old UNIQUE(date, description, amount): two real same-day same-amount purchases must
+    # both import, so dedupe is now a sha256 of date|amount|key|occurrence index.
+    await finance_import.ensure_schema(conn)
     _SPENDING_SCHEMA_READY = True
 
 
@@ -2654,127 +2642,260 @@ async def _live_spending_summary(conn):
     return compute_spending_summary(db_rows, excluded=excluded), len(db_rows)
 
 
-async def _ollama_narrate(summary: dict) -> str:
-    """Narrate an ALREADY-COMPUTED numbers-only summary via the LOCAL Ollama at bot.OLLAMA_URL.
-    NEVER calls Claude/Anthropic — this is the only model touch in the import path and it is local.
-    Returns '' on any error (the numbers still stand on their own)."""
-    prompt = (
-        "You are Ghost, a dry, blunt money tracker. Below is an ALREADY-CORRECT spending summary "
-        "computed deterministically. Do NOT recalculate or invent any number — just summarise what "
-        "stands out in plain language, 4-6 sentences, for Lea. Mention the biggest categories, "
-        "anything notable month to month, and flag it if the uncategorised share is high. No "
-        "exclamation marks, no emoji, no praise.\n\n"
-        + json.dumps(summary, indent=2)
-    )
-    try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                bot.OLLAMA_URL,
-                json={"model": "llama3.2:1b", "prompt": prompt, "stream": False,
-                      "keep_alive": "1h", "options": {"temperature": 0.6, "num_gpu": 0, "num_predict": 320}},
-                timeout=180.0)
-            return (resp.json().get("response", "") or "").strip()
-    except Exception as e:
-        logger.error(f"_ollama_narrate error: {e}")
-        return ""
+# ---------------------------------------------------------------------------
+# Build 1 (18/11/2026): upload handling shared by the Bills page upload and the /import page.
+# The body is streamed into memory with a hard cap and parsed there — never via UploadFile, whose
+# SpooledTemporaryFile rolls over to a temp file on disk past 1 MB. Nothing about the rows is logged:
+# error paths log the exception TYPE only, and finance_import errors carry no cell values.
+# ---------------------------------------------------------------------------
+class _UploadTooLarge(Exception):
+    pass
 
 
-@app.post("/api/bills/import-csv")
-async def api_import_csv(file: UploadFile = File(...)):
-    """Upload a bank CSV -> parse (pandas) -> store (new rows uncategorised) -> aggregate (Python) ->
-    narrate (LOCAL Ollama) -> store. Dedupes on (date, description, amount). NO Claude in this path."""
+async def _read_capped_body(request: Request) -> bytes:
+    cl = request.headers.get("content-length")
+    if cl and cl.isdigit() and int(cl) > finance_import.MAX_UPLOAD_BYTES + 64 * 1024:
+        raise _UploadTooLarge()
+    buf = bytearray()
+    async for chunk in request.stream():
+        buf.extend(chunk)
+        if len(buf) > finance_import.MAX_UPLOAD_BYTES + 64 * 1024:
+            raise _UploadTooLarge()
+    return bytes(buf)
+
+
+def _extract_csv(content_type: str, body: bytes):
+    """-> (csv_bytes, filename). Accepts a raw text/csv body or multipart/form-data (in memory, via
+    the stdlib email parser). Rejects anything that isn't a .csv / text/csv file."""
+    ct = (content_type or "").lower()
+    if ct.startswith("multipart/form-data"):
+        import email
+        import email.policy
+        msg = email.message_from_bytes(
+            b"Content-Type: " + content_type.encode("latin-1") + b"\r\n\r\n" + body,
+            policy=email.policy.HTTP)
+        for part in msg.iter_parts():
+            fname = part.get_filename()
+            if fname:
+                if not fname.lower().endswith(".csv"):
+                    raise finance_import.ImportError_("CSV files only")
+                return part.get_payload(decode=True) or b"", fname
+        raise finance_import.ImportError_("no file in the upload")
+    if ct.split(";")[0].strip() in ("text/csv", "application/csv", "text/plain", "application/vnd.ms-excel"):
+        return body, ""
+    raise finance_import.ImportError_("CSV files only")
+
+
+async def _legacy_category_lookup(conn):
+    rules = await load_merchant_rules(conn)
+    return lambda desc: resolve_category(desc, False, UNCATEGORISED, rules)
+
+
+async def _run_import(request: Request):
+    """-> (status_code, counts_or_error_dict). The raw bytes go out of scope when this returns."""
     try:
-        import pandas as pd
-        import io as _io
-        raw = await file.read()
+        body = await _read_capped_body(request)
+    except _UploadTooLarge:
+        return 413, {"ok": False, "error": f"file is over the {finance_import.MAX_UPLOAD_BYTES // 1024} KB limit"}
+    try:
+        raw, fname = _extract_csv(request.headers.get("content-type", ""), body)
+        del body
         if not raw:
-            return JSONResponse({"ok": False, "error": "empty file"}, status_code=400)
-        try:
-            df = pd.read_csv(_io.BytesIO(raw))
-        except Exception as e:
-            return JSONResponse({"ok": False, "error": f"couldn't read CSV: {e}"}, status_code=400)
-        if df.empty:
-            return JSONResponse({"ok": False, "error": "CSV has no data rows"}, status_code=400)
-        try:
-            norm, mapping = detect_and_normalise(df, pd)
-        except ValueError as e:
-            return JSONResponse({"ok": False, "error": str(e), "columns_found": list(df.columns)},
-                                status_code=422)
-        if norm.empty:
-            return JSONResponse({"ok": False, "error": "no rows had a parseable date AND amount",
-                                 "mapping": mapping}, status_code=422)
-
-        fname = (file.filename or "upload.csv")
-        rows = []
-        for _, r in norm.iterrows():
-            d = r["date"].date().isoformat()
-            desc = str(r["description"])[:500]
-            amt = round(float(r["amount"]), 2)
-            rows.append({"date": d, "description": desc, "amount": amt})
-
-        inserted = updated = 0
+            return 400, {"ok": False, "error": "empty file"}
         conn = await pg_conn()
         try:
             await _ensure_spending_schema(conn)
-            for row in rows:
-                # (xmax = 0) is TRUE for a fresh insert, FALSE when ON CONFLICT did an update —
-                # so we count new vs deduped rows precisely (the dedupe key is date+description+amount).
-                # A non-manual row's stored category is never read (resolve_category uses the merchant
-                # rules), so new rows go in uncategorised and a re-import leaves the existing category
-                # alone — which keeps a manual pick (S71) intact.
-                was_insert = await conn.fetchval(
-                    """INSERT INTO transactions (txn_date, description, amount, category, source_file)
-                       VALUES ($1,$2,$3,$4,$5)
-                       ON CONFLICT (txn_date, description, amount)
-                       DO UPDATE SET source_file = EXCLUDED.source_file,
-                                     imported_at = now()
-                       RETURNING (xmax = 0)""",
-                    date.fromisoformat(row["date"]), row["description"], row["amount"], UNCATEGORISED, fname)
-                if was_insert:
-                    inserted += 1
-                else:
-                    updated += 1
+            counts = await finance_import.import_csv(conn, raw, fname, await _legacy_category_lookup(conn))
         finally:
             await conn.close()
+        del raw
+    except finance_import.ImportError_ as e:
+        return 422, {"ok": False, "error": str(e)}
+    except Exception as e:
+        logger.error(f"csv import failed: {type(e).__name__}")       # type only: no row data in logs
+        return 500, {"ok": False, "error": "import failed"}
+    return 200, {"ok": True, **counts}
 
-        # Recompute the whole summary from ALL rows (same live path the GET uses) and refresh the
-        # stored narration — the ONLY reason to store anything now is the local-Ollama narration,
-        # which is too slow to regenerate on every page load. The card's numbers come live from
-        # _live_spending_summary on each GET, not from this stored copy.
+
+@app.post("/api/import/csv")
+async def api_import_csv_v2(request: Request):
+    """Build 1 import endpoint (the /import page). Returns COUNTS ONLY: imported, duplicates,
+    uncategorised (+ skipped rows, rows in file, detected format). No model, no outbound call."""
+    if is_demo(request):
+        return JSONResponse({"ok": False, "error": "demo mode is read-only"}, status_code=403)
+    status, out = await _run_import(request)
+    return JSONResponse(out, status_code=status)
+
+
+@app.post("/api/bills/import-csv")
+async def api_import_csv(request: Request):
+    """Bills page upload, now routed through the same rules-based import (Build 1). The Ollama
+    narration that used to run here is gone; narration is stored empty. Response keeps the keys the
+    Bills page reads (inserted, updated_deduped, total_in_db, bill_refresh)."""
+    if is_demo(request):
+        return JSONResponse({"ok": False, "error": "demo mode is read-only"}, status_code=403)
+    status, out = await _run_import(request)
+    if status != 200:
+        return JSONResponse(out, status_code=status)
+    try:
         conn = await pg_conn()
         try:
             summary, _ = await _live_spending_summary(conn)
-            narration = await _ollama_narrate(summary)
             await conn.execute(
                 """INSERT INTO spending_summary (id, summary, narration, generated_at)
-                   VALUES (1, $1::jsonb, $2, now())
+                   VALUES (1, $1::jsonb, '', now())
                    ON CONFLICT (id) DO UPDATE SET summary=EXCLUDED.summary,
-                       narration=EXCLUDED.narration, generated_at=now()""",
-                json.dumps(summary), narration)
-            # S74: refresh usage-based linked bills / flag fixed-bill price changes from the new rows.
+                       narration='', generated_at=now()""",
+                json.dumps(summary))
             await _ensure_bills_schema(conn)
             bill_refresh = await _refresh_linked_bills(conn)
         finally:
             await conn.close()
-
-        return {"ok": True, "mapping": mapping, "rows_in_file": len(rows),
-                "inserted": inserted, "updated_deduped": updated,
-                "total_in_db": summary["totals"]["transaction_count"],
-                "uncategorised_share_pct": summary["data_quality"]["uncategorised_share_pct"],
-                "bill_refresh": bill_refresh,
-                "narration": narration, "summary": summary}
     except Exception as e:
-        logger.error(f"/api/bills/import-csv error: {e}")
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        logger.error(f"/api/bills/import-csv post-import refresh failed: {type(e).__name__}")
+        return JSONResponse({"ok": False, "error": "imported, but the summary refresh failed"}, status_code=500)
+    return {"ok": True, "rows_in_file": out["rows_in_file"], "inserted": out["imported"],
+            "updated_deduped": out["duplicates"], "uncategorised": out["uncategorised"],
+            "skipped": out["skipped"], "total_in_db": summary["totals"]["transaction_count"],
+            "uncategorised_share_pct": summary["data_quality"]["uncategorised_share_pct"],
+            "bill_refresh": bill_refresh, "narration": "", "summary": summary}
+
+
+# ---------------------------------------------------------------------------
+# Build 1: Uncategorised queue + rules. Transactions with no rule match (and no S85 merchant rule,
+# and no manual pick) are grouped by normalised key. Assigning a category creates a rule (exact on
+# the key by default; contains/regex optional) and stamps it on the chosen rows, or on every past
+# matching row when apply_past is set. A manual pick is never overwritten.
+# ---------------------------------------------------------------------------
+@app.get("/api/import/uncategorised")
+async def api_import_uncategorised(request: Request, limit: int = 300):
+    try:
+        conn = await pg_conn()
+        try:
+            await _ensure_spending_schema(conn)
+            merchant_rules = await load_merchant_rules(conn)
+            rows = await conn.fetch(
+                "SELECT id, to_char(txn_date,'YYYY-MM-DD') d, description, amount::float8 amount, "
+                "category, manual, norm_key FROM transactions WHERE NOT manual AND rule_id IS NULL "
+                "ORDER BY txn_date DESC, id DESC")
+        finally:
+            await conn.close()
+        groups = {}
+        for r in rows:
+            if resolve_category(r["description"], r["manual"], r["category"], merchant_rules) != UNCATEGORISED:
+                continue
+            key = r["norm_key"] or finance_import.normalise_description(r["description"])
+            g = groups.setdefault(key, {"key": key, "count": 0, "transactions": []})
+            g["count"] += 1
+            if len(g["transactions"]) < 20:
+                g["transactions"].append({"id": r["id"], "date": r["d"], "description": r["description"],
+                                          "amount": r["amount"]})
+        out = sorted(groups.values(), key=lambda g: (-g["count"], g["key"]))[:max(1, min(limit, 2000))]
+        return {"ok": True, "groups": out, "total": sum(g["count"] for g in groups.values())}
+    except Exception as e:
+        logger.error(f"/api/import/uncategorised error: {type(e).__name__}")
+        return JSONResponse({"ok": False, "error": "failed"}, status_code=500)
+
+
+@app.post("/api/import/assign")
+async def api_import_assign(request: Request):
+    """Body {key|pattern, category, match_type?='exact', apply_past?=false, txn_ids?=[]}."""
+    if is_demo(request):
+        return JSONResponse({"ok": False, "error": "demo mode is read-only"}, status_code=403)
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "bad request"}, status_code=400)
+    category = _norm_category_key(str(data.get("category") or ""))
+    match_type = str(data.get("match_type") or "exact")
+    pattern = str(data.get("pattern") or data.get("key") or "")
+    apply_past = bool(data.get("apply_past"))
+    try:
+        txn_ids = [int(i) for i in (data.get("txn_ids") or [])]
+    except (TypeError, ValueError):
+        return JSONResponse({"ok": False, "error": "bad txn_ids"}, status_code=400)
+    if not category or category == UNCATEGORISED:
+        return JSONResponse({"ok": False, "error": "no category"}, status_code=400)
+    try:
+        conn = await pg_conn()
+        try:
+            await _ensure_spending_schema(conn)
+            if not await category_exists(conn, category):
+                return JSONResponse({"ok": False, "error": "unknown category"}, status_code=400)
+            async with conn.transaction():
+                rule_id = await finance_import.create_rule(conn, match_type, pattern, category)
+                applied = await finance_import.apply_rule(conn, rule_id, apply_past, txn_ids)
+        finally:
+            await conn.close()
+    except finance_import.ImportError_ as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    except Exception as e:
+        logger.error(f"/api/import/assign error: {type(e).__name__}")
+        return JSONResponse({"ok": False, "error": "failed"}, status_code=500)
+    return {"ok": True, "rule_id": rule_id, "applied": applied}
+
+
+@app.get("/api/import/rules")
+async def api_import_rules(request: Request):
+    try:
+        conn = await pg_conn()
+        try:
+            await _ensure_spending_schema(conn)
+            rows = await conn.fetch(
+                "SELECT r.id, r.match_type, r.pattern, r.category, r.priority, "
+                "(SELECT count(*) FROM transactions t WHERE t.rule_id=r.id) uses "
+                "FROM category_rules r ORDER BY array_position(ARRAY['exact','contains','regex'], r.match_type), "
+                "r.priority, r.id")
+        finally:
+            await conn.close()
+        return {"ok": True, "rules": [dict(r) for r in rows]}
+    except Exception as e:
+        logger.error(f"/api/import/rules error: {type(e).__name__}")
+        return JSONResponse({"ok": False, "error": "failed"}, status_code=500)
+
+
+@app.post("/api/import/rules/delete")
+async def api_import_rules_delete(request: Request):
+    """Body {id}. Rows it categorised go back to the queue (non-manual only)."""
+    if is_demo(request):
+        return JSONResponse({"ok": False, "error": "demo mode is read-only"}, status_code=403)
+    try:
+        rid = int((await request.json()).get("id"))
+    except Exception:
+        return JSONResponse({"ok": False, "error": "bad request"}, status_code=400)
+    conn = await pg_conn()
+    try:
+        await _ensure_spending_schema(conn)
+        async with conn.transaction():
+            n = await conn.fetchval(
+                "WITH u AS (UPDATE transactions SET category=$2, rule_id=NULL WHERE rule_id=$1 AND NOT manual "
+                "RETURNING 1) SELECT count(*) FROM u", rid, UNCATEGORISED)
+            gone = await conn.fetchval("DELETE FROM category_rules WHERE id=$1 RETURNING id", rid)
+    finally:
+        await conn.close()
+    if gone is None:
+        return JSONResponse({"ok": False, "error": "no such rule"}, status_code=404)
+    return {"ok": True, "requeued": n or 0}
+
+
+IMPORT_PAGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ghost-import.html")
+
+
+@app.get("/import", response_class=HTMLResponse)
+async def import_page():
+    try:
+        html = open(IMPORT_PAGE, encoding="utf-8").read()
+    except OSError:
+        return HTMLResponse(content="<h1>import page not found</h1>", status_code=500)
+    return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/bills/spending")
 async def api_spending(request: Request):
     """Read-only card feed. S69: the NUMBERS are computed LIVE from the transactions table on every
     request (via _live_spending_summary) — never a stored snapshot — so a categorisation-rule change
-    or a corrected aggregation shows up on the next page load with no re-import. Only the narration
-    (the local-Ollama commentary, too slow to regenerate per GET) is read from storage. No model
-    call here."""
+    or a corrected aggregation shows up on the next page load with no re-import. The stored narration
+    is legacy (Ollama, removed in Build 1) and is blanked by the next import. No model call here."""
     try:
         conn = await pg_conn()
         try:
@@ -4243,16 +4364,23 @@ async def app_habit_log(habit_id: int, request: Request):
 
 @app.post("/api/app/v1/todos")
 async def app_todo_create(request: Request):
-    """Quick-add a todo. Body {text, priority?, due_date?:YYYY-MM-DD, client_id?}."""
+    """Quick-add a todo. Body {text (or title), priority?: high|med|low, due_date?:YYYY-MM-DD, notes?, client_id?}."""
     if not _app_auth_ok(request):
         return _app_401()
     try:
         data = await request.json()
     except Exception:
         return JSONResponse({"ok": False, "error": "bad request"}, status_code=400)
-    text = (data.get("text") or "").strip()
+    text = (data.get("text") or data.get("title") or "").strip()
     if not text:
         return JSONResponse({"ok": False, "error": "text required"}, status_code=400)
+    prio = str(data.get("priority") or "med").strip().lower()
+    prio = {"medium": "med", "normal": "med"}.get(prio, prio)
+    if prio not in native.PRIORITIES:
+        return JSONResponse({"ok": False, "error": "priority must be High, Med or Low"}, status_code=400)
+    notes = data.get("notes")
+    if notes is not None and not isinstance(notes, str):
+        return JSONResponse({"ok": False, "error": "notes must be text"}, status_code=400)
     client_id = data.get("client_id")
     conn = await pg_conn()
     try:
@@ -4268,8 +4396,7 @@ async def app_todo_create(request: Request):
             due = date.fromisoformat(str(data["due_date"]))
         except ValueError:
             return JSONResponse({"ok": False, "error": "due_date must be YYYY-MM-DD"}, status_code=400)
-    tid = await native.create_todo(text, priority=(data.get("priority") or "med"),
-                                   due_date=due, user_id=OWNER_ID)
+    tid = await native.create_todo(text, priority=prio, due_date=due, notes=notes, user_id=OWNER_ID)
     result = {"ok": tid is not None, "id": tid, "text": text}
     if result["ok"] and client_id:
         conn = await pg_conn()
@@ -4674,6 +4801,14 @@ async def app_chat(request: Request):
     if not message:
         return JSONResponse({"ok": False, "error": "message required"}, status_code=400)
     client_id = data.get("client_id")
+    # Build 1: money talk is refused before it is logged or cached anywhere.
+    refusal = bot.money_refusal(message)
+    if refusal is not None:
+        return {"ok": True, "reply": refusal}
+    # Cap commands: not logged and not cached in app_idempotency (the reply carries amounts). Setting a
+    # cap is idempotent on its own, so a retried request is harmless.
+    if bot.parse_cap_command(message) is not None:
+        return {"ok": True, "reply": await bot.process_message(OWNER_ID, message, source="app")}
     conn = await pg_conn()
     try:
         await _ensure_app_schema(conn)
