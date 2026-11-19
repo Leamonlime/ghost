@@ -17,8 +17,9 @@ DEST="$(cd "$(dirname "$0")" && pwd)/pages"
 
 PAGES=(ghost-dashboard-live.html ghost-bills.html ghost-horoscope.html ghost-tarot.html ghost-habits.html)
 
-# Shared assets to mirror alongside the pages (S83 added the PWA files for ghost-habits.html).
-ASSETS=(ghost-common.css manifest.webmanifest sw.js ghost-icon-192.png ghost-icon-512.png)
+# Shared assets to mirror alongside the pages (S83 added the PWA files for ghost-habits.html;
+# 19/11/2026 added the Grimoire OS theme + shell that every page loads).
+ASSETS=(ghost-common.css grimoire.css grimoire.js manifest.webmanifest sw.js ghost-icon-192.png ghost-icon-512.png)
 
 mkdir -p "$DEST/assets"
 for p in "${PAGES[@]}"; do
