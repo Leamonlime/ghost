@@ -10,6 +10,7 @@ import sys
 import copy
 import time
 import json
+import base64
 import hashlib
 import asyncio
 import logging
@@ -29,7 +30,7 @@ import asyncpg  # noqa: E402
 import httpx  # noqa: E402
 from redis.asyncio import Redis  # noqa: E402
 from fastapi import FastAPI, Request, UploadFile, File  # noqa: E402
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse  # noqa: E402
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, Response  # noqa: E402
 import uvicorn  # noqa: E402
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -4344,6 +4345,7 @@ async def app_today(request: Request):
 CAL_NEXT_FRESH_SECONDS = 300
 CAL_NEXT_KEEP_SECONDS = 7 * 86400
 CAL_NEXT_TIMEOUT = 1.5
+CAL_NEXT_BACKOFF_SECONDS = 60
 
 
 def _cal_ended(ev, now):
@@ -4371,14 +4373,14 @@ def _pick_next_event(events, now):
     return None
 
 
-async def _cal_cache(op, key, value=None):
+async def _cal_cache(op, key, value=None, ex=CAL_NEXT_KEEP_SECONDS):
     try:
         r = redis_conn()
         try:
             if op == "get":
                 raw = await r.get(key)
                 return json.loads(raw) if raw else None
-            await r.set(key, json.dumps(value), ex=CAL_NEXT_KEEP_SECONDS)
+            await r.set(key, json.dumps(value), ex=ex)
         finally:
             await r.aclose()
     except Exception as e:
@@ -4386,15 +4388,11 @@ async def _cal_cache(op, key, value=None):
     return None
 
 
-@app.get("/api/app/v1/calendar/next")
-async def app_calendar_next(request: Request):
-    if not _app_auth_ok(request):
-        return _app_401()
-    try:
-        hours = int(request.query_params.get("within_hours") or 36)
-    except (TypeError, ValueError):
-        hours = 36
-    hours = max(1, min(hours, 168))
+async def _calendar_next(hours, backoff=False):
+    """{event, fetched_at, source} for the next not-ended event within `hours`. Shared by
+    /calendar/next and /home. Never waits on Google longer than CAL_NEXT_TIMEOUT. With backoff=True
+    (Ghost Home, polled on every resume) a failed Google fetch is not retried for
+    CAL_NEXT_BACKOFF_SECONDS, so a broken token can't add 1.5 s to every home call."""
     now = datetime.now(LOCAL_TZ)
     key = f"calendar_next:{hours}"
     cached = await _cal_cache("get", key)
@@ -4405,9 +4403,14 @@ async def app_calendar_next(request: Request):
             ev = None
         return {"event": ev, "fetched_at": cached.get("fetched_at"), "source": "cache"}
 
+    def degraded():
+        return from_cache() if cached else {"event": None, "fetched_at": None, "source": "unavailable"}
+
     try:
         if cached and now.timestamp() - float(cached.get("ts") or 0) < CAL_NEXT_FRESH_SECONDS:
             return from_cache()
+        if backoff and await _cal_cache("get", key + ":fail"):
+            return degraded()
         events = None
         try:
             events = await asyncio.wait_for(
@@ -4415,13 +4418,165 @@ async def app_calendar_next(request: Request):
         except Exception as e:
             logger.warning(f"calendar/next google fetch failed: {type(e).__name__}")
         if events is None:
-            return from_cache() if cached else {"event": None, "fetched_at": None, "source": "unavailable"}
+            if backoff:
+                await _cal_cache("set", key + ":fail", {"ts": now.timestamp()}, ex=CAL_NEXT_BACKOFF_SECONDS)
+            return degraded()
         out = {"event": _pick_next_event(events, now), "fetched_at": now.isoformat(), "source": "live"}
         await _cal_cache("set", key, {**out, "ts": now.timestamp()})
         return out
     except Exception as e:
         logger.error(f"calendar/next error: {type(e).__name__}")
         return {"event": None, "fetched_at": None, "source": "unavailable"}
+
+
+@app.get("/api/app/v1/calendar/next")
+async def app_calendar_next(request: Request):
+    if not _app_auth_ok(request):
+        return _app_401()
+    try:
+        hours = int(request.query_params.get("within_hours") or 36)
+    except (TypeError, ValueError):
+        hours = 36
+    return await _calendar_next(max(1, min(hours, 168)))
+
+
+# Ghost Home P2: one small cacheable payload for the app's home screen, plus a stateless "what
+# changed since" check. Metadata only (no notes, no chat, no encouragement text, no LLM). Every
+# value comes from the helpers /today and /calendar/next already use. The cursor is base64url JSON
+# {"v", "date", "h": {section: sha256(canonical JSON)[:16]}}; a valid same-v same-date cursor gets
+# only the sections whose hash changed (full=false). A returned section replaces the client's copy
+# whole, which is how deletions show. The ETag covers v, date and every section hash.
+HOME_V = 1
+HOME_TODO_LIMIT = 50
+HOME_CAL_HOURS = 36
+
+
+def _home_now():
+    return datetime.now(LOCAL_TZ)          # one seam, so tests can freeze the clock past midnight
+
+
+def _home_hash(obj):
+    raw = json.dumps(obj, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def _home_cursor_encode(cur):
+    raw = json.dumps(cur, sort_keys=True, separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def _home_cursor_decode(s):
+    """The cursor dict, or None for anything malformed (never raises)."""
+    try:
+        if not s or len(s) > 2048:
+            return None
+        cur = json.loads(base64.urlsafe_b64decode(s + "=" * (-len(s) % 4)))
+        if not isinstance(cur, dict) or not isinstance(cur.get("h"), dict):
+            return None
+        return cur
+    except Exception:
+        return None
+
+
+# Home is polled on every app resume, and opening a Postgres connection costs ~200 ms (the queries
+# themselves ~50 ms), so /home keeps ONE reused connection, serialised by a lock (single user).
+# A broken or closed connection is dropped and reopened; a stale reused one gets one retry.
+_HOME_CONN = None
+_HOME_LOCK = asyncio.Lock()
+
+
+async def _home_conn_reset():
+    global _HOME_CONN
+    c, _HOME_CONN = _HOME_CONN, None
+    if c is not None:
+        try:
+            await c.close()
+        except Exception:
+            pass
+
+
+async def _home_read(conn):
+    await native.ensure_schema(conn)
+    await _ensure_app_schema(conn)
+    habits = await native.list_habits(user_id=OWNER_ID, conn=conn)
+    todos_all = await native.list_todos(user_id=OWNER_ID, include_done=False, conn=conn)
+    created = {r["id"]: r["created_at"] for r in await conn.fetch(
+        "SELECT id, created_at FROM todos WHERE user_id=$1 AND NOT done AND NOT archived", OWNER_ID)}
+    return habits, todos_all, created, await _nutrition_today(conn)
+
+
+async def _home_db():
+    global _HOME_CONN
+    async with _HOME_LOCK:
+        for attempt in (0, 1):
+            reused = _HOME_CONN is not None and not _HOME_CONN.is_closed()
+            if not reused:
+                await _home_conn_reset()
+                _HOME_CONN = await pg_conn()
+            try:
+                return await _home_read(_HOME_CONN)
+            except (asyncpg.PostgresConnectionError, asyncpg.InterfaceError, ConnectionError, OSError):
+                await _home_conn_reset()
+                if not reused or attempt:
+                    raise
+            except BaseException:
+                await _home_conn_reset()
+                raise
+
+
+async def _home_sections(now):
+    cal_task = asyncio.ensure_future(_calendar_next(HOME_CAL_HOURS, backoff=True))
+    try:
+        habits, todos_all, created, nut = await _home_db()
+    except BaseException:
+        cal_task.cancel()
+        raise
+    cal = await cal_task
+    todos_in = [{**t, "created_at": created.get(t["id"])} for t in todos_all]
+    ordered = native.order_todos(todos_in, now, tz=LOCAL_TZ)
+    habits_due = [{
+        "id": h["id"], "name": h["name"], "field_type": h["field_type"], "done": bool(h["done_today"]),
+        "today_count": h.get("today_up", 0), "target_value": h.get("target_value"), "unit": h.get("unit"),
+    } for h in habits if h.get("due_today")]
+    todos = [{
+        "id": t["id"], "title": t.get("text") or "", "due_date": t.get("due_date"),
+        "due_time": t.get("due_time"), "priority": t.get("priority"),
+    } for t in ordered[:HOME_TODO_LIMIT]]
+    return {
+        "habits": habits_due,
+        "todos": todos,
+        "next_task": native.next_task(todos_in, now, tz=LOCAL_TZ),
+        "nutrition": {"calories_target": nut["calorie_target"], "eaten_calories": nut["eaten_calories"],
+                      "protein_target": nut["protein_target"], "eaten_protein": nut["eaten_protein"]},
+        "next_event": cal.get("event"),
+        "counts": {"open_todos": len(ordered), "habits_left": sum(1 for h in habits_due if not h["done"])},
+    }
+
+
+@app.get("/api/app/v1/home")
+async def app_home(request: Request):
+    if not _app_auth_ok(request):
+        return _app_401()
+    try:
+        now = _home_now()
+        sections = await _home_sections(now)
+        d = now.date().isoformat()
+        hashes = {k: _home_hash(v) for k, v in sections.items()}
+        etag = '"' + _home_hash({"v": HOME_V, "date": d, "h": hashes}) + '"'
+        headers = {"ETag": etag, "Cache-Control": "private, max-age=0"}
+        inm = request.headers.get("if-none-match") or ""
+        if etag in [x.strip().removeprefix("W/") for x in inm.split(",")]:
+            return Response(status_code=304, headers=headers)
+        since = _home_cursor_decode(request.query_params.get("since"))
+        full = not (since and since.get("v") == HOME_V and since.get("date") == d)
+        if not full:
+            sections = {k: v for k, v in sections.items() if since["h"].get(k) != hashes[k]}
+        return JSONResponse({"v": HOME_V, "generated_at": now.isoformat(), "date": d,
+                             "cursor": _home_cursor_encode({"v": HOME_V, "date": d, "h": hashes}),
+                             "full": full, "sections": sections}, headers=headers)
+    except Exception as e:
+        logger.error(f"/api/app/v1/home error: {type(e).__name__}")
+        return JSONResponse({"ok": False, "error": "home unavailable"}, status_code=500)
 
 
 @app.post("/api/app/v1/habits/{habit_id}/log")
