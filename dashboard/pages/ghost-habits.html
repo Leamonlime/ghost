@@ -1,11 +1,11 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-gos="habits">
 <head>
 <meta charset="UTF-8">
 <!-- S63: ghost-silhouette tab favicon (inline base64 SVG, no separate file/route). Consistent across all pages. -->
 <link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAzMiAzMic+PHBhdGggZD0nTTYgMTVhMTAgMTAgMCAwIDEgMjAgMHYxMC42bC0zLjM1LTIuMy0zLjMgMi4zLTMuMzUtMi4zLTMuMzUgMi4zLTMuMy0yLjNMNiAyNS42WicgZmlsbD0nbm9uZScgc3Ryb2tlPScjZWFiOGMwJyBzdHJva2Utd2lkdGg9JzEuNycgc3Ryb2tlLWxpbmVqb2luPSdyb3VuZCcvPjxjaXJjbGUgY3g9JzEyLjQnIGN5PScxNC42JyByPScxLjUnIGZpbGw9JyNlYWI4YzAnLz48Y2lyY2xlIGN4PScxOS42JyBjeT0nMTQuNicgcj0nMS41JyBmaWxsPScjZWFiOGMwJy8+PC9zdmc+">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ghost — Habits &amp; Todos</title>
+<title>Grimoire OS — Rituals &amp; Todos</title>
 <!-- Ghost 2.0 Phase 1 (native Habits & Todos). Built to the "Habits & Todos"
      artboard on the Ghost 2.0 Screens canvas, in the confirmed gothic-monochrome design
      system. Served live from the vault; data comes from the native.py-backed /api/habits,
@@ -16,7 +16,7 @@
 <!-- S83: PWA — installable as a home-screen app (this page only). Manifest + theme colour +
      home-screen icon. Service worker registered at the bottom of <body>. -->
 <link rel="manifest" href="/manifest.webmanifest">
-<meta name="theme-color" content="#150e14">
+<meta name="theme-color" content="#0b070e">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -149,6 +149,9 @@
   .streak-stat-label{font-size:8.5px;color:var(--ink-faint);text-transform:uppercase;font-variant:small-caps;letter-spacing:0.03em;margin-top:3px;}
   .stub-note{font-size:9px;color:var(--ink-faintest);text-align:center;font-style:italic;margin-top:2px;}
 </style>
+<!-- Grimoire OS: shared theme + shell. Loaded after the page's own <style> so it wins; same-origin only. -->
+<link rel="stylesheet" href="/assets/grimoire.css?v=1">
+<script src="/assets/grimoire.js?v=1"></script>
 </head>
 <body>
 
@@ -168,15 +171,15 @@
 
     <div class="panel section">
       <div class="section-head">
-        <div class="card-title">Today's Habits</div>
+        <div class="card-title">Ledger of Rituals<small>today's habits</small></div>
         <div style="display:flex;align-items:center;gap:8px;">
           <span class="section-sub" id="habitsSub"></span>
-          <button class="add-btn" onclick="toggleForm('habitForm')">+ New habit</button>
+          <button class="add-btn" onclick="toggleForm('habitForm')">+ Inscribe a ritual</button>
         </div>
       </div>
       <div id="habitsList" data-role="habits-list"><div class="empty">Loading…</div></div>
       <div class="create-form" id="habitForm">
-        <input type="text" id="hName" placeholder="Habit name">
+        <input type="text" id="hName" placeholder="Name the ritual (habit)">
         <select id="hField">
           <option value="tickbox">tickbox</option>
           <option value="positive">positive</option>
@@ -204,15 +207,15 @@
 
     <div class="panel section">
       <div class="section-head">
-        <div class="card-title">Todos</div>
+        <div class="card-title">The Grimoire<small>todos</small></div>
         <div style="display:flex;align-items:center;gap:8px;">
           <span class="section-sub" id="todosSub"></span>
-          <button class="add-btn" onclick="toggleForm('todoForm')">+ New todo</button>
+          <button class="add-btn" onclick="toggleForm('todoForm')">+ Write an entry</button>
         </div>
       </div>
       <div id="todosList" data-role="todos-list"><div class="empty">Loading…</div></div>
       <div class="create-form" id="todoForm">
-        <input type="text" id="tText" placeholder="Todo text">
+        <input type="text" id="tText" placeholder="Write the entry (todo)">
         <select id="tPriority"><option value="med">Med</option><option value="high">High</option><option value="low">Low</option></select>
         <input type="date" id="tDue">
         <button class="go" id="tGo" onclick="createTodo()">Add</button>

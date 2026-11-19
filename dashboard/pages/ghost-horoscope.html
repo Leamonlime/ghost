@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-gos="horoscope">
 <head>
 <meta charset="UTF-8">
 <!-- S63: ghost-silhouette tab favicon (inline base64 SVG, no separate file/route). Consistent across all pages. -->
@@ -145,6 +145,9 @@
   .sign-depth-card .line b { color:#d9c3ff; }
   .sign-depth-card .rolenote { font-size:10px; color:#8a72ad; line-height:1.5; margin-top:6px; }
 </style>
+<!-- Grimoire OS: shared theme + shell. Loaded after the page's own <style> so it wins; same-origin only. -->
+<link rel="stylesheet" href="/assets/grimoire.css?v=1">
+<script src="/assets/grimoire.js?v=1"></script>
 </head>
 <body>
 
@@ -161,7 +164,7 @@
 <div class="wrap">
 
   <div class="intro panel">
-    <h1>Horoscope</h1>
+    <h1>The Stars</h1>
     <p>Sun, Moon, and Rising positions calculated live in your browser from real orbital mechanics — no external astrology API, so it works for any date and never goes stale. Nothing about your birth details is written into this file; your profile lives only in this browser's local storage.</p>
   </div>
 
@@ -234,7 +237,7 @@
     <h2 id="modalTitle">Add a profile</h2>
     <div class="field">
       <label>Name</label>
-      <input type="text" id="fName" placeholder="e.g. Lea">
+      <input type="text" id="fName" placeholder="e.g. your name">
     </div>
     <div class="field-row">
       <div class="field">

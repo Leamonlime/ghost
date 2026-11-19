@@ -1,0 +1,785 @@
+/* ==========================================================================
+   GRIMOIRE OS — shared theme for the five Ghost dashboard pages.
+   Loaded AFTER each page's own <style>, so equal-specificity rules here win.
+   Styling only: no rule here hides data or disables a control.
+   No external requests: system fonts, CSS gradients and inline SVG only.
+   Page scoping: <html data-gos="dashboard|habits|bills|tarot|horoscope">.
+   Mode classes set by grimoire.js on <html>:
+     .gos        script loaded          .gos-desk   draggable-window desktop
+     .gos-stack  stacked cards (phone)  .gos-booting boot sequence showing
+   ========================================================================== */
+
+:root {
+  /* night */
+  --gos-void:   #050307;
+  --gos-night:  #0b070e;
+  --gos-pitch:  #110c15;
+  --gos-panel:  #130e18;
+  /* blood */
+  --gos-wine:   #4a0f20;
+  --gos-blood:  #7d1a31;
+  --gos-rose:   #cf5a72;
+  /* bone + ash */
+  --gos-bone:   #ebe3d7;
+  --gos-ash:    #a89ea3;
+  --gos-smoke:  #74697a;
+  --gos-soot:   #3d3442;
+  /* metal */
+  --gos-gold:   #c9a86a;
+  --gos-gold-2: #8d7548;
+  --gos-silver: #c9ccd9;
+  --gos-amethyst: #c0a5e2;
+  /* signals */
+  --gos-ok:     #86b89f;
+  --gos-warn:   #d6a85e;
+  --gos-alert:  #d4596f;
+
+  --gos-line:   rgba(201,168,106,0.22);
+  --gos-line-2: rgba(235,227,215,0.09);
+  --gos-bar-h:  46px;
+
+  --gos-display: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", "URW Palladio L", P052, Georgia, "Times New Roman", serif;
+  --gos-mono: ui-monospace, "SF Mono", "Cascadia Mono", "DejaVu Sans Mono", Menlo, Consolas, monospace;
+  --gos-accent: var(--gos-gold);
+
+  /* remap the existing shared tokens (ghost-common.css) onto the new palette */
+  --gc-ink: var(--gos-bone);
+  --gc-ink-dim: var(--gos-ash);
+  --gc-ink-faint: var(--gos-smoke);
+  --gc-panel-bg: rgba(15,10,19,0.72);
+  --gc-panel-border: var(--gos-line);
+  --gc-hairline: var(--gos-line-2);
+  --gc-radius: 2px;
+  --gc-serif: var(--gos-display);
+  --ghost-title: var(--gos-gold);
+  --bills-title: var(--gos-silver);
+  --witchy-title: var(--gos-amethyst);
+  --accent: var(--gos-gold);
+
+  /* habits page's own tokens */
+  --ink: var(--gos-bone); --ink-dim: var(--gos-ash); --ink-faint: var(--gos-smoke); --ink-faintest: #5a4f60;
+  --accent-soft: rgba(201,168,106,0.13);
+  --ok: var(--gos-ok); --warn: var(--gos-warn); --alert: var(--gos-alert);
+  --border: var(--gos-line); --border-2: var(--gos-line-2);
+}
+html[data-gos="bills"]     { --gos-accent: var(--gos-silver); }
+html[data-gos="tarot"],
+html[data-gos="horoscope"] { --gos-accent: var(--gos-amethyst); }
+
+/* ---------- base ---------- */
+html { background: var(--gos-void); color-scheme: dark; }
+body {
+  background:
+    radial-gradient(1100px 620px at 50% -12%, rgba(125,26,49,0.36), transparent 62%),
+    radial-gradient(820px 560px at 104% 104%, rgba(74,40,110,0.20), transparent 60%),
+    radial-gradient(700px 500px at -6% 96%, rgba(74,15,32,0.28), transparent 62%),
+    linear-gradient(#0b070e, #050307) fixed !important;
+  color: var(--gos-bone);
+  -webkit-font-smoothing: antialiased;
+}
+html.gos body::after { display: none; }              /* the wallpaper sigil replaces the old watermark */
+::selection { background: rgba(125,26,49,0.75); color: #fff; }
+* { scrollbar-width: thin; scrollbar-color: rgba(201,168,106,0.32) transparent; }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-thumb { background: rgba(201,168,106,0.28); border-radius: 0; }
+::-webkit-scrollbar-track { background: transparent; }
+:focus-visible { outline: 1px solid var(--gos-gold); outline-offset: 2px; }
+a { color: inherit; }
+
+/* wallpaper: ritual circle behind everything (inserted by grimoire.js) */
+.gos-wallpaper { position: fixed; inset: 0; z-index: -1; pointer-events: none; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+.gos-wallpaper svg { width: min(118vmin, 1180px); height: min(118vmin, 1180px); flex: none; opacity: 0.13; animation: gos-turn 420s linear infinite; }
+.gos-sigil { fill: none; stroke: var(--gos-gold); stroke-width: 1; }
+.gos-sigil .thin { stroke-width: 0.5; }
+.gos-sigil .blood { stroke: var(--gos-rose); }
+.gos-sigil text { fill: var(--gos-gold); stroke: none; font-family: var(--gos-display); font-size: 15px; letter-spacing: 0.42em; }
+.gos-sigil .fillg { fill: var(--gos-gold); stroke: none; }
+@keyframes gos-turn { to { transform: rotate(360deg); } }
+
+/* ---------- shared components ---------- */
+.panel {
+  background: linear-gradient(180deg, rgba(22,15,27,0.86), rgba(11,7,14,0.86));
+  border: 1px solid var(--gos-line);
+  border-radius: 2px;
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.55), inset 0 1px 0 rgba(235,227,215,0.04);
+}
+.card-title, h1, h2, h3 { font-family: var(--gos-display); }
+.card-title small, .gos-plain { font-family: var(--gos-mono); font-variant: normal; text-transform: none; font-size: 0.72em; letter-spacing: 0.04em; color: var(--gos-smoke); margin-left: 8px; font-weight: 400; }
+
+.btn, .add-btn, .mini-btn, .spread-btn, .gc-btn-outline, .revfilter, .head a.back {
+  font-family: var(--gos-display); font-variant: small-caps; letter-spacing: 0.08em;
+  color: var(--gos-bone); background: transparent;
+  border: 1px solid rgba(201,168,106,0.38); border-radius: 2px;
+  transition: background .18s, border-color .18s, color .18s;
+}
+.btn:hover, .add-btn:hover, .mini-btn:hover, .spread-btn:hover, .revfilter:hover, .head a.back:hover {
+  background: rgba(201,168,106,0.12); border-color: var(--gos-gold); color: #fff;
+}
+.btn.primary, .draw-btn, .create-form .go, .gc-btn {
+  font-family: var(--gos-display); font-variant: small-caps; letter-spacing: 0.1em;
+  background: linear-gradient(180deg, #8e2039, #5a1226); color: var(--gos-bone);
+  border: 1px solid rgba(207,90,114,0.55); border-radius: 2px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.10), 0 2px 10px rgba(0,0,0,0.45);
+}
+.btn.primary:hover, .draw-btn:hover, .create-form .go:hover { background: linear-gradient(180deg, #a52846, #6a1730); color: #fff; }
+.mini-btn.del:hover { background: rgba(212,89,111,0.22); border-color: var(--gos-alert); }
+
+input, select, textarea {
+  background: rgba(5,3,7,0.6); color: var(--gos-bone);
+  border: 1px solid rgba(235,227,215,0.14); border-radius: 2px;
+}
+input:focus, select:focus, textarea:focus { border-color: var(--gos-gold); outline: none; }
+input::placeholder, textarea::placeholder { color: var(--gos-smoke); font-style: italic; }
+select option { background: #110c15; color: var(--gos-bone); }
+input[type=checkbox] { accent-color: var(--gos-gold); }
+
+/* ---------- boot sequence ---------- */
+html.gos-preboot body { visibility: hidden; }
+.gos-boot {
+  position: fixed; inset: 0; z-index: 10000; cursor: pointer;
+  background: radial-gradient(900px 600px at 50% 40%, #1a0a12, #050307 70%);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px;
+  transition: opacity .55s ease, visibility .55s;
+  padding: 24px;
+}
+.gos-boot.gos-out { opacity: 0; visibility: hidden; }
+.gos-boot svg { width: min(46vmin, 330px); height: min(46vmin, 330px); }
+.gos-boot .gos-sigil { stroke-width: 1.4; }
+.gos-boot .gos-sigil .draw { stroke-dasharray: 1; stroke-dashoffset: 1; animation: gos-draw 1.7s cubic-bezier(.6,.1,.2,1) forwards; }
+.gos-boot .gos-sigil .draw.d2 { animation-delay: .25s; } .gos-boot .gos-sigil .draw.d3 { animation-delay: .5s; }
+.gos-boot .gos-sigil .draw.d4 { animation-delay: .75s; }
+.gos-boot .gos-sigil text { opacity: 0; animation: gos-fade .5s ease forwards; font-size: 15px; }
+.gos-boot .gos-sigil .core { opacity: 0; animation: gos-fade .8s 1.5s ease forwards; }
+@keyframes gos-draw { to { stroke-dashoffset: 0; } }
+@keyframes gos-fade { to { opacity: 1; } }
+.gos-boot-name { font-family: var(--gos-display); font-variant: small-caps; letter-spacing: 0.5em; font-size: clamp(18px, 3.4vw, 30px); color: var(--gos-bone); text-indent: 0.5em; text-shadow: 0 0 28px rgba(207,90,114,0.45); }
+.gos-boot-log { font-family: var(--gos-mono); font-size: 11.5px; line-height: 1.75; color: var(--gos-ash); min-height: 8.8em; width: min(92vw, 420px); }
+.gos-boot-log div { opacity: 0; transform: translateY(3px); animation: gos-line .28s ease forwards; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gos-boot-log div b { color: var(--gos-gold); font-weight: 400; }
+.gos-boot-log div.v { color: var(--gos-bone); letter-spacing: 0.08em; white-space: normal; }
+@keyframes gos-line { to { opacity: 1; transform: none; } }
+.gos-boot-skip { font-family: var(--gos-display); font-variant: small-caps; letter-spacing: 0.3em; font-size: 11px; color: var(--gos-smoke); animation: gos-pulse 1.8s ease-in-out infinite; }
+@keyframes gos-pulse { 50% { color: var(--gos-gold); } }
+
+/* ---------- taskbar ---------- */
+.gos-taskbar {
+  position: fixed; left: 0; right: 0; bottom: 0; height: var(--gos-bar-h); z-index: 9000;
+  display: flex; align-items: stretch; gap: 2px; padding: 0 6px;
+  background: linear-gradient(180deg, rgba(24,14,24,0.96), rgba(7,4,9,0.98));
+  border-top: 1px solid rgba(201,168,106,0.34);
+  box-shadow: 0 -1px 0 rgba(0,0,0,0.8), 0 -14px 40px rgba(0,0,0,0.55);
+  font-family: var(--gos-display);
+  padding-bottom: env(safe-area-inset-bottom, 0);
+  box-sizing: content-box;
+}
+.gos-taskbar svg { width: 17px; height: 17px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
+.gos-start {
+  all: unset; box-sizing: border-box; cursor: pointer; display: flex; align-items: center; gap: 8px; padding: 0 12px 0 8px; margin: 5px 6px 5px 0;
+  color: var(--gos-gold); border: 1px solid rgba(201,168,106,0.4); border-radius: 2px;
+  background: linear-gradient(180deg, rgba(125,26,49,0.55), rgba(74,15,32,0.35));
+  font-variant: small-caps; letter-spacing: 0.16em; font-size: 12px; position: relative;
+}
+.gos-start:hover, .gos-start[aria-expanded="true"] { color: #fff; border-color: var(--gos-gold); }
+.gos-start svg { width: 20px; height: 20px; }
+.gos-start .gos-badge { position: absolute; top: -5px; right: -5px; min-width: 15px; height: 15px; border-radius: 8px; background: var(--gos-alert); color: #fff; font: 600 9px/15px var(--gos-mono); text-align: center; padding: 0 3px; display: none; }
+.gos-apps { display: flex; align-items: stretch; gap: 1px; }
+.gos-app-link {
+  display: flex; align-items: center; gap: 7px; padding: 0 11px; color: var(--gos-ash); text-decoration: none;
+  font-variant: small-caps; letter-spacing: 0.1em; font-size: 12px; position: relative; white-space: nowrap;
+  transition: color .18s, background .18s;
+}
+.gos-app-link:hover { color: var(--gos-bone); background: rgba(235,227,215,0.05); }
+.gos-app-link.on { color: var(--gos-bone); background: linear-gradient(180deg, rgba(201,168,106,0.0), rgba(201,168,106,0.10)); }
+.gos-app-link.on::after { content: ""; position: absolute; left: 10px; right: 10px; bottom: 0; height: 2px; background: var(--gos-gold); box-shadow: 0 0 10px var(--gos-gold); }
+.gos-app-link.on svg { color: var(--gos-gold); }
+.gos-tray { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 5px; padding: 0 8px; overflow-x: auto; scrollbar-width: none; }
+.gos-tray::-webkit-scrollbar { display: none; }
+.gos-chip {
+  all: unset; box-sizing: border-box; cursor: pointer; flex: none; padding: 4px 10px; font: 11px var(--gos-display); font-variant: small-caps; letter-spacing: 0.08em;
+  color: var(--gos-ash); border: 1px dashed rgba(201,168,106,0.35); border-radius: 2px; white-space: nowrap;
+}
+.gos-chip:hover { color: var(--gos-bone); border-style: solid; border-color: var(--gos-gold); }
+.gos-status { display: flex; align-items: center; gap: 14px; padding: 0 8px 0 10px; border-left: 1px solid var(--gos-line-2); }
+.gos-moon { display: flex; align-items: center; gap: 8px; color: var(--gos-silver); font-size: 11px; font-variant: small-caps; letter-spacing: 0.08em; white-space: nowrap; }
+.gos-moon svg { width: 20px; height: 20px; stroke: none; filter: drop-shadow(0 0 5px rgba(201,204,217,0.45)); }
+.gos-clock { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.15; white-space: nowrap; }
+.gos-clock b { font: 500 13px var(--gos-mono); color: var(--gos-bone); letter-spacing: 0.06em; }
+.gos-clock i { font-style: normal; font-size: 9.5px; color: var(--gos-smoke); font-variant: small-caps; letter-spacing: 0.1em; }
+
+/* start menu */
+.gos-menu {
+  position: fixed; left: 6px; bottom: calc(var(--gos-bar-h) + 8px + env(safe-area-inset-bottom, 0px)); z-index: 9100; width: min(300px, calc(100vw - 12px));
+  max-height: calc(100vh - var(--gos-bar-h) - 30px); overflow-y: auto;
+  background: linear-gradient(180deg, #1a101c, #0a060d); border: 1px solid rgba(201,168,106,0.45); border-radius: 2px;
+  box-shadow: 0 24px 70px rgba(0,0,0,0.75), inset 0 0 0 1px rgba(0,0,0,0.6);
+  padding: 12px; display: none; font-family: var(--gos-display);
+}
+.gos-menu.open { display: block; animation: gos-rise .18s ease; }
+@keyframes gos-rise { from { opacity: 0; transform: translateY(8px); } }
+.gos-menu h4 { font-variant: small-caps; letter-spacing: 0.3em; font-size: 13px; color: var(--gos-gold); font-weight: 400; margin: 0 0 2px; }
+.gos-menu .gos-menu-sub { font: 10px var(--gos-mono); color: var(--gos-smoke); margin-bottom: 10px; }
+.gos-menu .gos-sep { height: 1px; background: var(--gos-line-2); margin: 8px 0; }
+.gos-menu-label { font-size: 9.5px; font-variant: small-caps; letter-spacing: 0.18em; color: var(--gos-smoke); margin: 4px 0; }
+.gos-menu button {
+  all: unset; box-sizing: border-box; cursor: pointer; display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 8px; font-size: 12.5px;
+  color: var(--gos-ash); font-variant: small-caps; letter-spacing: 0.07em; border-radius: 2px;
+}
+.gos-menu button:hover { background: rgba(201,168,106,0.10); color: var(--gos-bone); }
+.gos-menu button .st { margin-left: auto; font: 9.5px var(--gos-mono); color: var(--gos-smoke); font-variant: normal; letter-spacing: 0; }
+.gos-menu button .dot { width: 7px; height: 7px; transform: rotate(45deg); border: 1px solid var(--gos-gold); flex: none; }
+.gos-menu button.is-open .dot { background: var(--gos-gold); }
+.gos-menu button.is-closed { color: var(--gos-smoke); }
+
+/* ---------- windows ---------- */
+.gos-window {
+  position: relative; display: flex; flex-direction: column; min-width: 0;
+  background: linear-gradient(180deg, rgba(23,16,28,0.95), rgba(10,6,13,0.96));
+  border: 1px solid rgba(201,168,106,0.30); border-radius: 2px;
+  box-shadow: 0 12px 34px rgba(0,0,0,0.55), inset 0 0 0 1px rgba(0,0,0,0.6), inset 0 0 0 2px rgba(201,168,106,0.05);
+}
+.gos-window::before, .gos-window::after {          /* brass corner brackets */
+  content: ""; position: absolute; width: 9px; height: 9px; pointer-events: none; z-index: 3; border: 1px solid var(--gos-gold); opacity: 0.8;
+}
+.gos-window::before { left: -1px; top: -1px; border-right: 0; border-bottom: 0; }
+.gos-window::after  { right: -1px; bottom: -1px; border-left: 0; border-top: 0; }
+.gos-window.gos-focus { border-color: rgba(201,168,106,0.6); box-shadow: 0 26px 64px rgba(0,0,0,0.7), 0 0 0 1px rgba(201,168,106,0.12), inset 0 0 0 1px rgba(0,0,0,0.6); }
+.gos-window.gos-flash { animation: gos-flash .9s ease; }
+@keyframes gos-flash { 0%, 60% { border-color: var(--gos-gold); box-shadow: 0 0 0 1px var(--gos-gold), 0 0 46px rgba(201,168,106,0.35); } }
+
+.gos-titlebar {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 9px; min-height: 30px; padding: 0 6px 0 10px;
+  background: linear-gradient(90deg, rgba(125,26,49,0.62), rgba(74,15,32,0.22) 46%, rgba(20,13,24,0.1));
+  border-bottom: 1px solid rgba(201,168,106,0.24);
+  user-select: none; -webkit-user-select: none; touch-action: manipulation;
+}
+html.gos-desk .gos-window:not(.gos-app) > .gos-titlebar { cursor: grab; }
+html.gos-desk .gos-window.gos-drag > .gos-titlebar { cursor: grabbing; }
+.gos-window:not(.gos-focus) > .gos-titlebar { background: linear-gradient(90deg, rgba(74,15,32,0.42), rgba(20,13,24,0.1) 60%); }
+.gos-glyph { color: var(--gos-gold); font-size: 12px; flex: none; width: 14px; text-align: center; filter: grayscale(1) sepia(0.7); }
+.gos-titlebar > .card-title, .gos-titlebar > .gos-wintitle {
+  flex: 1 1 auto; min-width: 0; margin: 0; display: flex; align-items: baseline; gap: 4px; justify-content: flex-start;
+  font-family: var(--gos-display); font-variant: small-caps; text-transform: none; letter-spacing: 0.12em; font-size: 13px; font-weight: 500; color: var(--gos-bone);
+  flex-wrap: wrap; padding: 5px 0; line-height: 1.25; white-space: nowrap;
+}
+/* live values that sit in a title (totals, counts, dates) are never truncated: they wrap to a second line instead */
+.gos-titlebar > .card-title > span, .gos-titlebar > .card-title > .count { margin-left: auto !important; font-family: var(--gos-mono) !important; font-variant: normal; letter-spacing: 0.02em; font-size: 10px !important; color: var(--gos-ash) !important; flex: 0 0 auto; white-space: nowrap; }
+.gos-titlebar { container-type: inline-size; }
+.gos-titlebar > .card-title > small { flex: 0 0 auto; white-space: nowrap; }
+@container (max-width: 330px) { .gos-titlebar > .card-title > small { display: none; } }
+.gos-winbtns { display: flex; gap: 2px; flex: none; }
+.gos-winbtn {
+  all: unset; box-sizing: border-box; cursor: pointer; width: 26px; height: 24px; display: flex; align-items: center; justify-content: center;
+  color: var(--gos-ash); font: 13px/1 var(--gos-mono); border: 1px solid transparent; border-radius: 2px; text-decoration: none;
+}
+.gos-winbtn:hover { color: var(--gos-bone); border-color: rgba(201,168,106,0.5); background: rgba(0,0,0,0.3); }
+.gos-winbtn.gos-close:hover { color: #fff; border-color: var(--gos-alert); background: rgba(125,26,49,0.7); }
+.gos-winbody { flex: 1 1 auto; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+.gos-window.gos-closed { display: none !important; }
+
+/* desktop (draggable) mode */
+html.gos-desk .gos-window:not(.gos-app) { position: absolute; resize: both; overflow: hidden; min-width: 150px; min-height: 96px; }
+html.gos-desk .gos-window:not(.gos-app) > .gos-winbody { overflow: auto; }
+html.gos-desk .gos-window.gos-min { display: none; }
+html.gos-desk .gos-window.gos-max { left: 0 !important; top: 0 !important; width: 100% !important; height: 100% !important; z-index: 800 !important; resize: none; }
+html.gos-desk.gos-entered .gos-window:not(.gos-app) { animation: gos-open .5s cubic-bezier(.2,.8,.2,1) both; animation-delay: calc(var(--gos-i, 0) * 45ms); }
+@keyframes gos-open { from { opacity: 0; transform: translateY(14px) scale(0.985); } }
+/* stacked (phone) mode */
+html.gos-stack .gos-window.gos-min > .gos-winbody { display: none; }
+html.gos-stack .gos-window.gos-min { opacity: 0.85; }
+
+/* app window (Habits / Bills / Tarot / Horoscope): one maximised window in normal flow */
+.gos-window.gos-app { max-width: 1240px; margin: 14px auto 0; }
+.gos-window.gos-app > .gos-titlebar { position: sticky; top: 0; z-index: 40; min-height: 34px; background: linear-gradient(90deg, #5d1529, #2a0f1c 46%, #17101c); }
+.gos-window.gos-app > .gos-winbody { display: block; padding: 4px 0 18px; }
+html[data-gos]:not([data-gos="dashboard"]) body { padding: 0 10px calc(var(--gos-bar-h) + 30px) !important; }
+
+/* modals + overlays sit above the taskbar */
+.modal-bg, .modal-backdrop, .chat-overlay { z-index: 9500 !important; background: rgba(5,3,7,0.78) !important; }
+.modal { background: linear-gradient(180deg, #1a111d, #0b070e) !important; border: 1px solid rgba(201,168,106,0.5) !important; box-shadow: 0 30px 90px rgba(0,0,0,0.8); }
+.modal h2 { font-family: var(--gos-display); font-variant: small-caps; letter-spacing: 0.16em; font-size: 16px !important; color: var(--gos-gold) !important; font-weight: 500; }
+
+@media (prefers-reduced-motion: reduce) {
+  .gos-wallpaper svg, .gos-boot-skip, .presence-orb, .wave span, .mini-wave span { animation: none !important; }
+  .gos-window, .gos-menu { animation: none !important; }
+  .gos-boot .gos-sigil .draw { animation-duration: .01s; animation-delay: 0s !important; }
+}
+
+/* ==========================================================================
+   COMMAND CENTER
+   ========================================================================== */
+html[data-gos="dashboard"] body { color: var(--gos-bone); }
+html.gos[data-gos="dashboard"] .app { height: calc(100vh - var(--gos-bar-h)); height: calc(100dvh - var(--gos-bar-h)); }
+
+/* index spine (the old sidebar) */
+[data-gos="dashboard"] .sidebar { width: 198px; border-right: 1px solid var(--gos-line); background: linear-gradient(180deg, rgba(20,12,22,0.9), rgba(7,4,9,0.9)); box-shadow: none; }
+[data-gos="dashboard"] .brand-mark { filter: sepia(1) saturate(1.6) hue-rotate(-8deg) brightness(1.15); }
+[data-gos="dashboard"] .brand-text b { font-size: 15px; letter-spacing: 0.26em; color: var(--gos-bone); text-shadow: 0 0 18px rgba(207,90,114,0.5); }
+[data-gos="dashboard"] .brand-text span { color: var(--gos-gold-2); letter-spacing: 0.2em; font-family: var(--gos-display); font-variant: small-caps; font-size: 9px; }
+[data-gos="dashboard"] .nav-list { counter-reset: gosnav; gap: 0; }
+[data-gos="dashboard"] .nav-item {
+  counter-increment: gosnav; border-radius: 0; color: var(--gos-ash); font-family: var(--gos-display); font-variant: small-caps; letter-spacing: 0.05em; font-size: 12px;
+  padding: 6px 8px; border-left: 1px solid transparent; text-decoration: none; transition: color .15s, background .15s, border-color .15s; white-space: nowrap;
+}
+[data-gos="dashboard"] .nav-item::before { content: counter(gosnav, upper-roman); order: -1; width: 24px; flex: none; font: 9px var(--gos-mono); color: var(--gos-smoke); letter-spacing: 0; text-align: right; padding-right: 2px; }
+[data-gos="dashboard"] .nav-item .ic { color: var(--gos-gold-2); filter: grayscale(1) sepia(0.6); }
+[data-gos="dashboard"] .nav-item:hover { color: var(--gos-bone); background: rgba(201,168,106,0.06); }
+[data-gos="dashboard"] .nav-item.active { background: linear-gradient(90deg, rgba(125,26,49,0.5), transparent); color: var(--gos-bone); border-left-color: var(--gos-gold); }
+[data-gos="dashboard"] .nav-item .count { color: var(--gos-gold); font: 10px var(--gos-mono); }
+[data-gos="dashboard"] .nav-list > div[style*="height:1px"] { background: var(--gos-line) !important; }
+[data-gos="dashboard"] .presence .lbl { color: var(--gos-gold-2); font-family: var(--gos-display); font-variant: small-caps; letter-spacing: 0.24em; font-size: 10px; text-transform: none; }
+[data-gos="dashboard"] .presence-orb {           /* the familiar's eye */
+  width: 44px; height: 24px; border-radius: 50% / 100%; margin-bottom: 8px;
+  background: radial-gradient(ellipse 22% 92% at 50% 50%, #050307 0 60%, transparent 62%), radial-gradient(circle at 50% 50%, #f1d9a0, #c9a86a 38%, #7d1a31 78%, #2a0a14);
+  box-shadow: 0 0 20px rgba(201,168,106,0.5), inset 0 0 8px rgba(0,0,0,0.7);
+  animation: gos-blink 7s ease-in-out infinite;
+}
+@keyframes gos-blink { 0%, 44%, 50%, 100% { transform: scaleY(1); } 47% { transform: scaleY(0.08); } }
+[data-gos="dashboard"] .wave span { background: var(--gos-gold); width: 1.5px; }
+[data-gos="dashboard"] .presence .status-txt { color: var(--gos-ash); font-family: var(--gos-display); font-style: italic; font-size: 11px; }
+[data-gos="dashboard"] .quiet-btn { border-radius: 2px; color: var(--gos-ash); background: rgba(0,0,0,0.3); border: 1px solid var(--gos-line); font-family: var(--gos-display); font-variant: small-caps; letter-spacing: 0.12em; font-size: 11px; }
+
+/* menu bar (the old topbar) */
+[data-gos="dashboard"] .main-col { padding: 8px 10px 6px; gap: 8px; }
+[data-gos="dashboard"] .status-pill { color: var(--gos-ash); font: 10px var(--gos-mono); letter-spacing: 0.12em; }
+[data-gos="dashboard"] .status-pill .dot { background: var(--gos-ok); box-shadow: 0 0 8px var(--gos-ok); border-radius: 0; transform: rotate(45deg); }
+[data-gos="dashboard"] .status-pill .dot.err { background: var(--gos-alert); box-shadow: 0 0 8px var(--gos-alert); }
+[data-gos="dashboard"] .clock .d { color: var(--gos-smoke); font-family: var(--gos-display); font-variant: small-caps; letter-spacing: 0.1em; }
+[data-gos="dashboard"] .clock .t { color: var(--gos-gold); font-family: var(--gos-mono); }
+[data-gos="dashboard"] .search-box { color: var(--gos-bone) !important; font-size: 12px; border: 1px solid var(--gos-line) !important; min-width: 120px; }
+[data-gos="dashboard"] .icon-btn { border-radius: 2px; color: var(--gos-ash); cursor: pointer; filter: grayscale(1) sepia(0.55); transition: color .15s, border-color .15s; }
+[data-gos="dashboard"] .icon-btn:hover { color: var(--gos-bone); border-color: var(--gos-gold); }
+[data-gos="dashboard"] .bell-badge { background: var(--gos-alert); }
+[data-gos="dashboard"] .profile .av { border-radius: 2px; transform: rotate(45deg) scale(0.74); background: linear-gradient(135deg, var(--gos-gold), var(--gos-blood)); }
+[data-gos="dashboard"] .profile .name { color: var(--gos-bone); font-family: var(--gos-display); font-variant: small-caps; letter-spacing: 0.12em; font-size: 12px; }
+[data-gos="dashboard"] .profile .role { color: var(--gos-smoke); letter-spacing: 0.1em; }
+
+/* the desk */
+html.gos-desk[data-gos="dashboard"] .content { display: block; position: relative; overflow: hidden; }
+html.gos-desk[data-gos="dashboard"] .row1, html.gos-desk[data-gos="dashboard"] .row2,
+html.gos-desk[data-gos="dashboard"] .row3, html.gos-desk[data-gos="dashboard"] .row4 { display: block; min-height: 0; height: 0; }
+[data-gos="dashboard"] .gos-winbody > .card { flex: 1 1 auto; min-height: 0; background: none; border: 0; box-shadow: none; padding: 9px 12px 10px; }
+html.gos-desk[data-gos="dashboard"] #cardOverview { min-height: 0; }
+html.gos-desk[data-gos="dashboard"] #cardTimeline .scroll-list,
+html.gos-desk[data-gos="dashboard"] #foodList { max-height: none !important; }
+
+/* stacked layout (phone, tablet, touch) */
+html.gos-stack[data-gos="dashboard"], html.gos-stack[data-gos="dashboard"] body { height: auto; overflow: auto; }
+html.gos-stack[data-gos="dashboard"] body { padding-bottom: calc(var(--gos-bar-h) + 18px + env(safe-area-inset-bottom, 0px)); }
+html.gos-stack[data-gos="dashboard"] .app { height: auto; flex-direction: column; }
+html.gos-stack[data-gos="dashboard"] .sidebar { width: 100%; flex-direction: row; flex-wrap: wrap; align-items: center; border-right: 0; border-bottom: 1px solid var(--gos-line); padding: 10px; gap: 10px; }
+html.gos-stack[data-gos="dashboard"] .nav-list { flex: 1 1 100%; order: 3; flex-direction: row; overflow-x: auto; overflow-y: hidden; gap: 4px; padding-bottom: 4px; scrollbar-width: none; }
+html.gos-stack[data-gos="dashboard"] .nav-list::-webkit-scrollbar { display: none; }
+html.gos-stack[data-gos="dashboard"] .nav-item { flex: none; border: 1px solid var(--gos-line-2); border-left: 1px solid var(--gos-line-2); padding: 7px 10px; font-size: 13px; }
+html.gos-stack[data-gos="dashboard"] .nav-item::before { display: none; }
+html.gos-stack[data-gos="dashboard"] .nav-list > div[style*="height:1px"] { display: none; }
+html.gos-stack[data-gos="dashboard"] .brand { flex: 1 1 auto; }
+html.gos-stack[data-gos="dashboard"] .presence { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: none; border: 0; box-shadow: none; }
+html.gos-stack[data-gos="dashboard"] .presence .lbl, html.gos-stack[data-gos="dashboard"] .presence .wave { display: none; }
+html.gos-stack[data-gos="dashboard"] .presence-orb { margin: 0; width: 34px; height: 18px; }
+html.gos-stack[data-gos="dashboard"] .quiet-btn { margin: 0; padding: 6px 10px; }
+html.gos-stack[data-gos="dashboard"] .topbar { flex-wrap: wrap; gap: 8px; }
+html.gos-stack[data-gos="dashboard"] .search-box { order: 9; flex: 1 1 100%; padding: 10px 12px; font-size: 14px; }
+html.gos-stack[data-gos="dashboard"] .status-pill { flex: 1 1 auto; }
+html.gos-stack[data-gos="dashboard"] .icon-btn { width: 38px; height: 38px; font-size: 14px; }
+html.gos-stack[data-gos="dashboard"] .content { display: block; }
+html.gos-stack[data-gos="dashboard"] .row1, html.gos-stack[data-gos="dashboard"] .row2,
+html.gos-stack[data-gos="dashboard"] .row3, html.gos-stack[data-gos="dashboard"] .row4 { display: grid; grid-template-columns: 1fr; gap: 10px; margin-bottom: 10px; }
+html.gos-stack[data-gos="dashboard"] .scroll-list { max-height: 46vh; }
+html.gos-stack[data-gos="dashboard"] .gos-titlebar { min-height: 38px; }
+html.gos-stack[data-gos="dashboard"] .gos-winbtn { width: 36px; height: 34px; }
+html.gos-stack[data-gos="dashboard"] .habit-row, html.gos-stack[data-gos="dashboard"] .todo-row { font-size: 14px; padding: 8px 0 8px 30px; }
+html.gos-stack[data-gos="dashboard"] .mission-row, html.gos-stack[data-gos="dashboard"] .ov-row,
+html.gos-stack[data-gos="dashboard"] .food-row, html.gos-stack[data-gos="dashboard"] .food-res, html.gos-stack[data-gos="dashboard"] .int-item { font-size: 13px; }
+html.gos-stack[data-gos="dashboard"] .mission-row .time { font-size: 11px; width: 48px; }
+html.gos-stack[data-gos="dashboard"] .food-add input { font-size: 16px; padding: 9px 10px; }
+html.gos-stack[data-gos="dashboard"] .food-row .fm, html.gos-stack[data-gos="dashboard"] .food-res .fm,
+html.gos-stack[data-gos="dashboard"] .ov-row .sub, html.gos-stack[data-gos="dashboard"] .int-item .lab small { font-size: 11px; }
+html.gos-stack[data-gos="dashboard"] .food-row .fx { padding: 6px 10px; font-size: 15px; }
+html.gos-stack[data-gos="dashboard"] .dock { flex-wrap: wrap; padding: 4px 0 8px; }
+html.gos-stack[data-gos="dashboard"] .chat-overlay { padding: 10px 10px calc(var(--gos-bar-h) + 10px); align-items: stretch; justify-content: center; }
+html.gos-stack[data-gos="dashboard"] .chat-panel { width: 100%; max-width: 560px; height: auto; max-height: none; }
+html.gos-stack[data-gos="dashboard"] .chat-input, html.gos-stack[data-gos="dashboard"] .cmsg { font-size: 15px; }
+
+/* ledger of rituals (habits) + grimoire page (todos) inside the Command Center */
+[data-gos="dashboard"] .scroll-list::-webkit-scrollbar-thumb { background: rgba(201,168,106,0.28); border-radius: 0; }
+[data-gos="dashboard"] #habitsList, [data-gos="dashboard"] #todosList { counter-reset: gosrow; position: relative; }
+[data-gos="dashboard"] #habitsList { background: linear-gradient(90deg, transparent 23px, rgba(125,26,49,0.6) 23px, rgba(125,26,49,0.6) 24px, transparent 24px, transparent 26px, rgba(125,26,49,0.35) 26px, rgba(125,26,49,0.35) 27px, transparent 27px); }
+[data-gos="dashboard"] .habit-row, [data-gos="dashboard"] .todo-row {
+  counter-increment: gosrow; position: relative; font-size: 12px; color: var(--gos-bone); padding: 5px 0 5px 34px; border-bottom: 1px solid var(--gos-line-2); gap: 7px;
+}
+[data-gos="dashboard"] .habit-row::before { content: counter(gosrow, lower-roman); position: absolute; left: 0; width: 20px; text-align: right; font: 9px var(--gos-mono); color: var(--gos-smoke); }
+[data-gos="dashboard"] .htype { position: absolute; left: 30px; display: none; }
+[data-gos="dashboard"] .habit-row .htype { display: inline; position: static; color: var(--gos-gold-2); font-size: 10px; width: 10px; }
+[data-gos="dashboard"] .streak-pill { border-radius: 2px; border-color: rgba(201,168,106,0.45); color: var(--gos-gold); font: 9.5px var(--gos-mono); padding: 1px 7px; }
+[data-gos="dashboard"] .streak-pill.done { background: rgba(134,184,159,0.12); border-color: rgba(134,184,159,0.5); color: var(--gos-ok); }
+[data-gos="dashboard"] .streak-pill.risk { background: rgba(125,26,49,0.45); border-color: var(--gos-alert); color: #f0b3bf; }
+[data-gos="dashboard"] #todosList { background: repeating-linear-gradient(180deg, transparent 0 27px, rgba(235,227,215,0.035) 27px 28px); }
+[data-gos="dashboard"] .todo-row { padding-left: 4px; font-family: var(--gos-display); font-size: 13px; letter-spacing: 0.01em; }
+[data-gos="dashboard"] .todo-row::before { content: "❧"; color: var(--gos-blood); font-size: 12px; flex: none; }
+[data-gos="dashboard"] .todo-row:first-child::first-letter { color: var(--gos-gold); }
+[data-gos="dashboard"] .todo-p { font: 600 8px var(--gos-mono); letter-spacing: 0.08em; border-radius: 0; padding: 1px 5px; }
+[data-gos="dashboard"] .todo-p.high { border-color: var(--gos-alert); color: #f0b3bf; background: rgba(125,26,49,0.4); }
+[data-gos="dashboard"] .todo-p.med { border-color: rgba(214,168,94,0.5); color: var(--gos-warn); }
+[data-gos="dashboard"] .todo-p.low { border-color: var(--gos-line-2); color: var(--gos-smoke); }
+[data-gos="dashboard"] .tdue[style*="ff7a9c"] { color: #f08a9d !important; }
+[data-gos="dashboard"] .todo-row > span:not([class]) { flex: 1 1 auto; min-width: 0; }
+[data-gos="dashboard"] .tdue, [data-gos="dashboard"] .tprog, [data-gos="dashboard"] .hprog { white-space: nowrap; flex: none; font-family: var(--gos-mono); font-size: 9.5px !important; margin-left: 0 !important; }
+
+/* wards / dispatches / scrying glass / coffers / bindings / crossroads / larder / momentum */
+[data-gos="dashboard"] .ov-row { color: var(--gos-bone); font-size: 11.5px; padding: 5px 0; border-bottom: 1px solid var(--gos-line-2); }
+[data-gos="dashboard"] .ov-row:last-child { border-bottom: 0; }
+[data-gos="dashboard"] .ov-ic { border-radius: 0; background: transparent; border: 1px solid var(--gos-line); color: var(--gos-gold); width: 22px; height: 22px; filter: grayscale(1) sepia(0.7); }
+[data-gos="dashboard"] .ov-row .sub { color: var(--gos-smoke); font-size: 9.5px; }
+[data-gos="dashboard"] .ov-row.warn .sub { color: var(--gos-warn); }
+[data-gos="dashboard"] .tl-axis { color: var(--gos-smoke); font: 9px var(--gos-mono); }
+[data-gos="dashboard"] .tl-track { border-radius: 0; height: 18px; background: repeating-linear-gradient(90deg, rgba(235,227,215,0.05) 0 1px, transparent 1px 6.666%), rgba(0,0,0,0.3); border: 1px solid var(--gos-line); }
+[data-gos="dashboard"] .tl-event { border-radius: 0; transform: translate(-50%,-50%) rotate(45deg); border: 1px solid #050307; width: 7px; height: 7px; }
+[data-gos="dashboard"] .tl-event.nudge { background: var(--gos-gold); box-shadow: 0 0 6px rgba(201,168,106,0.7); }
+[data-gos="dashboard"] .tl-event.done { background: var(--gos-ok); }
+[data-gos="dashboard"] .tl-event.message { background: var(--gos-rose); }
+[data-gos="dashboard"] .mission-row { font-size: 11.5px; color: var(--gos-bone); border-bottom: 1px solid var(--gos-line-2); padding: 5px 0; font-family: var(--gos-display); letter-spacing: 0.01em; }
+[data-gos="dashboard"] .mission-row .time { color: var(--gos-gold-2); font: 9.5px var(--gos-mono); width: 42px; }
+[data-gos="dashboard"] #missionList .mission-row .label { white-space: normal; font-style: italic; }
+[data-gos="dashboard"] #missionList .mission-row .label::before { content: "“"; color: var(--gos-blood); }
+[data-gos="dashboard"] #missionList .mission-row .label::after { content: "”"; color: var(--gos-blood); }
+[data-gos="dashboard"] #decisionList .mission-row .label { white-space: normal; }
+[data-gos="dashboard"] #decisionList > div[style], [data-gos="dashboard"] #budgetList > div[style] { color: var(--gos-ash) !important; font-family: var(--gos-display); font-style: italic; font-size: 12.5px !important; }
+[data-gos="dashboard"] #budgetList a { color: var(--gos-gold) !important; font-family: var(--gos-display); font-variant: small-caps; letter-spacing: 0.08em; font-size: 12.5px !important; border-bottom: 1px solid rgba(201,168,106,0.4); padding-bottom: 1px; text-decoration: none; }
+[data-gos="dashboard"] .mon-ring { filter: grayscale(1) sepia(0.85) saturate(1.5) hue-rotate(-10deg) brightness(1.05); width: 54px; height: 54px; }
+[data-gos="dashboard"] .mon-ring .mask { background: #0d0810; color: var(--gos-bone); font: 10.5px var(--gos-mono); inset: 5px; }
+[data-gos="dashboard"] .mon-gauge .lbl { color: var(--gos-ash); font-family: var(--gos-display); font-variant: small-caps; letter-spacing: 0.14em; font-size: 10.5px; }
+[data-gos="dashboard"] .int-grid { grid-template-columns: repeat(auto-fill, minmax(88px, 1fr)); }
+[data-gos="dashboard"] .int-item { border-radius: 0; background: rgba(0,0,0,0.25); border: 1px solid var(--gos-line-2); color: var(--gos-bone); font-size: 11px; }
+[data-gos="dashboard"] .int-dot { border-radius: 0; transform: rotate(45deg); width: 6px; height: 6px; }
+[data-gos="dashboard"] .int-dot.on { background: var(--gos-ok); box-shadow: 0 0 6px var(--gos-ok); }
+[data-gos="dashboard"] .int-dot.off { background: var(--gos-alert); box-shadow: 0 0 6px var(--gos-alert); }
+[data-gos="dashboard"] .int-item .lab small { color: var(--gos-ok); font: 8.5px var(--gos-mono); }
+[data-gos="dashboard"] .food-row { color: var(--gos-bone); font-size: 11.5px; border-bottom: 1px solid var(--gos-line-2); padding: 5px 0; }
+[data-gos="dashboard"] .food-row .fm, [data-gos="dashboard"] .food-res .fm { color: var(--gos-smoke); font: 9.5px var(--gos-mono); }
+[data-gos="dashboard"] .food-row .fx { color: var(--gos-smoke); }
+[data-gos="dashboard"] .food-row .fx:hover { color: var(--gos-alert); }
+[data-gos="dashboard"] .food-add input { border-radius: 2px; border: 1px solid rgba(235,227,215,0.14); background: rgba(5,3,7,0.6); color: var(--gos-bone); font-size: 12px; }
+[data-gos="dashboard"] .food-res { color: var(--gos-bone); border-radius: 0; font-size: 11.5px; border-bottom: 1px dashed var(--gos-line-2); }
+[data-gos="dashboard"] .food-res:hover { background: rgba(201,168,106,0.10); }
+[data-gos="dashboard"] .mom-num { color: var(--gos-gold); font-size: 38px; font-weight: 400; text-shadow: 0 0 24px rgba(201,168,106,0.35); }
+[data-gos="dashboard"] .mom-meta { color: var(--gos-ash); font: 10px var(--gos-mono); }
+[data-gos="dashboard"] .mom-buckets { color: var(--gos-ash); font-size: 10px; }
+[data-gos="dashboard"] .mom-buckets .mb { border-color: var(--gos-line); font-family: var(--gos-display); font-variant: small-caps; letter-spacing: 0.06em; padding: 2px 8px; }
+
+/* the familiar's perch (dock) */
+[data-gos="dashboard"] .dock { gap: 8px; padding: 0; }
+[data-gos="dashboard"] .dock-chip { color: var(--gos-ash); font: 10px var(--gos-mono); border-radius: 2px; filter: grayscale(0.4); }
+[data-gos="dashboard"] .talk-pill { border-radius: 2px; background: linear-gradient(180deg, rgba(125,26,49,0.7), rgba(74,15,32,0.5)); border: 1px solid rgba(207,90,114,0.55); padding: 7px 22px; transition: border-color .18s, box-shadow .18s; }
+[data-gos="dashboard"] .talk-pill:hover { border-color: var(--gos-gold); box-shadow: 0 0 26px rgba(125,26,49,0.7); }
+[data-gos="dashboard"] .talk-pill .mini-wave span { background: var(--gos-gold); width: 1.5px; }
+[data-gos="dashboard"] .talk-pill .txt b { color: var(--gos-bone); letter-spacing: 0.2em; font-size: 12px; }
+[data-gos="dashboard"] .talk-pill .txt span { color: var(--gos-ash); font-style: italic; font-family: var(--gos-display); font-size: 9.5px; }
+[data-gos="dashboard"] #buildLine { color: var(--gos-smoke) !important; font-family: var(--gos-mono) !important; font-size: 9px !important; }
+
+/* messages from the familiar (chat overlay) */
+[data-gos="dashboard"] .chat-panel { border-radius: 2px; background: linear-gradient(180deg, #1a101c, #0a060d); border: 1px solid rgba(201,168,106,0.5); box-shadow: 0 30px 90px rgba(0,0,0,0.85); }
+[data-gos="dashboard"] .chat-head { border-bottom: 1px solid rgba(201,168,106,0.3); background: linear-gradient(90deg, rgba(125,26,49,0.62), rgba(20,13,24,0.1)); padding: 8px 10px 8px 12px; }
+[data-gos="dashboard"] .chat-head::before { content: "❦  The Familiar"; font-family: var(--gos-display); font-variant: small-caps; letter-spacing: 0.16em; font-size: 13px; color: var(--gos-bone); margin-right: auto; }
+[data-gos="dashboard"] .chat-tabs { margin-right: 10px; }
+[data-gos="dashboard"] .chat-tab { border-radius: 2px; color: var(--gos-ash); background: transparent; border: 1px solid var(--gos-line-2); font-family: var(--gos-display); font-variant: small-caps; letter-spacing: 0.1em; }
+[data-gos="dashboard"] .chat-tab.on { color: var(--gos-bone); background: rgba(201,168,106,0.14); border-color: var(--gos-gold); }
+[data-gos="dashboard"] .chat-x { color: var(--gos-ash); }
+[data-gos="dashboard"] .chat-x:hover { color: #fff; }
+[data-gos="dashboard"] .chat-msgs { gap: 10px; background: repeating-linear-gradient(180deg, transparent 0 31px, rgba(235,227,215,0.025) 31px 32px); }
+[data-gos="dashboard"] .cmsg { border-radius: 2px; font-size: 13px; line-height: 1.5; }
+[data-gos="dashboard"] .cmsg.bot { background: rgba(125,26,49,0.24); color: var(--gos-bone); border: 1px solid rgba(207,90,114,0.3); border-left: 2px solid var(--gos-gold); font-family: var(--gos-display); padding: 8px 12px 9px; position: relative; margin-top: 12px; }
+[data-gos="dashboard"] .cmsg.bot::before { content: "the familiar whispers"; position: absolute; top: -13px; left: 0; font: 8.5px var(--gos-mono); letter-spacing: 0.12em; color: var(--gos-gold-2); text-transform: uppercase; white-space: nowrap; }
+[data-gos="dashboard"] .cmsg.you { background: rgba(235,227,215,0.07); color: var(--gos-bone); border: 1px solid var(--gos-line-2); }
+[data-gos="dashboard"] .cmsg.sys { color: var(--gos-smoke); font-style: italic; font-family: var(--gos-display); }
+[data-gos="dashboard"] .chat-input-row { border-top: 1px solid rgba(201,168,106,0.24); }
+[data-gos="dashboard"] .chat-input { border-radius: 2px; border: 1px solid rgba(235,227,215,0.14); background: rgba(5,3,7,0.6); color: var(--gos-bone); }
+[data-gos="dashboard"] .chat-send { border-radius: 2px; background: linear-gradient(180deg, #8e2039, #5a1226); border: 1px solid rgba(207,90,114,0.55); color: var(--gos-bone); font-family: var(--gos-display); font-variant: small-caps; letter-spacing: 0.12em; }
+
+/* ==========================================================================
+   SHARED: sub-page top bars (Habits / Tarot / Horoscope / Bills)
+   ========================================================================== */
+.gos-app .topbar { padding: 10px 14px 8px; border-bottom: 1px solid var(--gos-line-2); margin-bottom: 12px; flex-wrap: wrap; }
+.gos-app .backlink { color: var(--gos-ash); font-family: var(--gos-display); font-variant: small-caps; letter-spacing: 0.1em; font-size: 12px; }
+.gos-app .backlink:hover { color: var(--gos-bone); border-color: var(--gos-gold); }
+.gos-app .brand-mark, .gos-app .head .brand-mark { filter: sepia(1) saturate(1.4) hue-rotate(-8deg) brightness(1.15); }
+.gos-app .brand-text b { font-size: 15px; letter-spacing: 0.26em; color: var(--gos-bone); text-shadow: 0 0 18px rgba(207,90,114,0.45); }
+.gos-app .brand-text span { color: var(--gos-accent); font-family: var(--gos-display); font-variant: small-caps; letter-spacing: 0.2em; font-size: 9.5px; }
+.gos-app .nav-pill a, .gos-app .nav-pill button { border-radius: 2px; color: var(--gos-ash); font-family: var(--gos-display); font-variant: small-caps; letter-spacing: 0.1em; font-size: 12px; }
+.gos-app .nav-pill a.active, .gos-app .nav-pill button.active { background: linear-gradient(180deg, rgba(125,26,49,0.6), rgba(74,15,32,0.4)); color: var(--gos-bone); }
+.gos-app .wrap { padding-left: 14px; padding-right: 14px; }
+
+/* ==========================================================================
+   HABITS — a ledger of rituals; todos — a grimoire page
+   ========================================================================== */
+[data-gos="habits"] .wrap { max-width: 860px; gap: 18px; }
+[data-gos="habits"] .section { padding: 0 0 8px; position: relative; overflow: hidden; }
+[data-gos="habits"] .section-head { margin: 0 0 4px; padding: 10px 14px; background: linear-gradient(90deg, rgba(125,26,49,0.5), rgba(20,13,24,0.05) 70%); border-bottom: 1px solid var(--gos-line); flex-wrap: wrap; gap: 8px; }
+[data-gos="habits"] .card-title { font-size: 15px; letter-spacing: 0.16em; text-transform: none; color: var(--gos-bone); font-weight: 500; }
+[data-gos="habits"] .section-sub { font: 10.5px var(--gos-mono); color: var(--gos-ash); }
+[data-gos="habits"] .section-sub a { color: var(--gos-gold); }
+[data-gos="habits"] .add-btn { font-size: 12px; padding: 5px 12px; }
+
+[data-gos="habits"] #habitsList { counter-reset: gosrow; padding: 0 12px 0 0;
+  background: linear-gradient(90deg, transparent 43px, rgba(125,26,49,0.7) 43px, rgba(125,26,49,0.7) 44px, transparent 44px, transparent 47px, rgba(125,26,49,0.4) 47px, rgba(125,26,49,0.4) 48px, transparent 48px); }
+[data-gos="habits"] .habit-row { counter-increment: gosrow; padding: 11px 0 11px 6px; grid-template-columns: 36px minmax(0,1fr) 66px 58px 26px 26px; border-bottom: 1px solid var(--gos-line-2); }
+[data-gos="habits"] .habit-row .row-icon { border: 0; color: transparent; font-size: 0; width: 36px; justify-content: flex-end; padding-right: 6px; }
+[data-gos="habits"] .habit-row .row-icon::before { content: counter(gosrow, upper-roman); font: 10px var(--gos-mono); color: var(--gos-gold-2); letter-spacing: 0.04em; }
+[data-gos="habits"] .habit-row .row-main { padding-left: 12px; }
+[data-gos="habits"] .row-name { font-family: var(--gos-display); font-size: 16px; letter-spacing: 0.02em; font-weight: 500; }
+[data-gos="habits"] .row-name.done { color: var(--gos-smoke); text-decoration-color: var(--gos-blood); }
+[data-gos="habits"] .row-meta { font-size: 10.5px; color: var(--gos-smoke); letter-spacing: 0.05em; }
+[data-gos="habits"] .streak-pill { border-radius: 2px; font: 600 10px var(--gos-mono); justify-content: center; border-color: var(--gos-line); color: var(--gos-ash); padding: 3px 6px; }
+[data-gos="habits"] .streak-pill.done { color: var(--gos-gold); border-color: rgba(201,168,106,0.6); background: rgba(201,168,106,0.08); }
+[data-gos="habits"] .streak-pill.risk { color: #f0b3bf; border-color: var(--gos-alert); background: rgba(125,26,49,0.35); }
+[data-gos="habits"] .tap-btn { width: 30px; height: 30px; border-radius: 2px; background: rgba(5,3,7,0.5); border-color: rgba(235,227,215,0.16); font-family: var(--gos-mono); transition: background .15s, border-color .15s, box-shadow .15s; }
+[data-gos="habits"] .tap-btn:hover { border-color: var(--gos-gold); }
+[data-gos="habits"] .tap-btn.check { border-color: rgba(201,168,106,0.5); color: var(--gos-gold); }
+[data-gos="habits"] .tap-btn.check.on { background: radial-gradient(circle at 40% 35%, #a52846, #5a1226); color: var(--gos-bone); border-color: var(--gos-rose); box-shadow: 0 0 14px rgba(125,26,49,0.8), inset 0 1px 0 rgba(255,255,255,0.15); border-radius: 50%; }
+[data-gos="habits"] .tap-btn.plus.on { background: var(--gos-ok); color: #0b070e; }
+[data-gos="habits"] .tap-btn.minus.on { background: var(--gos-alert); color: #0b070e; }
+[data-gos="habits"] .row-edit, [data-gos="habits"] .row-del { border-radius: 2px; border-color: transparent; color: var(--gos-smoke); width: 26px; height: 26px; }
+[data-gos="habits"] .row-edit:hover { border-color: var(--gos-gold); color: var(--gos-bone); }
+[data-gos="habits"] .checklist-mini { padding-left: 62px; }
+[data-gos="habits"] .checklist-item { font-family: var(--gos-display); font-size: 13.5px; color: var(--gos-ash); padding: 4px 0; }
+[data-gos="habits"] .checklist-item .box { border-radius: 0; border: 1px solid var(--gos-gold-2); width: 13px; height: 13px; }
+[data-gos="habits"] .checklist-item.done { color: var(--gos-smoke); text-decoration-color: var(--gos-blood); }
+[data-gos="habits"] .checklist-item.done .box { background: var(--gos-gold); border-color: var(--gos-gold); }
+[data-gos="habits"] .chk-add, [data-gos="habits"] .logdate-btn { font-family: var(--gos-display); font-size: 11.5px; }
+[data-gos="habits"] .logdate-btn { border-radius: 2px; }
+[data-gos="habits"] .logdate-btn.on { background: var(--gos-gold); border-color: var(--gos-gold); color: #0b070e; }
+[data-gos="habits"] .empty { font-family: var(--gos-display); font-size: 13px; padding: 14px; color: var(--gos-smoke); }
+
+/* todos: a page from the grimoire */
+[data-gos="habits"] #todosList { padding: 2px 14px 0 18px; background: repeating-linear-gradient(180deg, transparent 0 43px, rgba(235,227,215,0.03) 43px 44px); }
+[data-gos="habits"] .todo-row { padding: 11px 0; border-bottom: 1px solid var(--gos-line-2); gap: 12px; }
+[data-gos="habits"] .todo-row .row-name { font-size: 16px; }
+[data-gos="habits"] #todosList > .todo-row:first-child .row-name::first-letter { font-size: 1.7em; color: var(--gos-gold); line-height: 0.9; padding-right: 1px; }
+[data-gos="habits"] .todo-check { border-radius: 0; width: 19px; height: 19px; border: 1px solid var(--gos-gold-2); transition: border-color .15s, box-shadow .15s; }
+[data-gos="habits"] .todo-check:hover { border-color: var(--gos-gold); box-shadow: 0 0 10px rgba(201,168,106,0.35); }
+[data-gos="habits"] .todo-check.done { background: var(--gos-gold); border-color: var(--gos-gold); }
+[data-gos="habits"] .todo-check.done::after { border-color: #0b070e; left: 6px; top: 2px; }
+[data-gos="habits"] .todo-p { border-radius: 0; font: 600 8.5px var(--gos-mono); letter-spacing: 0.1em; padding: 2px 7px; }
+[data-gos="habits"] .todo-p.high { background: rgba(125,26,49,0.4); color: #f0b3bf; border-color: var(--gos-alert); }
+[data-gos="habits"] .todo-due { font: 10px var(--gos-mono); color: var(--gos-ash); }
+[data-gos="habits"] .todo-due.overdue { color: #f08a9d; }
+[data-gos="habits"] .create-form { margin: 10px 14px 6px; padding: 12px 0 4px; border-top: 1px dashed var(--gos-line); }
+[data-gos="habits"] .create-form input, [data-gos="habits"] .create-form select { border-radius: 2px; background: rgba(5,3,7,0.6); border-color: rgba(235,227,215,0.14); font-size: 13px; padding: 7px 9px; }
+[data-gos="habits"] .create-form .go { padding: 7px 16px; font-size: 13px; }
+[data-gos="habits"] .logdate-edit { border-radius: 2px; }
+
+/* ==========================================================================
+   BILLS — the coffers
+   ========================================================================== */
+[data-gos="bills"] body { color: var(--gos-bone); }
+[data-gos="bills"] a { color: var(--gos-silver); }
+[data-gos="bills"] .gos-app .wrap { padding-top: 12px; }
+[data-gos="bills"] .head { padding-bottom: 12px; border-bottom: 1px solid var(--gos-line-2); flex-wrap: wrap; }
+[data-gos="bills"] .head h1 { font-size: 22px; letter-spacing: 0.26em; color: var(--gos-bone); text-shadow: 0 0 18px rgba(201,204,217,0.3); font-weight: 500; }
+[data-gos="bills"] .head .sub { color: var(--gos-silver); font-family: var(--gos-display); font-variant: small-caps; text-transform: none; letter-spacing: 0.2em; font-size: 10.5px; opacity: 0.8; }
+[data-gos="bills"] .demo-badge { border-radius: 2px; background: rgba(214,168,94,0.16); color: var(--gos-warn); border: 1px solid rgba(214,168,94,0.4); }
+[data-gos="bills"] .card { position: relative; padding: 14px 16px; }
+[data-gos="bills"] .card::after { content: ""; position: absolute; right: 8px; top: 8px; width: 6px; height: 6px; transform: rotate(45deg); border: 1px solid var(--gos-gold-2); opacity: 0.7; }
+[data-gos="bills"] .card .lbl, [data-gos="bills"] .table-head .title, [data-gos="bills"] details.settings summary {
+  color: var(--gos-ash); font-family: var(--gos-display); font-variant: small-caps; text-transform: none; letter-spacing: 0.16em; font-size: 11.5px;
+}
+[data-gos="bills"] .table-head .title { color: var(--gos-bone); font-size: 14px; }
+[data-gos="bills"] .card .big { color: var(--gos-bone); font-family: var(--gos-display); font-size: 28px; font-weight: 400; font-variant-numeric: tabular-nums lining-nums; letter-spacing: 0.01em; }
+[data-gos="bills"] .cards.mini .big { font-size: 19px; }
+[data-gos="bills"] .card .big.alert { color: #f08a9d; text-shadow: 0 0 18px rgba(212,89,111,0.4); }
+[data-gos="bills"] .card .big.good { color: var(--gos-ok); }
+[data-gos="bills"] .card .note, [data-gos="bills"] .note { color: var(--gos-smoke); font-size: 10.5px; }
+[data-gos="bills"] label.f { color: var(--gos-ash); font-family: var(--gos-display); font-variant: small-caps; letter-spacing: 0.08em; font-size: 11px; }
+[data-gos="bills"] input, [data-gos="bills"] select, [data-gos="bills"] textarea { border-radius: 2px; background: rgba(5,3,7,0.6); border: 1px solid rgba(235,227,215,0.14); color: var(--gos-bone); }
+[data-gos="bills"] input:focus, [data-gos="bills"] select:focus, [data-gos="bills"] textarea:focus { border-color: var(--gos-gold); }
+[data-gos="bills"] select option { background: #110c15; }
+[data-gos="bills"] .table-card { padding: 0 0 10px; overflow: hidden; }
+[data-gos="bills"] .table-card > .table-head { margin: 0 0 8px; padding: 9px 12px; background: linear-gradient(90deg, rgba(125,26,49,0.45), rgba(20,13,24,0.05) 70%); border-bottom: 1px solid var(--gos-line); flex-wrap: wrap; }
+[data-gos="bills"] .table-card > div:not(.table-head), [data-gos="bills"] .table-card > #importMsg { margin-left: 12px !important; margin-right: 12px !important; }
+[data-gos="bills"] th { color: var(--gos-gold-2); font-family: var(--gos-display); font-variant: small-caps; text-transform: none; letter-spacing: 0.12em; font-size: 11px; border-bottom: 1px solid var(--gos-line); }
+[data-gos="bills"] th.sortable:hover { color: var(--gos-bone); }
+[data-gos="bills"] td { color: var(--gos-bone); border-bottom: 1px solid var(--gos-line-2); }
+[data-gos="bills"] td.num { font-family: var(--gos-mono); font-size: 11.5px; }
+[data-gos="bills"] tbody tr:hover td { background: rgba(201,168,106,0.045); }
+[data-gos="bills"] tr.overdue td { background: rgba(125,26,49,0.28); }
+[data-gos="bills"] .pill { border-radius: 2px; font-family: var(--gos-mono); letter-spacing: 0.03em; }
+[data-gos="bills"] .pill.od { background: rgba(125,26,49,0.55); color: #f0b3bf; border: 1px solid var(--gos-alert); }
+[data-gos="bills"] .pill.due { background: rgba(214,168,94,0.12); color: var(--gos-warn); border: 1px solid rgba(214,168,94,0.4); }
+[data-gos="bills"] .empty { color: var(--gos-smoke); font-family: var(--gos-display); font-style: italic; font-size: 13px; }
+[data-gos="bills"] .err { color: #f08a9d; }
+[data-gos="bills"] .chk-row { color: var(--gos-bone); }
+[data-gos="bills"] .ctoggle { color: var(--gos-gold) !important; }
+[data-gos="bills"] #spendNarr { font-family: var(--gos-display); font-size: 14px !important; border-left: 2px solid var(--gos-blood) !important; font-style: italic; }
+[data-gos="bills"] #reviewNote { border-left: 2px solid var(--gos-blood) !important; }
+[data-gos="bills"] .revfilter { padding: 4px 10px; font-size: 11px; cursor: pointer; }
+[data-gos="bills"] .revfilter[style*="bills-title"] { color: #0b070e !important; }
+[data-gos="bills"] details > summary { font-family: var(--gos-display); font-variant: small-caps; }
+[data-gos="bills"] #reviewText { background: rgba(5,3,7,0.6) !important; }
+
+/* ==========================================================================
+   MYSTIC — Tarot + Horoscope
+   ========================================================================== */
+[data-gos="tarot"] body, [data-gos="horoscope"] body { color: var(--gos-bone); }
+.gos-app .intro h1 { font-size: 26px; letter-spacing: 0.3em; font-variant: small-caps; color: var(--gos-bone); font-weight: 500; text-shadow: 0 0 22px rgba(192,165,226,0.35); }
+.gos-app .intro p, .gos-app .edu p, .gos-app .spread-info { color: var(--gos-ash); font-size: 12.5px; line-height: 1.65; }
+.gos-app .intro { border-left: 2px solid var(--gos-blood); }
+.gos-app .edu h2, .gos-app .placements h3, .gos-app .wheel-card h3, [data-gos="horoscope"] details.section > summary, .gos-app .syn-title {
+  font-family: var(--gos-display); font-variant: small-caps; text-transform: none; letter-spacing: 0.16em; font-size: 15px; color: var(--gos-bone); font-weight: 500;
+}
+[data-gos="horoscope"] details.section > summary::before { color: var(--gos-gold); }
+.gos-app .wheel-card .sub, .gos-app .section-inner > .sub, [data-gos="horoscope"] details.section > summary .cnt { color: var(--gos-smoke); font-size: 10.5px; }
+
+/* tarot */
+[data-gos="tarot"] .rng-note { color: var(--gos-smoke); font: 9.5px var(--gos-mono); }
+[data-gos="tarot"] .rng-note .dot { background: var(--gos-ok); box-shadow: 0 0 6px var(--gos-ok); border-radius: 0; transform: rotate(45deg); }
+[data-gos="tarot"] .spread-btn { font-size: 12.5px; padding: 8px 16px; }
+[data-gos="tarot"] .spread-btn.active { background: rgba(192,165,226,0.14); border-color: var(--gos-amethyst); color: #fff; }
+[data-gos="tarot"] .draw-btn { border-radius: 2px; font-size: 14px; padding: 10px 30px; letter-spacing: 0.24em; }
+[data-gos="tarot"] .slot .pos-label { color: var(--gos-gold-2); font-family: var(--gos-display); font-variant: small-caps; text-transform: none; letter-spacing: 0.16em; font-size: 11px; }
+[data-gos="tarot"] .card, [data-gos="tarot"] .card-face { border-radius: 6px; }
+[data-gos="tarot"] .card-face { border: 1px solid rgba(201,168,106,0.55); box-shadow: 0 10px 26px rgba(0,0,0,0.7), inset 0 0 0 3px #0b070e, inset 0 0 0 4px rgba(201,168,106,0.35); }
+[data-gos="tarot"] .card:hover .card-face { border-color: var(--gos-gold); }
+[data-gos="tarot"] .card-back {
+  background:
+    radial-gradient(circle at 50% 50%, transparent 0 21%, rgba(201,168,106,0.5) 21% 21.6%, transparent 21.6% 27%, rgba(201,168,106,0.28) 27% 27.5%, transparent 27.5%),
+    repeating-linear-gradient(45deg, rgba(201,168,106,0.09) 0 1px, transparent 1px 9px),
+    repeating-linear-gradient(-45deg, rgba(201,168,106,0.09) 0 1px, transparent 1px 9px),
+    radial-gradient(circle at 50% 50%, #4a0f20 0%, #1a0a14 62%, #0b070e 100%);
+}
+[data-gos="tarot"] .card-back .sigil { width: 30%; height: auto; aspect-ratio: 1; border: 1px solid var(--gos-gold); border-radius: 0; transform: rotate(45deg); }
+[data-gos="tarot"] .card-back .sigil::before { inset: 18%; border-radius: 0; border-color: rgba(201,168,106,0.6); }
+[data-gos="tarot"] .card-back .sigil::after { inset: 40%; border-radius: 50%; background: var(--gos-gold); border: 0; }
+[data-gos="tarot"] .card-front { background: #0d0810; }
+[data-gos="tarot"] .card-front img { background: #0d0810; filter: saturate(0.5) sepia(0.32) contrast(1.06) brightness(0.94); }
+[data-gos="tarot"] .card-front .ph {           /* drawn card face used when no card art is present */
+  color: var(--gos-bone); font-family: var(--gos-display); font-variant: small-caps; letter-spacing: 0.1em; font-size: 12px; padding: 10px 10px 40px;
+  background:
+    radial-gradient(circle at 50% 38%, rgba(201,168,106,0.20), transparent 46%),
+    conic-gradient(from 0deg at 50% 38%, transparent 0 14deg, rgba(201,168,106,0.07) 14deg 16deg, transparent 16deg 44deg, rgba(201,168,106,0.07) 44deg 46deg, transparent 46deg 74deg, rgba(201,168,106,0.07) 74deg 76deg, transparent 76deg 104deg, rgba(201,168,106,0.07) 104deg 106deg, transparent 106deg 134deg, rgba(201,168,106,0.07) 134deg 136deg, transparent 136deg 164deg, rgba(201,168,106,0.07) 164deg 166deg, transparent 166deg 194deg, rgba(201,168,106,0.07) 194deg 196deg, transparent 196deg 224deg, rgba(201,168,106,0.07) 224deg 226deg, transparent 226deg 254deg, rgba(201,168,106,0.07) 254deg 256deg, transparent 256deg 284deg, rgba(201,168,106,0.07) 284deg 286deg, transparent 286deg 314deg, rgba(201,168,106,0.07) 314deg 316deg, transparent 316deg 344deg, rgba(201,168,106,0.07) 344deg 346deg, transparent 346deg),
+    linear-gradient(170deg, #2a0f1c, #0d0810 70%);
+}
+[data-gos="tarot"] .card-front .ph { font-size: 0; }   /* the card name is already shown in the caption below; the drawn face keeps only its glyph */
+[data-gos="tarot"] .card-front .ph .glyph { font-size: 34px; margin-bottom: 12px; color: var(--gos-gold); filter: grayscale(1) sepia(0.9) saturate(1.6) hue-rotate(-12deg) brightness(1.1) drop-shadow(0 0 10px rgba(201,168,106,0.5)); font-variant: normal; }
+[data-gos="tarot"] .card-front .meta { background: linear-gradient(to top, rgba(5,3,7,0.97) 0%, rgba(5,3,7,0.82) 55%, transparent 100%); border-top: 0; padding: 16px 8px 8px; text-align: center; }
+[data-gos="tarot"] .card-front .name { font-family: var(--gos-display); font-variant: small-caps; letter-spacing: 0.1em; font-size: 12px; color: var(--gos-bone); font-weight: 500; }
+[data-gos="tarot"] .card-front .orient { font: 8.5px var(--gos-mono); letter-spacing: 0.14em; }
+[data-gos="tarot"] .card-front .orient.up, [data-gos="tarot"] .detail-head .dorient.up { color: var(--gos-ok); }
+[data-gos="tarot"] .card-front .orient.rev, [data-gos="tarot"] .detail-head .dorient.rev { color: var(--gos-rose); }
+[data-gos="tarot"] .detail-head .dname { font-family: var(--gos-display); font-variant: small-caps; letter-spacing: 0.12em; font-size: 17px; color: var(--gos-bone); font-weight: 500; }
+[data-gos="tarot"] .detail-head .dorient { border-radius: 2px; font: 9.5px var(--gos-mono); }
+[data-gos="tarot"] .detail-head .dorient.up { background: rgba(134,184,159,0.12); }
+[data-gos="tarot"] .detail-head .dorient.rev { background: rgba(125,26,49,0.4); }
+[data-gos="tarot"] .detail-head .dpos, [data-gos="tarot"] .detail-suit { color: var(--gos-gold-2); font-family: var(--gos-display); font-variant: small-caps; text-transform: none; letter-spacing: 0.14em; font-size: 11px; }
+[data-gos="tarot"] .detail-card.show { border-left: 2px solid var(--gos-gold); }
+[data-gos="tarot"] .detail-desc, [data-gos="tarot"] .detail-posdesc, [data-gos="tarot"] .syn-body { color: var(--gos-ash); font-size: 12.5px; line-height: 1.65; }
+[data-gos="tarot"] .detail-desc { font-family: var(--gos-display); font-style: italic; font-size: 13.5px; }
+[data-gos="tarot"] .detail-keywords { color: var(--gos-bone); font-size: 12px; }
+[data-gos="tarot"] .detail-alt { color: var(--gos-smoke); font-size: 11px; }
+[data-gos="tarot"] .detail-keywords b, [data-gos="tarot"] .detail-posdesc b, [data-gos="tarot"] .detail-alt b, [data-gos="tarot"] .edu b[style], [data-gos="tarot"] .gmeta b[style] { color: var(--gos-amethyst) !important; }
+[data-gos="tarot"] .glossary-toggle { color: var(--gos-gold); font-family: var(--gos-display); font-variant: small-caps; letter-spacing: 0.1em; font-size: 12.5px; }
+[data-gos="tarot"] .glossary-search { border-radius: 2px; background: rgba(5,3,7,0.6); border: 1px solid rgba(235,227,215,0.14); color: var(--gos-bone); font-size: 13px; }
+[data-gos="tarot"] .g-row { border-bottom: 1px solid var(--gos-line-2); font-size: 11.5px; }
+[data-gos="tarot"] .g-row .gname { color: var(--gos-bone); font-family: var(--gos-display); font-variant: small-caps; letter-spacing: 0.08em; font-size: 13px; }
+[data-gos="tarot"] .g-row .gsuit { color: var(--gos-gold-2); font: 9px var(--gos-mono); }
+[data-gos="tarot"] .g-row .gmeta { color: var(--gos-ash); }
+
+/* horoscope */
+[data-gos="horoscope"] .profile-bar select { border-radius: 2px; background: rgba(5,3,7,0.6); border: 1px solid rgba(235,227,215,0.14); color: var(--gos-bone); font-size: 13px; }
+[data-gos="horoscope"] .btn { font-size: 12.5px; }
+[data-gos="horoscope"] .now-clock { color: var(--gos-smoke); font: 10.5px var(--gos-mono); }
+[data-gos="horoscope"] .now-clock b { color: var(--gos-silver); font-weight: 400; }
+[data-gos="horoscope"] .wheel-svg { filter: drop-shadow(0 0 24px rgba(192,165,226,0.12)); }
+[data-gos="horoscope"] .wheel-svg > circle:first-child { stroke: rgba(201,168,106,0.6); }
+[data-gos="horoscope"] .wheel-svg line { stroke: rgba(201,168,106,0.16); }
+[data-gos="horoscope"] .wheel-svg path { fill: rgba(125,26,49,0.20); }
+[data-gos="horoscope"] .wheel-svg circle + text, [data-gos="horoscope"] .wheel-svg text { font-family: var(--gos-display); }
+[data-gos="horoscope"] .wheel-svg text[font-size="13"] { fill: var(--gos-gold); }
+[data-gos="horoscope"] .wheel-svg circle[r="9"] { fill: #0d0810; stroke: var(--gos-amethyst); }
+[data-gos="horoscope"] .wheel-svg text[font-size="10.5"] { fill: var(--gos-bone); }
+[data-gos="horoscope"] .wheel-svg line[stroke="#8fe6b0"] { stroke: var(--gos-ok); }
+[data-gos="horoscope"] .wheel-svg text[fill="#8fe6b0"] { fill: var(--gos-ok); }
+[data-gos="horoscope"] .bt-card, [data-gos="horoscope"] .sign-depth-card, [data-gos="horoscope"] .edu-item, [data-gos="horoscope"] .sign-chip {
+  border-radius: 2px; background: rgba(5,3,7,0.35); border: 1px solid var(--gos-line-2);
+}
+[data-gos="horoscope"] .bt-card { border-color: var(--gos-line); padding: 16px 12px; }
+[data-gos="horoscope"] .bt-card .lbl { color: var(--gos-gold-2); font-family: var(--gos-display); font-variant: small-caps; text-transform: none; letter-spacing: 0.2em; font-size: 11px; }
+[data-gos="horoscope"] .bt-card .glyph { color: var(--gos-amethyst); font-size: 28px; text-shadow: 0 0 18px rgba(192,165,226,0.45); }
+[data-gos="horoscope"] .bt-card .signname { font-family: var(--gos-display); font-variant: small-caps; letter-spacing: 0.14em; font-size: 17px; color: var(--gos-bone); font-weight: 500; }
+[data-gos="horoscope"] .bt-card .desc, [data-gos="horoscope"] .edu-item .d, [data-gos="horoscope"] .sign-chip { color: var(--gos-ash); font-size: 11px; line-height: 1.5; }
+[data-gos="horoscope"] .planet-table td { color: var(--gos-ash); border-bottom: 1px solid var(--gos-line-2); font-size: 12px; }
+[data-gos="horoscope"] .planet-table .pg, [data-gos="horoscope"] .transit-row .tg { color: var(--gos-gold); }
+[data-gos="horoscope"] .planet-table .pn, [data-gos="horoscope"] .transit-row .tb { color: var(--gos-bone); font-family: var(--gos-display); font-variant: small-caps; letter-spacing: 0.08em; font-size: 13px; }
+[data-gos="horoscope"] .planet-table .pd { color: var(--gos-smoke); font: 10px var(--gos-mono); }
+[data-gos="horoscope"] .retro { color: var(--gos-rose) !important; }
+[data-gos="horoscope"] .transit-row { border-bottom: 1px solid var(--gos-line-2); font-size: 12px; flex-wrap: wrap; }
+[data-gos="horoscope"] .transit-row .tsign { color: var(--gos-bone); }
+[data-gos="horoscope"] .transit-row .tnote, [data-gos="horoscope"] .aspect-none { color: var(--gos-ash); }
+[data-gos="horoscope"] .transit-row.moon { background: linear-gradient(90deg, rgba(201,204,217,0.10), transparent); border-radius: 0; border-left: 2px solid var(--gos-silver); padding-left: 8px; }
+[data-gos="horoscope"] .moon-weather { border-radius: 2px; background: rgba(125,26,49,0.2); border: 1px solid rgba(207,90,114,0.3); border-left: 2px solid var(--gos-gold); color: var(--gos-bone); font-family: var(--gos-display); font-size: 13.5px; }
+[data-gos="horoscope"] .moon-weather b { color: var(--gos-gold); }
+[data-gos="horoscope"] .aspect-row { border-bottom: 1px solid var(--gos-line-2); color: var(--gos-ash); font-size: 12px; }
+[data-gos="horoscope"] .aspect-row .ah { color: var(--gos-bone); }
+[data-gos="horoscope"] .aspect-row .atag { color: var(--gos-gold-2); font: 9.5px var(--gos-mono); }
+[data-gos="horoscope"] .sign-depth-card .sdh .g { color: var(--gos-amethyst); }
+[data-gos="horoscope"] .sign-depth-card .sdh .n { font-family: var(--gos-display); font-variant: small-caps; letter-spacing: 0.12em; font-size: 16px; color: var(--gos-bone); font-weight: 500; }
+[data-gos="horoscope"] .sign-depth-card .sdh .role { color: var(--gos-gold-2); font: 9px var(--gos-mono); }
+[data-gos="horoscope"] .sign-depth-card .meta, [data-gos="horoscope"] .sign-depth-card .rolenote { color: var(--gos-smoke); }
+[data-gos="horoscope"] .sign-depth-card .line { color: var(--gos-ash); font-size: 11.5px; }
+[data-gos="horoscope"] .sign-depth-card .line b { color: var(--gos-amethyst); }
+[data-gos="horoscope"] .edu-item .t, [data-gos="horoscope"] .sign-chip b { color: var(--gos-bone); font-family: var(--gos-display); font-variant: small-caps; letter-spacing: 0.1em; font-size: 13px; }
+[data-gos="horoscope"] .field label, [data-gos="horoscope"] .checkbox-row { color: var(--gos-ash); font-size: 11.5px; }
+[data-gos="horoscope"] .field input, [data-gos="horoscope"] .field select { border-radius: 2px; background: rgba(5,3,7,0.6); border: 1px solid rgba(235,227,215,0.14); color: var(--gos-bone); font-size: 14px; }
+[data-gos="horoscope"] .field .hint { color: var(--gos-smoke); }
+
+/* ==========================================================================
+   PHONE
+   ========================================================================== */
+@media (max-width: 720px) {
+  :root { --gos-bar-h: 54px; }
+  .gos-taskbar { padding: 0 2px; gap: 0; }
+  .gos-start { margin: 7px 2px 7px 2px; padding: 0 8px; }
+  .gos-start > span:not(.gos-badge) { display: none; }
+  .gos-apps { flex: 1 1 auto; justify-content: space-around; }
+  .gos-app-link { flex-direction: column; gap: 2px; padding: 0 4px; font-size: 9.5px; letter-spacing: 0.06em; flex: 1 1 0; justify-content: center; min-width: 0; }
+  .gos-app-link svg { width: 19px; height: 19px; }
+  .gos-app-link.on::after { left: 22%; right: 22%; }
+  .gos-tray { display: none; }
+  .gos-status { padding: 0 6px 0 4px; gap: 6px; border-left: 0; }
+  .gos-moon > span { display: none; }
+  .gos-clock i { display: none; }
+  .gos-clock b { font-size: 12px; }
+  html[data-gos]:not([data-gos="dashboard"]) body { padding: 0 0 calc(var(--gos-bar-h) + 26px + env(safe-area-inset-bottom, 0px)) !important; }
+  .gos-window.gos-app { margin-top: 0; border-left: 0; border-right: 0; }
+  .gos-app .wrap { padding-left: 10px; padding-right: 10px; }
+  .gos-app .topbar { padding: 8px 10px; gap: 8px; }
+  .gos-app .intro h1 { font-size: 21px; }
+  .gos-wallpaper svg { opacity: 0.09; }
+
+  [data-gos="habits"] .habit-row { grid-template-columns: 30px minmax(0,1fr) auto 50px; row-gap: 4px; }
+  [data-gos="habits"] .habit-row .row-edit { grid-column: 3; justify-self: end; }
+  [data-gos="habits"] .habit-row .row-del { grid-column: 4; justify-self: end; }
+  [data-gos="habits"] #habitsList { background: linear-gradient(90deg, transparent 37px, rgba(125,26,49,0.7) 37px, rgba(125,26,49,0.7) 38px, transparent 38px, transparent 41px, rgba(125,26,49,0.4) 41px, rgba(125,26,49,0.4) 42px, transparent 42px); }
+  [data-gos="habits"] .habit-row .row-icon { width: 30px; }
+  [data-gos="habits"] .checklist-mini { padding-left: 54px; }
+  [data-gos="habits"] .tap-btn { width: 36px; height: 36px; }
+  [data-gos="habits"] .row-edit, [data-gos="habits"] .row-del { width: 32px; height: 32px; }
+  [data-gos="habits"] .todo-row { flex-wrap: wrap; }
+  [data-gos="habits"] .todo-row { row-gap: 6px; }
+  [data-gos="habits"] .todo-row .row-main { flex: 1 1 calc(100% - 40px); }
+  [data-gos="habits"] .todo-row .todo-p { margin-left: 31px; }
+  [data-gos="habits"] .todo-row .row-edit { margin-left: auto; }
+  [data-gos="habits"] .create-form input, [data-gos="habits"] .create-form select { font-size: 16px; }
+
+  [data-gos="bills"] body { font-size: 14px; }
+  [data-gos="bills"] .cards, [data-gos="bills"] .cards.mini { grid-template-columns: 1fr 1fr; gap: 8px; }
+  [data-gos="bills"] .card .big { font-size: 21px; }
+  [data-gos="bills"] .cards.mini .big { font-size: 17px; }
+  [data-gos="bills"] input, [data-gos="bills"] select, [data-gos="bills"] textarea { font-size: 16px; }
+  [data-gos="bills"] .modal { padding: 16px 14px; }
+
+  [data-gos="tarot"] .controls { gap: 10px; }
+  [data-gos="tarot"] .spread-select { flex-wrap: wrap; }
+  [data-gos="tarot"] .draw-btn { margin-left: 0; flex: 1 1 100%; padding: 13px; }
+  [data-gos="horoscope"] .now-clock { margin-left: 0; flex: 1 1 100%; text-align: left; }
+  [data-gos="horoscope"] .transit-row .tsign { width: auto; flex: 1 1 auto; }
+  [data-gos="horoscope"] .transit-row .tnote { flex: 1 1 100%; padding-left: 30px; }
+}

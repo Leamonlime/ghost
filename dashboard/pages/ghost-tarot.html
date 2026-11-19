@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-gos="tarot">
 <head>
 <meta charset="UTF-8">
 <!-- S63: ghost-silhouette tab favicon (inline base64 SVG, no separate file/route). Consistent across all pages. -->
@@ -197,6 +197,9 @@
   .g-row .gsuit { color:#7a6295; font-size:9px; text-transform:uppercase; letter-spacing:0.05em; margin-left:6px; }
   .g-row .gmeta { color:#a98fd6; margin-top:2px; }
 </style>
+<!-- Grimoire OS: shared theme + shell. Loaded after the page's own <style> so it wins; same-origin only. -->
+<link rel="stylesheet" href="/assets/grimoire.css?v=1">
+<script src="/assets/grimoire.js?v=1"></script>
 </head>
 <body>
 
@@ -213,7 +216,7 @@
 <div class="wrap">
 
   <div class="intro panel">
-    <h1>Tarot</h1>
+    <h1>The Cards</h1>
     <p>A 78-card deck, drawn with a cryptographically-seeded Fisher–Yates shuffle so every reading is an unbiased, no-repeat pull from the full deck — no card can appear twice in the same reading. Pick a spread, draw, then click each card to flip it and read the meaning below.</p>
   </div>
 

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-gos="bills">
 <head>
 <meta charset="UTF-8">
 <!-- S63: ghost-silhouette tab favicon (inline base64 SVG, no separate file/route). Consistent across all pages. -->
@@ -103,6 +103,9 @@
     .grid2 { grid-template-columns: 1fr; }
   }
 </style>
+<!-- Grimoire OS: shared theme + shell. Loaded after the page's own <style> so it wins; same-origin only. -->
+<link rel="stylesheet" href="/assets/grimoire.css?v=1">
+<script src="/assets/grimoire.js?v=1"></script>
 </head>
 <body>
 <div class="wrap">
@@ -110,8 +113,8 @@
   <div class="head">
     <div class="brand-mark"></div>
     <div>
-      <h1>Bills</h1>
-      <div class="sub">Ghost Command Center · <span id="curLabel">AUD</span></div>
+      <h1>The Coffers</h1>
+      <div class="sub">Bills · Grimoire OS · <span id="curLabel">AUD</span></div>
     </div>
     <span class="demo-badge" id="demoBadge">DEMO</span>
     <div class="spacer"></div>
@@ -690,7 +693,7 @@ async function loadCandidates(){
 }
 function addCandidate(i){
   const c = CANDIDATES[i]; if(!c) return;
-  // open the normal add form, prefilled + linked; Lea edits anything before saving.
+  // open the normal add form, prefilled + linked; the operator edits anything before saving.
   openForm(null, {
     name: c.suggested_name.replace(/\b\w/g,ch=>ch.toUpperCase()),
     amount: c.suggested_amount, frequency: c.suggested_frequency,
@@ -843,10 +846,10 @@ function renderCatList(){
       <label style="font-size:9.5px;color:var(--gc-ink-faint);display:flex;gap:3px;align-items:center;" title="track a monthly cap for this category">
         <input type="checkbox" ${d.cap_enabled?"checked":""} onchange="saveCapEnabled('${esc(d.key)}',this.checked)">cap</label>
       ${d.cap_enabled?`<input value="${d.monthly_cap==null?"":esc(d.monthly_cap)}" placeholder="$/mo" inputmode="decimal" title="monthly cap (blank = none)" onchange="saveCap('${esc(d.key)}',this.value)" style="${mini}width:58px;cursor:text;">`:""}
-      <button onclick="catRename('${esc(d.key)}',${JSON.stringify(d.label)})" style="${mini}">rename</button>
+      <button onclick="catRename('${esc(d.key)}',${esc(JSON.stringify(d.label))})" style="${mini}">rename</button>
       <select id="merge_${esc(d.key)}" style="${mini}">${opts}</select>
-      <button onclick="catMerge('${esc(d.key)}',${JSON.stringify(d.label)})" style="${mini}">merge</button>
-      <button onclick="removeCategory('${esc(d.key)}',${JSON.stringify(d.label)})" style="${mini}color:#d97a8c;">remove</button>
+      <button onclick="catMerge('${esc(d.key)}',${esc(JSON.stringify(d.label))})" style="${mini}">merge</button>
+      <button onclick="removeCategory('${esc(d.key)}',${esc(JSON.stringify(d.label))})" style="${mini}color:#d97a8c;">remove</button>
     </div>`;
   }).join("");
 }

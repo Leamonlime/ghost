@@ -1,10 +1,11 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-gos="dashboard">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- S63: ghost-silhouette tab favicon (inline base64 SVG, no separate file/route). Consistent across all pages. -->
 <link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAzMiAzMic+PHBhdGggZD0nTTYgMTVhMTAgMTAgMCAwIDEgMjAgMHYxMC42bC0zLjM1LTIuMy0zLjMgMi4zLTMuMzUtMi4zLTMuMzUgMi4zLTMuMy0yLjNMNiAyNS42WicgZmlsbD0nbm9uZScgc3Ryb2tlPScjZWFiOGMwJyBzdHJva2Utd2lkdGg9JzEuNycgc3Ryb2tlLWxpbmVqb2luPSdyb3VuZCcvPjxjaXJjbGUgY3g9JzEyLjQnIGN5PScxNC42JyByPScxLjUnIGZpbGw9JyNlYWI4YzAnLz48Y2lyY2xlIGN4PScxOS42JyBjeT0nMTQuNicgcj0nMS41JyBmaWxsPScjZWFiOGMwJy8+PC9zdmc+">
-<title>Ghost Command Center — live</title>
+<title>Grimoire OS — Command Center</title>
 <!-- Shared design tokens (S57), served same-origin from /assets. Additive: only defines
      CSS custom properties, styles no elements, so it can't break the page. -->
 <link rel="stylesheet" href="/assets/ghost-common.css?v=59">
@@ -183,7 +184,7 @@
   .chat-overlay { display:none; position:fixed; inset:0; background:rgba(10,3,8,0.55); z-index:100; align-items:flex-end; justify-content:flex-end; padding:20px; }
   /* S64: opaque background — this panel is a position:fixed overlay ON TOP of the dashboard, so
      the design-system .panel bg (rgba(0,0,0,0.32), fine over the page's own base) let the cards
-     behind it show through (Lea's chat-leak report). An overlay needs a solid fill. */
+     behind it show through (the operator's chat-leak report). An overlay needs a solid fill. */
   .chat-panel { width:380px; max-width:92vw; height:520px; max-height:82vh; display:flex; flex-direction:column; border-radius:16px; overflow:hidden; background:#160d14; }
   .chat-head { display:flex; align-items:center; justify-content:space-between; padding:10px 14px; border-bottom:1px solid rgba(255,150,200,0.12); }
   .chat-tabs { display:flex; gap:6px; }
@@ -203,6 +204,9 @@
   .bell-badge { position:absolute; top:-3px; right:-3px; background:#ff5f7a; color:#fff; font-size:8px; min-width:13px; height:13px; border-radius:7px; display:none; align-items:center; justify-content:center; padding:0 2px; }
   .chat-send { background:rgba(255,95,168,0.28); color:#ffe3f1; border:none; border-radius:10px; padding:0 16px; cursor:pointer; font-size:12px; }
 </style>
+<!-- Grimoire OS: shared theme + shell. Loaded after the page's own <style> so it wins; same-origin only. -->
+<link rel="stylesheet" href="/assets/grimoire.css?v=1">
+<script src="/assets/grimoire.js?v=1"></script>
 </head>
 <body>
 <div class="app">
@@ -210,7 +214,7 @@
   <div class="sidebar panel" id="sidebar" style="border-radius:0;">
     <div class="brand">
       <div class="brand-mark"></div>
-      <div class="brand-text"><b>GHOST</b><span>COMMAND CENTER</span></div>
+      <div class="brand-text"><b>GHOST</b><span>GRIMOIRE OS</span></div>
     </div>
     <div class="nav-list">
       <div class="nav-item active" data-role="nav-item"><span class="ic">◈</span>Command Center</div>
@@ -229,7 +233,7 @@
       <a class="nav-item" data-role="nav-item" href="ghost-tarot.html"><span class="ic">🂠</span>Tarot</a>
     </div>
     <div class="presence panel">
-      <div class="lbl">Presence</div>
+      <div class="lbl">The Familiar</div>
       <div class="presence-orb"></div>
       <div class="wave"><span style="animation-delay:0s"></span><span style="animation-delay:0.15s"></span><span style="animation-delay:0.3s"></span><span style="animation-delay:0.1s"></span><span style="animation-delay:0.25s"></span></div>
       <div class="status-txt" id="presenceTxt">Connecting…</div>
@@ -246,7 +250,7 @@
       <div class="icon-btn panel" id="btnMenu" title="Toggle sidebar" onclick="document.getElementById('sidebar').classList.toggle('collapsed')">▦</div>
       <div class="icon-btn panel" id="btnBell" title="Open chat / respond to nudges" onclick="openChat('ghost')">🔔<span id="bellBadge" class="bell-badge"></span></div>
       <div class="icon-btn panel" id="btnSettings" title="Toggle demo mode" onclick="location.search = location.search.indexOf('demo=1')>=0 ? '' : '?demo=1'">⚙</div>
-      <div class="profile panel"><div class="av"></div><div><div class="name">Lea</div><div class="role">Operator</div></div></div>
+      <div class="profile panel"><div class="av"></div><div><div class="name">The Witch</div><div class="role">Operator</div></div></div>
     </div>
 
     <div class="content">
@@ -260,24 +264,24 @@
            only the parent cards' grid positions changed. -->
       <div class="row1">
         <div class="card panel" id="cardHabits">
-          <div class="card-title">Habits — today</div>
+          <div class="card-title">Ledger of Rituals<small>habits · today</small></div>
           <div class="scroll-list" id="habitsList" data-role="habits"></div>
         </div>
 
         <div class="card panel" id="cardTodos">
-          <div class="card-title">ToDos</div>
+          <div class="card-title">Grimoire<small>todos</small></div>
           <div class="scroll-list" id="todosList" data-role="todos"></div>
         </div>
       </div>
 
       <div class="row2">
         <div class="card panel" id="cardOverview">
-          <div class="card-title">Ghost Core Overview</div>
+          <div class="card-title">Wards<small>core overview</small></div>
           <div id="overviewList"></div>
         </div>
 
         <div class="card panel" id="cardTimeline">
-          <div class="card-title">Mission Timeline<span style="font-size:8px;color:#8a6a7c;" id="tlDate">Today</span></div>
+          <div class="card-title">Dispatches<small>from the familiar · timeline</small><span style="font-size:8px;color:#8a6a7c;" id="tlDate">Today</span></div>
           <div class="tl-axis"><span>6a</span><span>9a</span><span>12p</span><span>3p</span><span>6p</span><span>9p</span></div>
           <div class="tl-track" id="tlTrack" style="margin-bottom:6px;"></div>
           <div class="scroll-list" id="missionList"></div>
@@ -286,26 +290,26 @@
 
       <div class="row3">
         <div class="card panel">
-          <div class="card-title">System Monitor</div>
+          <div class="card-title">Scrying Glass<small>system monitor</small></div>
           <div class="mon-gauges" id="monGauges"></div>
         </div>
 
         <div class="card panel">
-          <div class="card-title">Spending</div>
+          <div class="card-title">Coffers<small>spending</small></div>
           <div class="scroll-list" id="budgetList" data-role="budget"></div>
         </div>
 
         <div class="card panel">
-          <div class="card-title">Integrations</div>
+          <div class="card-title">Bindings<small>integrations</small></div>
           <div class="int-grid" id="intGrid"></div>
         </div>
       </div>
 
-      <!-- Decision loop: overnight-runner questions waiting on Lea. Read-only; answer in Telegram
+      <!-- Decision loop: overnight-runner questions waiting on the operator. Read-only; answer in Telegram
            (buttons / /decisions) or via POST /api/decisions/answer. Fed by d.decisions. -->
       <div class="row4">
         <div class="card panel" id="cardDecisions">
-          <div class="card-title">Pending decisions<span class="count" id="decCount" style="margin-left:auto;font-size:9px;color:#8a6a7c;"></span></div>
+          <div class="card-title">Crossroads<small>pending decisions</small><span class="count" id="decCount" style="margin-left:auto;font-size:9px;color:#8a6a7c;"></span></div>
           <div class="scroll-list" id="decisionList" data-role="decisions"></div>
         </div>
       </div>
@@ -313,7 +317,7 @@
       <!-- S101: Food log (today, Melbourne). Reads/writes /api/food-log; search via /api/food-search. -->
       <div class="row4">
         <div class="card panel" id="cardFood" data-role="food-log">
-          <div class="card-title">Food log<span id="foodTotals" style="font-size:9px;color:#8a6a7c;margin-left:auto;"></span></div>
+          <div class="card-title">Larder<small>food log</small><span id="foodTotals" style="font-size:9px;color:#8a6a7c;margin-left:auto;"></span></div>
           <div class="scroll-list" id="foodList" data-role="food-entries" style="max-height:210px;"></div>
           <div class="food-add">
             <input id="foodQ" type="text" placeholder="add a food… (2+ letters)" autocomplete="off" oninput="foodSearchSoon()">
@@ -342,7 +346,7 @@
       <div class="dock-chip panel" id="dockStreak">✦ — day streak</div>
       <div class="talk-pill" onclick="openChat('ghost')" style="cursor:pointer">
         <div class="mini-wave"><span style="height:5px;animation-delay:0s"></span><span style="height:11px;animation-delay:.1s"></span><span style="height:7px;animation-delay:.2s"></span><span style="height:13px;animation-delay:.15s"></span><span style="height:5px;animation-delay:.25s"></span></div>
-        <div class="txt"><b>OPEN GHOST CHAT</b><span id="dockSub">watching</span></div>
+        <div class="txt"><b>SUMMON THE FAMILIAR</b><span id="dockSub">watching</span></div>
       </div>
       <div class="dock-chip panel" id="dockEscalation">⚑ none active</div>
     </div>
@@ -746,7 +750,7 @@ async function pollChat(){
 }
 setInterval(pollChat, 12000);
 // S66: re-entrancy guard — the chat has two independent send triggers (the textarea's Enter
-// handler and the Send button's click). Nothing in the markup obviously double-fires, but Lea
+// handler and the Send button's click). Nothing in the markup obviously double-fires, but the operator
 // reported double-sends on desktop, so this closes the door defensively: while one send is in
 // flight, a second (fast double-Enter, double-click, or one of each) is ignored until the fetch
 // settles. Exactly one message + one reply per turn.
