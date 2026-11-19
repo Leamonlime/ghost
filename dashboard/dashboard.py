@@ -4138,6 +4138,9 @@ async def _ensure_app_schema(conn):
             response   TEXT,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now()
         );
+        -- P3 retention (migrations/2026-11-19_01_idempotency_prune.sql)
+        CREATE INDEX IF NOT EXISTS app_idempotency_created_at_idx ON app_idempotency(created_at);
+        ALTER TABLE app_idempotency ALTER COLUMN response DROP NOT NULL;
         -- S93: UnifiedPush endpoints the app registers (ntfy app = distributor). The scheduler's
         -- publish_ntfy also posts every proactive message to each of these.
         CREATE TABLE IF NOT EXISTS app_push_endpoints (
@@ -4171,12 +4174,16 @@ async def _idem_get(conn, client_id):
     if not client_id:
         return None
     row = await conn.fetchrow("SELECT response FROM app_idempotency WHERE client_id=$1", client_id)
-    if row and row["response"]:
-        try:
-            return json.loads(row["response"])
-        except Exception:
-            return None
-    return None
+    if row is None:
+        return None
+    if row["response"] is None:
+        # P3: body pruned (> IDEM_BODY_DAYS old). The write was applied; the app reads 409 as
+        # "already applied", so it never runs twice.
+        return JSONResponse({"status": "duplicate"}, status_code=409)
+    try:
+        return json.loads(row["response"])
+    except Exception:
+        return None
 
 
 async def _idem_put(conn, client_id, endpoint, response):
@@ -4188,6 +4195,115 @@ async def _idem_put(conn, client_id, endpoint, response):
             "ON CONFLICT (client_id) DO NOTHING", client_id, endpoint, json.dumps(response))
     except Exception as e:
         logger.error(f"app idempotency put error: {e}")
+    _schedule_idem_prune()
+
+
+# ---- Ghost Home P3: app_idempotency retention ---------------------------------------------------
+# After IDEM_BODY_DAYS the stored response body is nulled (client_id, endpoint = target type and
+# created_at stay; only 200s are ever cached, so there is no status column to keep); a replay then
+# gets 409 {"status":"duplicate"}. After IDEM_KEY_DAYS the key is deleted. Runs from the app write
+# path (_idem_put) at most once an hour: an in-process gate, then a Redis SET NX lock with a 1-hour
+# TTL so two pods never both run it. GHOST_IDEM_PRUNE: "dry" (default, counts only, nothing
+# changes), "1" (live), "0" (off). Live only after a pg_dump backup — pruned rows only come back
+# from one.
+IDEM_BODY_DAYS = 7
+IDEM_KEY_DAYS = 90
+IDEM_PRUNE_BATCH = 5000
+IDEM_PRUNE_LOCK = "idem_prune_lock"
+IDEM_PRUNE_LOCK_TTL = 3600
+IDEM_PRUNE_MODE = (os.environ.get("GHOST_IDEM_PRUNE") or "dry").strip().lower()
+_IDEM_PRUNE_NEXT = 0.0          # monotonic; skip even the Redis call until then
+_IDEM_PRUNE_TASKS = set()       # strong refs to the fire-and-forget tasks
+
+
+def _status_count(status):
+    try:
+        return int(status.split()[-1])
+    except Exception:
+        return 0
+
+
+async def prune_idempotency(now=None, dry_run=True):
+    """Apply the retention rule once. Returns {"nulled", "deleted", "dry_run"}. Deletes first, then
+    nulls, each in batches of IDEM_PRUNE_BATCH, so the two counts never overlap and a dry run
+    reports exactly what a real run at the same `now` would change. Rows newer than 7 days are
+    never touched, so a write landing during a prune is unaffected."""
+    now = now or datetime.now(LOCAL_TZ)
+    body_cut = now - timedelta(days=IDEM_BODY_DAYS)
+    key_cut = now - timedelta(days=IDEM_KEY_DAYS)
+    conn = await pg_conn()
+    try:
+        if dry_run:
+            deleted = await conn.fetchval(
+                "SELECT count(*) FROM app_idempotency WHERE created_at < $1", key_cut)
+            nulled = await conn.fetchval(
+                "SELECT count(*) FROM app_idempotency WHERE created_at < $1 AND created_at >= $2 "
+                "AND response IS NOT NULL", body_cut, key_cut)
+            return {"nulled": int(nulled), "deleted": int(deleted), "dry_run": True}
+        deleted = nulled = 0
+        while True:
+            n = _status_count(await conn.execute(
+                "DELETE FROM app_idempotency WHERE client_id IN (SELECT client_id FROM app_idempotency "
+                "WHERE created_at < $1 LIMIT $2)", key_cut, IDEM_PRUNE_BATCH))
+            deleted += n
+            if n < IDEM_PRUNE_BATCH:
+                break
+        while True:
+            n = _status_count(await conn.execute(
+                "UPDATE app_idempotency SET response=NULL WHERE client_id IN (SELECT client_id FROM "
+                "app_idempotency WHERE created_at < $1 AND response IS NOT NULL LIMIT $2)",
+                body_cut, IDEM_PRUNE_BATCH))
+            nulled += n
+            if n < IDEM_PRUNE_BATCH:
+                break
+        return {"nulled": nulled, "deleted": deleted, "dry_run": False}
+    finally:
+        await conn.close()
+
+
+async def _maybe_prune_idempotency():
+    """Hourly-gated, Redis-locked prune. Returns the counts, or None when gated/locked/off/failed.
+    Logs one line per run, counts only."""
+    global _IDEM_PRUNE_NEXT
+    if IDEM_PRUNE_MODE in ("0", "off", "false", "no"):
+        return None
+    if time.monotonic() < _IDEM_PRUNE_NEXT:
+        return None
+    _IDEM_PRUNE_NEXT = time.monotonic() + IDEM_PRUNE_LOCK_TTL
+    r = redis_conn()
+    try:
+        if not await r.set(IDEM_PRUNE_LOCK, "1", nx=True, ex=IDEM_PRUNE_LOCK_TTL):
+            return None
+    except Exception as e:
+        logger.warning(f"idempotency prune skipped: redis {type(e).__name__}")
+        return None
+    finally:
+        try:
+            await r.aclose()
+        except Exception:
+            pass
+    dry = IDEM_PRUNE_MODE not in ("1", "live", "true", "yes")
+    t0 = time.monotonic()
+    try:
+        res = await prune_idempotency(dry_run=dry)
+    except Exception as e:
+        logger.error(f"idempotency prune failed: {type(e).__name__}")
+        return None
+    logger.info(f"idempotency prune ({'dry' if dry else 'live'}): nulled={res['nulled']} "
+                f"deleted={res['deleted']} in {1000 * (time.monotonic() - t0):.0f} ms")
+    return res
+
+
+def _schedule_idem_prune():
+    """Fire-and-forget from the write path; the request never waits on the prune."""
+    if time.monotonic() < _IDEM_PRUNE_NEXT or IDEM_PRUNE_MODE in ("0", "off", "false", "no"):
+        return
+    try:
+        t = asyncio.get_running_loop().create_task(_maybe_prune_idempotency())
+    except RuntimeError:
+        return
+    _IDEM_PRUNE_TASKS.add(t)
+    t.add_done_callback(_IDEM_PRUNE_TASKS.discard)
 
 
 async def _nutrition_targets(conn):
