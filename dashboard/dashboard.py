@@ -21,6 +21,7 @@ sys.path.insert(0, os.environ.get("BOT_CODE_PATH", "/botcode"))
 import bot  # noqa: E402 — Ghost's own module, mounted read-only
 import native  # noqa: E402 — Ghost 2.0 native Habits & Todos (Phase 1), shared with the bot pipeline
 import decisions  # noqa: E402 — decision loop store (bot/decisions.py, mounted with bot code)
+import gcal  # noqa: E402 — Google Calendar reads (bot/gcal.py; Ghost Home next-event route)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import finance_import  # noqa: E402 — rules-based CSV import (no network, no model, no row logging)
 
@@ -4310,9 +4311,14 @@ async def app_today(request: Request):
             await _ensure_app_schema(conn)
             habits = await native.list_habits(user_id=OWNER_ID, conn=conn)
             todos_all = await native.list_todos(user_id=OWNER_ID, include_done=False, conn=conn)
+            created = {r["id"]: r["created_at"] for r in await conn.fetch(
+                "SELECT id, created_at FROM todos WHERE user_id=$1 AND NOT done AND NOT archived", OWNER_ID)}
             nutrition = await _nutrition_today(conn)
         finally:
             await conn.close()
+        # Ghost Home P1: the single next task (native.next_task, pure; metadata only, no notes)
+        nxt = native.next_task([{**t, "created_at": created.get(t["id"])} for t in todos_all],
+                               datetime.now(LOCAL_TZ), tz=LOCAL_TZ)
         habits_due = [{
             "id": h["id"], "name": h["name"], "type": h["field_type"],
             "target": h.get("target_value"), "unit": h.get("unit"),
@@ -4325,10 +4331,97 @@ async def app_today(request: Request):
             "due_date": t["due_date"], "overdue": t["overdue"], "checklist": t.get("checklist", []),
         } for t in todos_all]  # already due-date-first, done excluded
         return {"ok": True, "date": datetime.now(LOCAL_TZ).date().isoformat(),
-                "habits": habits_due, "todos": todos_open, "nutrition": nutrition}
+                "habits": habits_due, "todos": todos_open, "nutrition": nutrition, "next_task": nxt}
     except Exception as e:
         logger.error(f"/api/app/v1/today error: {e}")
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+# Ghost Home P1: the next calendar event that hasn't ended. Title + times only (no description,
+# location, attendees or links). The Google result is cached in Redis for 5 min; the same key is
+# kept a week as the last-known value, so a Google failure degrades to source "cache" (or event
+# null, "unavailable"). Always HTTP 200 once authorised. Never logs event titles.
+CAL_NEXT_FRESH_SECONDS = 300
+CAL_NEXT_KEEP_SECONDS = 7 * 86400
+CAL_NEXT_TIMEOUT = 1.5
+
+
+def _cal_ended(ev, now):
+    end = ev.get("end")
+    if not end:
+        return False
+    try:
+        if len(end) == 10:                      # all-day: Google's end date is exclusive
+            return date.fromisoformat(end) <= now.date()
+        return datetime.fromisoformat(end) <= now
+    except ValueError:
+        return False
+
+
+def _pick_next_event(events, now):
+    """First normalised gcal event (already start-ordered) that hasn't ended, in the public shape."""
+    for e in events or []:
+        start, end = e.get("start"), e.get("end")
+        out = {"id": e.get("id"), "title": e.get("summary") or "(no title)",
+               "start": start.isoformat() if start else None,
+               "end": end.isoformat() if end else None,
+               "all_day": bool(e.get("all_day")), "calendar": gcal.CALENDAR_ID}
+        if not _cal_ended(out, now):
+            return out
+    return None
+
+
+async def _cal_cache(op, key, value=None):
+    try:
+        r = redis_conn()
+        try:
+            if op == "get":
+                raw = await r.get(key)
+                return json.loads(raw) if raw else None
+            await r.set(key, json.dumps(value), ex=CAL_NEXT_KEEP_SECONDS)
+        finally:
+            await r.aclose()
+    except Exception as e:
+        logger.warning(f"calendar/next cache {op} failed: {type(e).__name__}")
+    return None
+
+
+@app.get("/api/app/v1/calendar/next")
+async def app_calendar_next(request: Request):
+    if not _app_auth_ok(request):
+        return _app_401()
+    try:
+        hours = int(request.query_params.get("within_hours") or 36)
+    except (TypeError, ValueError):
+        hours = 36
+    hours = max(1, min(hours, 168))
+    now = datetime.now(LOCAL_TZ)
+    key = f"calendar_next:{hours}"
+    cached = await _cal_cache("get", key)
+
+    def from_cache():
+        ev = cached.get("event")
+        if ev and _cal_ended(ev, now):
+            ev = None
+        return {"event": ev, "fetched_at": cached.get("fetched_at"), "source": "cache"}
+
+    try:
+        if cached and now.timestamp() - float(cached.get("ts") or 0) < CAL_NEXT_FRESH_SECONDS:
+            return from_cache()
+        events = None
+        try:
+            events = await asyncio.wait_for(
+                gcal.get_events(now, now + timedelta(hours=hours), max_results=10), CAL_NEXT_TIMEOUT)
+        except Exception as e:
+            logger.warning(f"calendar/next google fetch failed: {type(e).__name__}")
+        if events is None:
+            return from_cache() if cached else {"event": None, "fetched_at": None, "source": "unavailable"}
+        out = {"event": _pick_next_event(events, now), "fetched_at": now.isoformat(), "source": "live"}
+        await _cal_cache("set", key, {**out, "ts": now.timestamp()})
+        return out
+    except Exception as e:
+        logger.error(f"calendar/next error: {type(e).__name__}")
+        return {"event": None, "fetched_at": None, "source": "unavailable"}
 
 
 @app.post("/api/app/v1/habits/{habit_id}/log")
