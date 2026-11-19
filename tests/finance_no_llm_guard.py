@@ -153,6 +153,8 @@ def test_gate_order_static():
         g = _first_line(fn, {"money_refusal"})
         s = _first_line(fn, {"log_message", "process_message", "_idem_get"})
         check(f"dashboard.{name} gates money before logging", g and s and g < s, f"gate={g} sink={s}")
+        cap = _first_line(fn, {"parse_cap_command"})
+        check(f"dashboard.{name} answers cap commands before logging", cap and s and cap < s, f"cap={cap} sink={s}")
 
 
 MONEY = [
@@ -197,6 +199,36 @@ def test_runtime_never_reaches_claude():
         check(f"runtime refusal {t!r}", reply == bot.MONEY_REFUSAL and not leaked, f"reply={reply!r} calls={leaked}")
 
 
+def test_dashboard_cap_not_logged():
+    sys.path.insert(0, os.path.join(ROOT, "dashboard"))
+    import bot
+    import dashboard as dash
+    import httpx
+    calls = []
+
+    async def rec_log(*a, **k):
+        calls.append("log_message")
+
+    async def fake_pm(uid, text, source="app"):
+        return "Caps this month:\n- Zzt: 50% of $100"
+
+    async def no_db():
+        calls.append("pg_conn")
+        raise RuntimeError("db not allowed in this test")
+    bot.log_message, bot.process_message = rec_log, fake_pm
+    dash.pg_conn = no_db
+    dash._app_auth_ok = lambda request: True
+
+    async def go():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=dash.app), base_url="http://t") as h:
+            r1 = (await h.post("/api/chat", json={"message": "show my caps"})).json()
+            r2 = (await h.post("/api/app/v1/chat", json={"message": "set groceries cap to 400", "client_id": "zzt"})).json()
+            return r1, r2
+    r1, r2 = asyncio.run(go())
+    check("dashboard cap reply returned", "Caps" in r1.get("reply", "") and r2.get("ok"), f"{r1} {r2}")
+    check("cap commands not logged or cached", not calls, str(calls))
+
+
 if __name__ == "__main__":
     test_finance_import_module()
     test_dashboard_finance_functions()
@@ -204,5 +236,6 @@ if __name__ == "__main__":
     test_gate_order_static()
     test_detector()
     test_runtime_never_reaches_claude()
+    test_dashboard_cap_not_logged()
     print(f"finance_no_llm_guard: {PASSES} passed, {len(FAILS)} failed")
     sys.exit(1 if FAILS else 0)

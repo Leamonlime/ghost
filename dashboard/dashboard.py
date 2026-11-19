@@ -376,6 +376,10 @@ async def api_chat(request: Request):
         refusal = bot.money_refusal(message)
         if refusal is not None:
             return {"reply": refusal}
+        # Budget-cap commands are deterministic, but their replies carry cap amounts and % spent, so
+        # neither side is written to message_log (a log) — answered and returned unlogged.
+        if bot.parse_cap_command(message) is not None:
+            return {"reply": await bot.process_message(OWNER_ID, message, source="dashboard")}
         await bot.log_message("dashboard_in", "chat", message)
         reply = await bot.process_message(OWNER_ID, message, source="dashboard")
         await bot.log_message("dashboard_out", "chat", reply)
@@ -4801,6 +4805,10 @@ async def app_chat(request: Request):
     refusal = bot.money_refusal(message)
     if refusal is not None:
         return {"ok": True, "reply": refusal}
+    # Cap commands: not logged and not cached in app_idempotency (the reply carries amounts). Setting a
+    # cap is idempotent on its own, so a retried request is harmless.
+    if bot.parse_cap_command(message) is not None:
+        return {"ok": True, "reply": await bot.process_message(OWNER_ID, message, source="app")}
     conn = await pg_conn()
     try:
         await _ensure_app_schema(conn)
