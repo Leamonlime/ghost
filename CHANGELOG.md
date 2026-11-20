@@ -4,6 +4,7 @@ Auto-generated from the project build log; titles only. Newest session first.
 
 | Session | Date | Summary |
 | ------: | :--- | :------ |
+| 114 | 20/11/2026 | Ghost Home P5: app 0.3.0, launcher shell (built, not merged) |
 | 113 | 19/11/2026 | Ghost Home P4: app 0.2.0, encrypted cache and Tailscale-aware sync |
 | 112 | 19/11/2026 | Ghost Home P3: idempotency retention (deployed in dry-run) |
 | 111 | 19/11/2026 | Ghost Home P2: GET /api/app/v1/home with section delta and ETag |
